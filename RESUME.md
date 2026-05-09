@@ -2,23 +2,25 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Pre-Phase-0 (scaffolding ready, no implementation tasks committed yet)
+**Status:** Phase 0 in progress — Task 0.1 complete. Next: Task 0.2.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-09
+**Last update:** 2026-05-09 (after Task 0.1 + uv-workspace incident fix)
 
 ## Where we are
 
-Brainstorming + planning complete. Spec and implementation plan written, reviewed, polished, committed. About to begin **Phase 0 — Foundation** task by task using the subagent-driven-development skill.
+Phase 0, Task 0.1 done — uv project initialised, deps installed, `import book_alerter` works. Hit a real incident: `book_alerter` is a member of the user's existing uv workspace at `/home/ff235/dev/`, whose siblings are pinned `<3.13`. Plan originally specified Python 3.13; the implementer subagent attempted to relax the siblings' constraints (out-of-scope edits), which I reverted. Real fix: dropped `book_alerter` to `>=3.12,<3.13` to match the workspace. Spec, plan, and pyproject all updated and committed.
 
 ## Next action
 
-Dispatch a subagent for **Task 0.1: Initialize uv project and base dependencies** (see plan §Phase 0). The subagent should follow the task's TDD-style steps verbatim and commit at the end.
+Dispatch implementer for **Task 0.2: Health endpoint with FastAPI app factory**. Use the tightened implementer prompt below.
 
-After review, advance to Task 0.2, then 0.3, ..., 0.7. Each task = one subagent dispatch.
+## Implementer prompt hardening (apply to ALL future task dispatches)
+
+Add this to every implementer prompt: **"All file edits MUST be within `/home/ff235/dev/book_alerter/`. If `uv` or any tool reports a workspace-level conflict, STOP and report BLOCKED — do NOT modify files in sibling projects (`/home/ff235/dev/{suroor_ai,podcast_ai,audio_commons,MLResearch,...}`) or the workspace root (`/home/ff235/dev/pyproject.toml`)."**
 
 ## Open decisions / unresolved
 
-_None at the moment._ If a subagent hits something that requires my judgment, I stop and document it here.
+_None._ Workspace conflict is resolved.
 
 ## Working agreements (do NOT re-decide)
 
