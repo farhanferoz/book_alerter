@@ -2,25 +2,38 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 0 in progress — Task 0.1 complete. Next: Task 0.2.
+**Status:** Phase 0 COMPLETE. 7 tasks done, 7 tests passing, simplify pass applied. Next phase: Phase 1 — Data model (5 tables + book_stats view).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-09 (after Task 0.1 + uv-workspace incident fix)
+**Last update:** 2026-05-09, end of autonomous session
 
 ## Where we are
 
-Phase 0, Task 0.1 done — uv project initialised, deps installed, `import book_alerter` works. Hit a real incident: `book_alerter` is a member of the user's existing uv workspace at `/home/ff235/dev/`, whose siblings are pinned `<3.13`. Plan originally specified Python 3.13; the implementer subagent attempted to relax the siblings' constraints (out-of-scope edits), which I reverted. Real fix: dropped `book_alerter` to `>=3.12,<3.13` to match the workspace. Spec, plan, and pyproject all updated and committed.
+Phase 0 done. Foundation runs end-to-end: `uv run uvicorn book_alerter.app:app` boots, `GET /api/health` returns `{"status":"ok","config_version":<n>}`, structlog JSON logging configured, SQLite engine + session_scope, Alembic ready for migrations. Code reviewed via the simplify skill — two minor fixes applied (guard `get_engine` against empty url; tidy comment).
+
+## Verify on return
+
+```bash
+cd /home/ff235/dev/book_alerter && uv run pytest -v
+# expected: 7 passed
+git log --oneline d953741..HEAD
+# expected: 11 commits ending at 40d183d
+```
 
 ## Next action
 
-Dispatch implementer for **Task 0.2: Health endpoint with FastAPI app factory**. Use the tightened implementer prompt below.
+Dispatch implementer for **Phase 1, Task 1.1: Book table + Alembic migration**. The plan covers Tasks 1.1 → 1.4 (Book; PriceObservation w/ self-FK; SourceRun + Alert + NotificationDelivery + BookSignalState; book_stats view). After Phase 1 the foundation will have all DB tables and the read-only stats view.
 
-## Implementer prompt hardening (apply to ALL future task dispatches)
+## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
-Add this to every implementer prompt: **"All file edits MUST be within `/home/ff235/dev/book_alerter/`. If `uv` or any tool reports a workspace-level conflict, STOP and report BLOCKED — do NOT modify files in sibling projects (`/home/ff235/dev/{suroor_ai,podcast_ai,audio_commons,MLResearch,...}`) or the workspace root (`/home/ff235/dev/pyproject.toml`)."**
+> All file edits MUST be within `/home/ff235/dev/book_alerter/`. If any tool reports a workspace-level conflict, STOP and report BLOCKED — do NOT modify files in sibling projects (`/home/ff235/dev/{suroor_ai,podcast_ai,audio_commons,MLResearch,...}`) or the workspace root (`/home/ff235/dev/pyproject.toml`).
 
 ## Open decisions / unresolved
 
-_None._ Workspace conflict is resolved.
+_None._ All blockers from this session resolved.
+
+## Incidents this session (for reference, not action)
+
+- **uv workspace Python conflict** (Task 0.1): subagent edited sibling pyproject.tomls; reverted; instead dropped `book_alerter` to `>=3.12,<3.13`. See `docs/CHANGELOG.md` for detail.
 
 ## Working agreements (do NOT re-decide)
 
