@@ -672,7 +672,7 @@ RUN cd cli_bins/bookfinder-pp-cli && go build -o /out/bookfinder-pp-cli ./cmd/..
  && cd /build/cli_bins/amazon-pp-cli   && go build -o /out/amazon-pp-cli   ./cmd/...
 
 # stage 2: Python runtime
-FROM python:3.13-slim
+FROM python:3.12-slim
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock ./

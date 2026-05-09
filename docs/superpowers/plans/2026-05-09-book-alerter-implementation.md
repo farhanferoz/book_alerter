@@ -6,7 +6,7 @@
 
 **Architecture:** Single-process FastAPI app holding APScheduler in its lifespan; per-source jobs shell out to printing-press-generated Go CLIs (and one inline Python source for bootstrap). SQLite on a host-mounted volume. React + Vite SPA served statically. Tailscale-only access; no app-level auth by default.
 
-**Tech Stack:** Python 3.13 · uv · FastAPI · SQLModel · Alembic · APScheduler · Pydantic-Settings · structlog · httpx · selectolax · isbnlib · pytest · pytest-asyncio · vcrpy · hypothesis · React 18 · TypeScript · Vite · Tailwind · shadcn/ui · Recharts · TanStack Query · openapi-typescript · Monaco · Docker (multi-stage Go + Python).
+**Tech Stack:** Python 3.12 · uv · FastAPI · SQLModel · Alembic · APScheduler · Pydantic-Settings · structlog · httpx · selectolax · isbnlib · pytest · pytest-asyncio · vcrpy · hypothesis · React 18 · TypeScript · Vite · Tailwind · shadcn/ui · Recharts · TanStack Query · openapi-typescript · Monaco · Docker (multi-stage Go + Python).
 
 **Spec reference:** `docs/superpowers/specs/2026-05-09-book-alerter-design.md`
 
@@ -188,7 +188,7 @@ Then edit `pyproject.toml` to match this final form:
 name = "book-alerter"
 version = "0.0.1"
 description = "Self-hosted book price comparison and alerting"
-requires-python = ">=3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -231,13 +231,13 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.12"
 ```
 
 - [ ] Add the package marker file:
