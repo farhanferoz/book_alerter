@@ -142,10 +142,10 @@ book_alerter/
 │   ├── package.json
 │   ├── src/…
 │   └── …
-├── cli_bins/                        # printing-press-generated Go source (submodules)
-│   ├── bookfinder-pp-cli/
-│   ├── wob-pp-cli/
-│   └── amazon-pp-cli/
+├── cli_bins/                        # printing-press-generated Go source — git submodules
+│   ├── bookfinder-pp-cli/           # tracks the published printing-press-library repo path
+│   ├── wob-pp-cli/                  # so `git pull --recurse-submodules` updates them
+│   └── amazon-pp-cli/               # docker build COPYs the working tree (submodule contents)
 └── tests/
     ├── unit/
     ├── integration/
@@ -357,7 +357,7 @@ sources:
 | Within a source, across books | Configurable (`concurrency`); default 1 (sequential, polite); ceiling 5 |
 | Notification delivery (multiple channels per alert) | Parallel via `asyncio.gather` |
 | Book-add metadata enrichment (OpenLibrary + Google Books) | Parallel race; first valid wins |
-| Initial sync on startup | All enabled sources kicked off in parallel |
+| Initial sync on startup | All enabled sources kicked off in parallel; per-source `concurrency` cap still applies within each |
 | Alert evaluation | Sequential (trivially fast) |
 
 ### Politeness defaults
@@ -413,6 +413,8 @@ def compute_signal(book, stats, cfg) -> Signal:
             return "TARGET_HIT"
         if stats.current_best_total_minor <= tolerance:
             return "BUY"
+        # Target set but not hit/almost-hit → fall through to percentile logic
+        # so the user still gets BUY/WATCH/WAIT context, not just "target unmet".
 
     if stats.current_best_total_minor <= percentile(stats, threshold_pct):
         return "BUY"
@@ -437,7 +439,7 @@ def compute_signal(book, stats, cfg) -> Signal:
 | Kind | Trigger |
 |---|---|
 | `target_hit` | `current ≤ target_price_minor` (only when target set) |
-| `percentile_cross` | Signal transition to `BUY` (was not BUY in previous evaluation) |
+| `percentile_cross` | Signal transition to `BUY` (previous signal was not `BUY`). Fires on `TARGET_HIT → BUY` transitions too (e.g. when a target is unset and percentile logic now classifies as BUY). |
 | `new_low` | `current_best_total_minor < previous all_time_min` |
 
 All three may fire for the same observation.
@@ -586,6 +588,8 @@ Single Pydantic schema (`config.py`) is the source of truth. Two write paths:
 ### Example `config.yaml`
 
 ```yaml
+config_version: 1                    # bumped by upgraders when schema changes
+
 recommendation:
   min_observations_for_signal: 14
   buy_percentile: 25
