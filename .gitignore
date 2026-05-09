@@ -1,0 +1,40 @@
+# Runtime data
+data/
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.uv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Vite
+node_modules/
+web/dist/
+web/.vite/
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude
+.claude/settings.local.json
+
+# Go build artifacts (cli_bins should be source-only)
+cli_bins/**/bin/
+cli_bins/**/*.exe
