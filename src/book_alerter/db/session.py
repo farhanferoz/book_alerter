@@ -16,8 +16,9 @@ def get_database_url() -> str:
 
 
 def get_engine(url: str | None = None) -> Engine:
+    resolved = url if url is not None else get_database_url()
     return create_engine(
-        url or get_database_url(),
+        resolved,
         echo=False,
         connect_args={"check_same_thread": False},
     )

@@ -4,7 +4,7 @@ from alembic import context
 from sqlmodel import SQLModel
 
 from book_alerter.db.session import get_database_url
-from book_alerter.db import models  # noqa: F401  ← imports register tables (Phase 1)
+from book_alerter.db import models  # noqa: F401  registers tables on SQLModel.metadata
 
 config = context.config
 fileConfig(config.config_file_name)
