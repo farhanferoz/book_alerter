@@ -16,7 +16,7 @@ A self-hosted personal book-price comparison and alerting tool that runs on a ho
 - **Region**: UK only at MVP; designed for multi-region later.
 - **Identity**: ISBN-pinned per book at MVP; bookfinder-style title/author/ISBN search later.
 - **Recommendation**: hybrid — statistical default (BUY at ≤ p25 of history) + per-book target-price override.
-- **Alerts**: in-app feed always; push via ntfy/Telegram/Pushover; configurable per kind, per channel, per book, per quiet-hours.
+- **Alerts**: in-app feed always; **MVP push = ntfy only**; Telegram + Pushover are deferred (the `Notifier` slot is reserved). All channels configurable per kind, per channel, per book, per quiet-hours.
 - **Frontend**: React + Vite + Tailwind + shadcn/ui + Recharts.
 - **Config**: YAML file + UI editor — both write through the same Pydantic schema.
 
@@ -26,7 +26,7 @@ A self-hosted personal book-price comparison and alerting tool that runs on a ho
 2. Periodically check current prices from Bookfinder, World of Books UK, and Amazon UK (new + used-very-good + used-good).
 3. Build my own price history over time and compute statistical context (p25/p50/p75, all-time min/max, observation count).
 4. Surface a buy/watch/wait signal per book using a hybrid percentile + per-book-target rule.
-5. Notify me on buy-worthy events through in-app feed and push (ntfy/Telegram/Pushover).
+5. Notify me on buy-worthy events through in-app feed and push (MVP: ntfy; Telegram and Pushover deferred — pluggable Notifier interface keeps them slot-in additions later).
 6. Run reliably on a home NAS with Docker.
 7. All configuration must be editable via both file (`data/config.yaml`) and UI.
 
@@ -38,6 +38,7 @@ A self-hosted personal book-price comparison and alerting tool that runs on a ho
 - Title/author search-driven add flow. Replaced for MVP by ISBN-pinning + ISBN/metadata lookup; full bookfinder-style search comes later.
 - Bulk import (CSV) and Amazon-wishlist import. Deferred.
 - Auto-dismiss of alerts when price rises. Manual dismiss only.
+- Telegram and Pushover push channels at MVP. Reserved as adapter slots; first push channel is ntfy.
 - Cross-source observation deduplication logic. Schema field is added now (`is_duplicate_of`); the actual dedup pass is deferred until we observe real overlap data.
 - Materialised `book_stats` table. Replaced by a SQL view + Python helper, both drift-free; can be swapped for a real table later if needed.
 - Multi-user / SaaS. Single-user, LAN-deployed, optional HTTP Basic.
@@ -54,7 +55,8 @@ A self-hosted personal book-price comparison and alerting tool that runs on a ho
 | Scale | ~20 books × multiple polls/day |
 | UI depth | Dashboard + alerts feed + stats; per-book detail with history chart |
 | Recommendation logic | Hybrid: percentile default + per-book target override |
-| Notifications | In-app feed + push (ntfy/Telegram/Pushover); per-kind, per-channel, per-book, per-quiet-hours toggles |
+| Notifications | In-app feed + push (MVP: ntfy; Telegram + Pushover deferred); per-kind, per-channel, per-book, per-quiet-hours toggles |
+| Auth posture | Tailscale-only access; app ships without auth (Basic remains optional) |
 | Add-book flow | Manual ISBN entry + title/author search (via OpenLibrary/Google Books) |
 | Tech stack | Python (FastAPI + SQLite + React/Vite + shadcn/ui + Recharts); Go source-CLIs from printing-press |
 | Approach | A — CLI-orchestrator (printing-press-aligned plugin model) |
@@ -458,7 +460,8 @@ class Notifier(ABC):
     @abstractmethod
     async def send(self, alert: Alert, book: Book) -> NotificationDelivery: ...
 
-# Concrete: InAppNotifier, NtfyNotifier, TelegramNotifier, PushoverNotifier
+# Concrete at MVP: InAppNotifier, NtfyNotifier
+# Reserved slots (post-MVP): TelegramNotifier, PushoverNotifier
 ```
 
 In-app always creates an `Alert` row. Other channels are best-effort: `asyncio.gather` across enabled notifiers; per-channel errors logged but non-fatal to the alert itself.
@@ -505,7 +508,7 @@ Each channel adapts to its own format.
 
 ### Auth
 
-LAN-only by default. Optional HTTP Basic via `APP_BASIC_AUTH_USER` / `APP_BASIC_AUTH_PASS` env vars (off when blank). Reverse proxy (Authelia, Tailscale Funnel, plain Nginx basic-auth) is the assumed external auth path.
+**Deployment assumes Tailscale-only access** — the app sits on the NAS reachable via Tailscale net, no public exposure. App-level auth is therefore off by default. HTTP Basic remains available via `APP_BASIC_AUTH_USER` / `APP_BASIC_AUTH_PASS` env vars (off when blank) for users on different topologies (LAN-direct or behind Authelia/Nginx basic-auth).
 
 ### OpenAPI
 
@@ -608,14 +611,16 @@ notifications:
       topic: ${NTFY_TOPIC}
       priority: default
       tags: [book, money]
-    telegram:
-      enabled: false
-      bot_token: ${TELEGRAM_BOT_TOKEN}
-      chat_id: ${TELEGRAM_CHAT_ID}
-    pushover:
-      enabled: false
-      user_key: ${PUSHOVER_USER_KEY}
-      app_token: ${PUSHOVER_APP_TOKEN}
+    # telegram + pushover deferred post-MVP — config block reserved so the
+    # adapter slot is obvious; channels won't appear in the UI until built.
+    # telegram:
+    #   enabled: false
+    #   bot_token: ${TELEGRAM_BOT_TOKEN}
+    #   chat_id: ${TELEGRAM_CHAT_ID}
+    # pushover:
+    #   enabled: false
+    #   user_key: ${PUSHOVER_USER_KEY}
+    #   app_token: ${PUSHOVER_APP_TOKEN}
 
 sources:
   bookfinder:
@@ -791,7 +796,7 @@ This sequence proves each layer end-to-end before the next:
 5. **Frontend baseline** — Vite + Tailwind + shadcn/ui scaffold, dashboard + add-book modal + book detail. OpenAPI-typed client.
 6. **Bookfinder via printing-press** — `/printing-press` generates `bookfinder-pp-cli`; wrap in `BookfinderSource(SubprocessSource)`. Confirm parity with WoB pipeline.
 7. **Amazon via printing-press** — same shape; condition-aware extraction.
-8. **Push notifications** — ntfy first (simplest), then Telegram, Pushover.
+8. **Push notifications — ntfy only at MVP**. Telegram and Pushover deferred; the `Notifier` interface is in place so they can land in a future iteration without core changes.
 9. **Settings UI** — sources tab, recommendation tab, notifications tab, advanced (Monaco) tab.
 10. **Multi-stage Dockerfile + compose + e2e smoke** — production-ready container.
 11. **Backups, observability polish, README**.
