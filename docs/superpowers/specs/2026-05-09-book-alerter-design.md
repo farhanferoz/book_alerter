@@ -758,6 +758,18 @@ tests/
 
 VCR cassettes are the brittleness firewall: recorded once per source, refreshed deliberately when a site changes (CI failure → re-record + commit).
 
+### Test fixtures
+
+User-supplied ISBNs for cassette recording, integration tests, and hand testing. The mix of ISBN-10 (4) + ISBN-13 (1) is intentional — exercises the `isbnlib` normalisation path.
+
+| ISBN (as given) | Form | Used for |
+|---|---|---|
+| `0241638194` | ISBN-10 | source happy-path |
+| `100904852X` | ISBN-10 | trailing-X normalisation |
+| `9789693531374` | ISBN-13 | non-Anglophone publisher prefix |
+| `024147941X` | ISBN-10 | second happy-path |
+| `0753560682` | ISBN-10 | third happy-path |
+
 Pre-commit: `ruff`, `ty`, fast unit tests. Heavy integration tier runs locally on demand.
 
 CI not required for MVP. Test layout maps directly to GitHub Actions later if desired.
