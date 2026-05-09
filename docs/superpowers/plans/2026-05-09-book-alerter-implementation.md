@@ -1065,14 +1065,14 @@ git commit -m "feat(db): price_observation table with is_duplicate_of self-FK"
 
 ---
 
-### Task 1.3: SourceRun, Alert, NotificationDelivery tables
+### Task 1.3: SourceRun, Alert, NotificationDelivery, BookSignalState tables
 
 **Files:**
 - Modify: `src/book_alerter/db/models.py`
 - Create: `src/book_alerter/db/migrations/versions/0003_source_run_alert_delivery.py`
 - Create: `tests/integration/test_run_alert_delivery_models.py`
 
-**Goal:** Three remaining tables created; one round-trip test per table.
+**Goal:** Four remaining tables created; one round-trip test per table. `BookSignalState` is added here (used by Phase 4 alert pipeline to remember the last-evaluated signal + all-time min — the alternative would be expensive recomputation, so we persist).
 
 - [ ] Append to `models.py`:
 
@@ -1110,10 +1110,19 @@ class NotificationDelivery(SQLModel, table=True):
     sent_at: datetime
     status: Literal["sent", "error"]
     error_message: str | None = None
+
+
+class BookSignalState(SQLModel, table=True):
+    """Persists the last-evaluated signal + all-time-min per book so the alert
+    pipeline can detect transitions without expensive recomputation."""
+    book_id: int = Field(primary_key=True, foreign_key="book.id")
+    last_signal: str | None = None
+    last_all_time_min_total_minor: int | None = None
+    last_evaluated_at: datetime | None = None
 ```
 
-- [ ] Write three small round-trip tests in `tests/integration/test_run_alert_delivery_models.py`. Each: create dependencies, insert, query back.
-- [ ] Generate + apply migration `0003_source_run_alert_delivery.py`.
+- [ ] Write four small round-trip tests in `tests/integration/test_run_alert_delivery_models.py`. Each: create dependencies, insert, query back.
+- [ ] Generate + apply migration `0003_source_run_alert_delivery.py` (the migration also covers `BookSignalState`; rename the migration filename if you prefer `0003_source_run_alert_delivery_signal_state.py`).
 - [ ] Commit.
 
 ---
@@ -1152,6 +1161,9 @@ latest_per_source AS (
     FROM non_dupes
 ),
 current_best AS (
+    -- When two sources tie at the same lowest price, deterministically prefer
+    -- the alphabetically-first source name. Otherwise the view returns
+    -- non-deterministic rows for ties.
     SELECT lp.book_id, lp.total_minor, lp.source, lp.condition, lp.seller, lp.url
     FROM latest_per_source lp
     JOIN (
@@ -1160,6 +1172,10 @@ current_best AS (
         WHERE rn = 1
         GROUP BY book_id
     ) best ON best.book_id = lp.book_id AND best.m = lp.total_minor AND lp.rn = 1
+    WHERE lp.source = (
+        SELECT MIN(source) FROM latest_per_source lp2
+        WHERE lp2.book_id = lp.book_id AND lp2.total_minor = lp.total_minor AND lp2.rn = 1
+    )
 ),
 agg AS (
     SELECT book_id,
@@ -1707,6 +1723,12 @@ class Scheduler:
         self._alert_pipeline = alert_pipeline
         self._sched = AsyncIOScheduler(timezone="UTC")
         self._consecutive_errors: dict[str, int] = {}
+        # When a source enters backoff, we set _backoff_until[name] to a future
+        # UTC datetime. _run_source checks this at entry and skips if not yet
+        # eligible. The cron job continues firing on its normal cadence; backoff
+        # is enforced by skipping rather than rescheduling, which avoids
+        # APScheduler's awkward "delay next run" semantics.
+        self._backoff_until: dict[str, datetime] = {}
 
     def start(self) -> None:
         for name, src in self._sources.items():
@@ -1740,6 +1762,11 @@ class Scheduler:
     async def _run_source(self, source_name: str) -> int:
         sc = self._cfg.sources[source_name]
         src = self._sources[source_name]
+        # Backoff gate: if we're inside the backoff window, skip this run.
+        bu = self._backoff_until.get(source_name)
+        if bu is not None and datetime.now(UTC) < bu:
+            log.info("source.skipped.backoff", source=source_name, until=bu.isoformat())
+            return 0
         with self._session_factory() as session:
             run = SourceRun(
                 source=source_name, started_at=datetime.now(UTC),
@@ -1792,7 +1819,12 @@ class Scheduler:
                     run.status = "error"
                 session.add(run); session.commit()
 
-            self._consecutive_errors[source_name] = 0 if succeeded > 0 else self._consecutive_errors.get(source_name, 0) + 1
+            if succeeded > 0:
+                self._consecutive_errors[source_name] = 0
+                self._backoff_until.pop(source_name, None)
+            else:
+                self._consecutive_errors[source_name] = self._consecutive_errors.get(source_name, 0) + 1
+                self._apply_backoff(source_name)
             await self._alert_pipeline(affected_book_ids)
         except Exception as e:
             log.error("source.run.exception",
@@ -1835,13 +1867,12 @@ class Scheduler:
         n = self._consecutive_errors.get(source_name, 0)
         if n <= sc.max_consecutive_errors:
             return
-        # Reschedule next run only — don't permanently change cron.
+        from datetime import timedelta
         delay_s = min(60 * (2 ** (n - sc.max_consecutive_errors)), 24 * 3600)
-        log.warning("source.backoff", source=source_name, delay_s=delay_s, errors=n)
-        self._sched.modify_job(f"source:{source_name}", next_run_time=datetime.now(UTC).replace(microsecond=0))
-        # Implementation note: APScheduler doesn't have a clean "delay next run"
-        # API; consider using a one-shot DateTrigger as a stopgap and re-installing
-        # the cron job on success. Documented as a follow-up if needed.
+        self._backoff_until[source_name] = datetime.now(UTC) + timedelta(seconds=delay_s)
+        log.warning("source.backoff",
+                    source=source_name, delay_s=delay_s, errors=n,
+                    until=self._backoff_until[source_name].isoformat())
 ```
 
 - [ ] Wire scheduler into lifespan (modify `app.py`):
@@ -1896,7 +1927,7 @@ async def test_scheduler_runs_wob_end_to_end(tmp_path):
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -1924,6 +1955,19 @@ class BookStats:
     observation_count: int
     days_of_history: int
     last_observed_at: datetime | None
+    sorted_totals: list[int] = field(default_factory=list)  # for arbitrary-percentile queries
+
+    def percentile_at(self, pct: int) -> int | None:
+        if not self.sorted_totals or not (1 <= pct <= 99):
+            return None
+        n = len(self.sorted_totals)
+        if n == 1:
+            return self.sorted_totals[0]
+        idx = pct / 100 * (n - 1)
+        lo, hi = int(idx), min(int(idx) + 1, n - 1)
+        frac = idx - lo
+        return int(self.sorted_totals[lo]
+                   + (self.sorted_totals[hi] - self.sorted_totals[lo]) * frac)
 
 
 def _percentiles(values: list[int]) -> tuple[int, int, int] | tuple[None, None, None]:
@@ -1981,6 +2025,7 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
         p25_total_minor=p25,
         p50_total_minor=p50,
         p75_total_minor=p75,
+        sorted_totals=sorted(totals),
     )
 ```
 
@@ -2025,8 +2070,9 @@ def compute_signal(book, stats: BookStats, cfg) -> Signal:
             return "BUY"
         # fall through to percentile evaluation
 
-    # threshold_pct can be 25, 50, etc. — pick the right percentile field.
-    p_field = {25: stats.p25_total_minor, 50: stats.p50_total_minor, 75: stats.p75_total_minor}.get(threshold_pct)
+    # threshold_pct is any integer percentile in 1..99; we compute it from the
+    # sorted-totals list carried inside BookStats so any value works (not just 25/50/75).
+    p_field = stats.percentile_at(threshold_pct)
     if p_field is None:
         return "INSUFFICIENT_DATA"
     if stats.current_best_total_minor <= p_field:
@@ -2036,7 +2082,28 @@ def compute_signal(book, stats: BookStats, cfg) -> Signal:
     return "WAIT"
 ```
 
-> Note: at present the implementation supports thresholds of 25/50/75. If the user wants other percentiles (e.g. 30), extend `_percentiles` and the lookup. Document this constraint in code.
+`BookStats` carries `sorted_totals: list[int]` so `percentile_at()` is a pure method — no session needed. Update `BookStats`:
+
+```python
+@dataclass
+class BookStats:
+    # ... existing fields ...
+    sorted_totals: list[int] = field(default_factory=list)
+
+    def percentile_at(self, pct: int) -> int | None:
+        if not self.sorted_totals or not (1 <= pct <= 99):
+            return None
+        # Linear-interpolated percentile (Type 7, NumPy default).
+        n = len(self.sorted_totals)
+        if n == 1:
+            return self.sorted_totals[0]
+        idx = pct / 100 * (n - 1)
+        lo, hi = int(idx), min(int(idx) + 1, n - 1)
+        frac = idx - lo
+        return int(self.sorted_totals[lo] + (self.sorted_totals[hi] - self.sorted_totals[lo]) * frac)
+```
+
+Populate `sorted_totals` in `compute_book_stats` from the same `totals` list already pulled for `_percentiles`. This unlocks per-book percentile thresholds beyond 25/50/75 — required because the Settings UI exposes the slider as 1–99.
 
 - [ ] Tests pass. Commit.
 
@@ -2187,14 +2254,17 @@ class AlertPipeline:
                 if book is None:
                     continue
                 stats = compute_book_stats(bid, session)
-                # Pull previous signal/all_time_min from second-most-recent observation set.
-                # For MVP, we approximate by storing the previous values on Book once we
-                # add columns; or by recomputing from observations excluding the latest.
-                # Simplest: recompute by excluding latest observation timestamp.
-                prev_stats = self._prev_stats(bid, session, stats.last_observed_at)
-                prev_signal = compute_signal(book, prev_stats, self.cfg.recommendation) if prev_stats.observation_count > 0 else None
+                # Read prior state from BookSignalState (introduced in Task 1.3).
+                # On first evaluation for a book the row is absent → treat prev_signal=None
+                # and prev_all_time_min=None, which means no transition can fire yet.
+                from book_alerter.db.models import BookSignalState
+                prev = session.exec(
+                    select(BookSignalState).where(BookSignalState.book_id == bid)
+                ).one_or_none()
+                prev_signal = prev.last_signal if prev else None
+                prev_all_time_min = prev.last_all_time_min_total_minor if prev else None
                 kinds = detect_alert_kinds(book, stats, prev_signal,
-                                           prev_stats.all_time_min_total_minor,
+                                           prev_all_time_min,
                                            self.cfg.recommendation)
                 # Filter via global per-kind toggle and per-book disabled.
                 kinds = [k for k in kinds
@@ -2218,13 +2288,20 @@ class AlertPipeline:
                     )
                     session.add(alert); session.commit(); session.refresh(alert)
                     await self._deliver(alert, book, session)
-                session.commit()
 
-    def _prev_stats(self, book_id, session, latest_ts) -> BookStats:
-        # naive: subtract the latest observation set from view by adjusting query
-        # for MVP, accept this simplification — we recompute stats from observations
-        # whose observed_at < latest_ts. Implementation detail elided here; flesh out.
-        ...
+                # Persist current state for next evaluation's transition detection.
+                from book_alerter.db.models import BookSignalState
+                cur_signal = compute_signal(book, stats, self.cfg.recommendation)
+                state = session.exec(
+                    select(BookSignalState).where(BookSignalState.book_id == bid)
+                ).one_or_none()
+                if state is None:
+                    state = BookSignalState(book_id=bid)
+                state.last_signal = cur_signal
+                state.last_all_time_min_total_minor = stats.all_time_min_total_minor
+                state.last_evaluated_at = datetime.now(UTC)
+                session.add(state)
+                session.commit()
 
     def _filter_dedup(self, book, kinds, session) -> list[AlertKind]:
         cutoff = datetime.now(UTC) - timedelta(hours=self.cfg.recommendation.alert_dedup_window_hours)
@@ -2340,7 +2417,7 @@ class NtfyNotifier(Notifier):
 
 **Goal:** During quiet hours (in user's tz), pushes are deferred — but the in-app `Alert` row is still created. On the next dispatcher pass after quiet hours end, deliver outstanding pushes.
 
-> **Implementation note:** the simplest approach is to mark `NotificationDelivery` as `"queued"` for non-inapp during quiet hours and have a small periodic task drain queued deliveries. For MVP, even simpler: skip non-inapp, log "deferred", and rely on the next alert-pipeline trigger to fire if the buy condition still holds.
+> **Implementation note (and known MVP deviation from spec):** the spec's literal behavior is "alerts still queued; pushes deferred to end of window." For MVP we apply the simpler rule: during quiet hours, **non-inapp channels are skipped entirely; the in-app `Alert` row is still written.** The next alert-pipeline trigger after quiet hours end will re-fire the alert *only if the buy condition still holds and the dedup window has passed*. The trade-off is that a one-shot transient buy signal that happened to land entirely inside quiet hours is lost from push channels (the in-app feed retains it). If/when this becomes a real complaint, swap in a `"queued"` `NotificationDelivery` status + a drain job. Documented in non-goals as a deferred refinement.
 
 - [ ] Test with `freezegun`: pin time inside quiet hours, assert ntfy not called; pin outside, assert it is.
 
@@ -2461,7 +2538,8 @@ This phase is mostly mechanical: one route group at a time, each backed by a sma
 ### Task 7.5: Config endpoints
 
 `GET /api/config` — Pydantic config as JSON.
-`PUT /api/config` — body is full or partial config; returns `{diff: {...}, applied: bool}`.
+`GET /api/config/schema` — `Config.model_json_schema()` for Monaco's live-validation in the Settings → Advanced tab (Phase 11.5).
+`PUT /api/config` — body is full or partial config plus optional `dry_run: bool` (default false). Always returns `{diff: {...}, applied: bool}`. When `dry_run=true`, validation runs and the diff is computed but the file is not written and the in-memory config is unchanged. When `dry_run=false` (default), the change is validated, atomically written to `data/config.yaml` (with rotating backup), and applied to `app.state.config`.
 
 ### Task 7.6: Metadata endpoints
 
@@ -2604,7 +2682,7 @@ npx shadcn@latest init     # accept defaults: Slate base, CSS variables, etc.
 npm install recharts @tanstack/react-query @monaco-editor/react clsx
 ```
 
-- [ ] Set Vite proxy for dev:
+- [ ] Set Vite proxy for dev AND configure tsconfig path aliases (shadcn's `init` requires both):
 
 ```ts
 // web/vite.config.ts
@@ -2620,6 +2698,19 @@ export default defineConfig({
   },
 });
 ```
+
+Add to `web/tsconfig.json` (`compilerOptions`) and `web/tsconfig.app.json` if Vite's split-config template was used:
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] }
+  }
+}
+```
+
+Without these, `npx shadcn@latest init` fails with "Could not find @ alias".
 
 - [ ] Scaffold a minimal `App.tsx` that fetches `/api/health` and renders the JSON.
 - [ ] Smoke test: run `uv run uvicorn book_alerter.app:app` and `npm run dev` in two terminals; visit `http://localhost:5173`; assert health JSON shows.
