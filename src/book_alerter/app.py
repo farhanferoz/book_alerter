@@ -5,10 +5,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from sqlmodel import Session
 
 from book_alerter.api import health
 from book_alerter.config import Config
+from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
+from book_alerter.scheduler import Scheduler
+from book_alerter.sources.registry import build_sources
 
 log = get_logger(__name__)
 
@@ -20,9 +24,29 @@ async def lifespan(app: FastAPI):
     cfg = Config.load(cfg_path)
     app.state.config = cfg
     log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
+
+    engine = get_engine()
+    sources = build_sources(cfg)
+
+    async def _noop_alert_pipeline(book_ids: list[int]) -> None:
+        # Phase 3.x placeholder; replaced in Phase 4 (alert detection).
+        return None
+
+    scheduler = Scheduler(
+        config=cfg,
+        sources=sources,
+        session_factory=lambda: Session(engine),
+        alert_pipeline=_noop_alert_pipeline,
+    )
+    scheduler.start()
+    app.state.scheduler = scheduler
+    app.state.engine = engine
+
     try:
         yield
     finally:
+        scheduler.shutdown()
+        engine.dispose()
         log.info("shutdown")
 
 
