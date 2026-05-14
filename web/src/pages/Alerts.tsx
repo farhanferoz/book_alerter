@@ -21,6 +21,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AlertFilters, type Filters } from "@/components/alerts/AlertFilters";
 import { AlertItem } from "@/components/alerts/AlertItem";
 import {
@@ -105,9 +106,9 @@ export function Alerts() {
 
       {alertsQuery.isLoading && (
         <div className="space-y-2">
-          <div className="h-20 animate-pulse rounded-md bg-muted/40" />
-          <div className="h-20 animate-pulse rounded-md bg-muted/40" />
-          <div className="h-20 animate-pulse rounded-md bg-muted/40" />
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-20" />
+          ))}
         </div>
       )}
 

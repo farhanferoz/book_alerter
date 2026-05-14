@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 
 import { AppShell } from "@/layout/AppShell";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Alerts } from "@/pages/Alerts";
 import { Dashboard } from "@/pages/Dashboard";
 import {
@@ -19,9 +20,7 @@ const BookDetail = lazy(() =>
 );
 
 function RouteSpinner() {
-  return (
-    <div className="h-32 animate-pulse rounded-md bg-muted/40" aria-hidden />
-  );
+  return <Skeleton className="h-32" aria-hidden />;
 }
 
 function App() {

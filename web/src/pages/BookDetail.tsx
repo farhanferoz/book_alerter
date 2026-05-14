@@ -12,7 +12,7 @@
 
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError } from "@/api/client";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ActionBar } from "@/components/books/detail/ActionBar";
 import { HeaderCard } from "@/components/books/detail/HeaderCard";
 import { HistoryChart } from "@/components/books/detail/HistoryChart";
@@ -21,6 +21,7 @@ import { SignalCard } from "@/components/books/detail/SignalCard";
 import { SnapshotCard } from "@/components/books/detail/SnapshotCard";
 import { SourceBreakdown } from "@/components/books/detail/SourceBreakdown";
 import { useBook, useBookObservations } from "@/hooks/useBook";
+import { formatErrorMessage } from "@/lib/utils";
 
 function NotFound() {
   return (
@@ -37,28 +38,22 @@ function NotFound() {
 }
 
 function ErrorBox({ error }: { error: unknown }) {
-  const message =
-    error instanceof ApiError
-      ? `${error.status} — ${error.message}`
-      : error instanceof Error
-        ? error.message
-        : String(error);
   return (
     <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-      Failed to load book: {message}
+      Failed to load book: {formatErrorMessage(error)}
     </div>
   );
 }
 
-function Skeleton() {
+function PageSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="h-32 animate-pulse rounded-md bg-muted/40" />
+      <Skeleton className="h-32" />
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="h-32 animate-pulse rounded-md bg-muted/40" />
-        <div className="h-32 animate-pulse rounded-md bg-muted/40" />
+        <Skeleton className="h-32" />
+        <Skeleton className="h-32" />
       </div>
-      <div className="h-72 animate-pulse rounded-md bg-muted/40" />
+      <Skeleton className="h-72" />
     </div>
   );
 }
@@ -75,10 +70,10 @@ export function BookDetail() {
   const obsQuery = useBookObservations(validId);
 
   if (validId == null) return <NotFound />;
-  if (bookQuery.isLoading) return <Skeleton />;
+  if (bookQuery.isLoading) return <PageSkeleton />;
   if (bookQuery.error?.status === 404) return <NotFound />;
   if (bookQuery.isError) return <ErrorBox error={bookQuery.error} />;
-  if (!bookQuery.data) return <Skeleton />;
+  if (!bookQuery.data) return <PageSkeleton />;
 
   const book = bookQuery.data;
   const observations = obsQuery.data?.items ?? [];

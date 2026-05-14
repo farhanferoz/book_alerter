@@ -26,6 +26,7 @@ import {
   type LegendPayload,
 } from "recharts";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import type { PriceObservation } from "@/hooks/useBook";
 import { formatDateTime, formatMoneyMinor } from "@/lib/format";
 
@@ -182,7 +183,7 @@ export function HistoryChart({
 
       <div className="mt-3 h-64">
         {isLoading ? (
-          <div className="h-full animate-pulse rounded bg-muted/40" />
+          <Skeleton className="h-full rounded" />
         ) : rows.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             No price history in this window.

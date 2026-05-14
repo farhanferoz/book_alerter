@@ -9,11 +9,7 @@
 
 import type { Book } from "@/hooks/useBook";
 import { formatMoneyMinor } from "@/lib/format";
-import {
-  SIGNAL_LABEL,
-  SIGNAL_PILL_CLASS,
-  approximateSignal,
-} from "@/components/books/signal";
+import { SignalPill, approximateSignal } from "@/components/books/signal";
 
 // Coarse percentile bucket from p25/p50/p75. Returns a human-readable string.
 // The backend's `percentile_at()` does proper linear interpolation against
@@ -59,11 +55,7 @@ export function SignalCard({ book }: { book: Book }) {
         <h2 className="text-xs font-medium uppercase text-muted-foreground">
           Signal
         </h2>
-        <span
-          className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SIGNAL_PILL_CLASS[signal]}`}
-        >
-          {SIGNAL_LABEL[signal]}
-        </span>
+        <SignalPill signal={signal} />
       </div>
 
       {signal === "INSUFFICIENT_DATA" ? (

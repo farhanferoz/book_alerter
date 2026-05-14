@@ -1,6 +1,13 @@
+/* eslint-disable react-hooks/incompatible-library */
 // Generic table wrapper built on TanStack Table + shadcn `<Table>`. Mirrors
 // the shadcn data-table pattern (https://ui.shadcn.com/docs/components/data-table)
 // kept lean so it can be reused for alerts/observations in later phases.
+//
+// The eslint disable above silences `react-hooks/incompatible-library` on
+// `useReactTable` — TanStack Table returns non-memoizable functions, which is
+// a known quirk that the React Compiler advisory flags. Not actionable on our
+// side; the disable matches the precedent set in `button.tsx`, `columns.tsx`,
+// and `BookFilters.tsx` (phases 9-simplify, 10.1).
 
 import {
   flexRender,

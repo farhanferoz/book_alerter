@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 
 type BookMetadata = components["schemas"]["BookMetadata"];
 type BookOut = components["schemas"]["BookOut"];
@@ -198,10 +199,10 @@ function AddBookForm({ onDone }: { onDone: () => void }) {
       {/* Metadata preview / status */}
       {lookup.isPending && lookupKey !== null && (
         <div className="flex gap-3 rounded-md border border-border p-3">
-          <div className="h-16 w-12 animate-pulse rounded bg-muted/60" />
+          <Skeleton className="h-16 w-12 rounded" tone="muted" />
           <div className="flex flex-1 flex-col gap-2">
-            <div className="h-4 w-3/4 animate-pulse rounded bg-muted/60" />
-            <div className="h-3 w-1/2 animate-pulse rounded bg-muted/60" />
+            <Skeleton className="h-4 w-3/4 rounded" tone="muted" />
+            <Skeleton className="h-3 w-1/2 rounded" tone="muted" />
           </div>
         </div>
       )}

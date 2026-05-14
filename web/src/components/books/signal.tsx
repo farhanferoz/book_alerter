@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // Client-side approximation of `book_alerter.stats.compute_signal`.
 //
 // The exact backend computation needs `RecommendationConfig` (buy_percentile,
@@ -71,3 +72,16 @@ export const SIGNAL_PILL_CLASS: Record<Signal, string> = {
   INSUFFICIENT_DATA:
     "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400",
 };
+
+// Shared pill renderer used by the dashboard column and the book-detail
+// Signal card. Both call sites previously inlined the identical span; the
+// component keeps the wire-up in one place.
+export function SignalPill({ signal }: { signal: Signal }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SIGNAL_PILL_CLASS[signal]}`}
+    >
+      {SIGNAL_LABEL[signal]}
+    </span>
+  );
+}

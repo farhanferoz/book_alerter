@@ -16,22 +16,7 @@ import { Link } from "react-router-dom";
 
 import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
-import {
-  approximateSignal,
-  SIGNAL_LABEL,
-  SIGNAL_PILL_CLASS,
-  type Signal,
-} from "./signal";
-
-function SignalPill({ signal }: { signal: Signal }) {
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SIGNAL_PILL_CLASS[signal]}`}
-    >
-      {SIGNAL_LABEL[signal]}
-    </span>
-  );
-}
+import { SignalPill, approximateSignal, type Signal } from "./signal";
 
 function ConditionPill({ condition }: { condition: string | null }) {
   if (!condition) return null;

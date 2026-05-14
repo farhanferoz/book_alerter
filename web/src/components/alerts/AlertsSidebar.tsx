@@ -8,6 +8,7 @@
 
 import { Link } from "react-router-dom";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { useAlerts, useDismissAlert } from "@/hooks/useAlerts";
 import { useBooks } from "@/hooks/useBooks";
 
@@ -38,9 +39,9 @@ export function AlertsSidebar() {
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pr-1">
         {alertsQuery.isLoading && (
           <div className="space-y-2">
-            <div className="h-16 animate-pulse rounded-md bg-muted/40" />
-            <div className="h-16 animate-pulse rounded-md bg-muted/40" />
-            <div className="h-16 animate-pulse rounded-md bg-muted/40" />
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-16" />
+            ))}
           </div>
         )}
 

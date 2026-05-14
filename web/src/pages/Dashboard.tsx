@@ -7,14 +7,15 @@
 
 import { useMemo, useState } from "react";
 
-import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AddBookModal } from "@/components/books/AddBookModal";
 import { BookFilters, DEFAULT_FILTERS, type BookFiltersValue } from "@/components/books/BookFilters";
 import { DataTable } from "@/components/books/BookTable";
 import { bookColumns } from "@/components/books/columns";
 import { approximateSignal, type Signal } from "@/components/books/signal";
 import { useBooks, type Book } from "@/hooks/useBooks";
+import { formatErrorMessage } from "@/lib/utils";
 
 const SIGNAL_ORDER: Record<Signal, number> = {
   TARGET_HIT: 0,
@@ -74,11 +75,7 @@ function SkeletonRows() {
   return (
     <div className="space-y-2">
       {[0, 1, 2, 3].map((i) => (
-        <div
-          key={i}
-          className="h-12 animate-pulse rounded-md bg-muted/60"
-          aria-hidden
-        />
+        <Skeleton key={i} className="h-12" tone="muted" aria-hidden />
       ))}
     </div>
   );
@@ -99,15 +96,9 @@ function EmptyState({ onAddBook }: { onAddBook: () => void }) {
 }
 
 function ErrorCard({ error }: { error: unknown }) {
-  const message =
-    error instanceof ApiError
-      ? `${error.status} — ${error.message}`
-      : error instanceof Error
-        ? error.message
-        : String(error);
   return (
     <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-      Failed to load books: {message}
+      Failed to load books: {formatErrorMessage(error)}
     </div>
   );
 }
