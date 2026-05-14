@@ -16,6 +16,7 @@ from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
 )
+from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
 
 # Bookfinder.com is fronted by AWS WAF and uses the `mp_verify` challenge variant
@@ -40,17 +41,6 @@ _CONDITION_RE = re.compile(
     re.IGNORECASE,
 )
 _SHIPPING_LABEL_RE = re.compile(r"shipping:\s*", re.IGNORECASE)
-
-# Granular condition strings, in priority order. Match against the lowercased
-# grade text from `Condition: Used - <grade>` and pick the first hit.
-_GRADE_TO_CONDITION: list[tuple[str, Condition]] = [
-    ("like new", "used_vg"),
-    ("very good", "used_vg"),
-    ("good", "used_g"),
-    ("acceptable", "used_acceptable"),
-    ("fair", "used_acceptable"),
-    ("poor", "used_acceptable"),
-]
 
 _CURRENCY_FROM_SYMBOL: dict[str, str] = {"£": "GBP", "$": "USD", "€": "EUR", "¥": "JPY"}
 
@@ -229,14 +219,10 @@ def _resolve_condition(card_text: str, base: str) -> Condition:
     if m is None:
         return "new" if base == "NEW" else "unknown"
     base_word = (m.group(1) or "").lower()
-    grade = (m.group(2) or "").strip().lower()
+    grade = (m.group(2) or "")
     if base_word == "new":
         return "new"
-    if grade:
-        for needle, mapped in _GRADE_TO_CONDITION:
-            if needle in grade:
-                return mapped
-    return "unknown"
+    return condition_from_grade_text(grade)
 
 
 def _format_seller(affiliate: str, specific: str) -> str:

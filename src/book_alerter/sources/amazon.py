@@ -15,6 +15,7 @@ from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
 )
+from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
@@ -42,23 +43,9 @@ from book_alerter.sources.inline_source import InlineSource
 #                      #aod-offer-heading (h5 text with the condition),
 #                      #aod-offer-soldBy (seller link text).
 
-_PRICE_RE = re.compile(r"&pound;|£\s*(\d+(?:\.\d{1,2})?)")
-# A simpler pure-pence extractor: tolerates "£7.99" or "&pound;7.99" (raw HTML)
-# or just "7.99" depending on which DOM branch served the text.
+# Tolerates "£7.99" / "&pound;7.99" / "7.99" — whichever DOM branch we end
+# up reading.
 _PRICE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d{1,2})?)")
-
-# Granular condition strings, in priority order. Matched against the lowercased
-# heading text from offer rows ("Used - Very Good", "New", etc.).
-# Mirrors bookfinder.py's _GRADE_TO_CONDITION. Will be unified across sources
-# in the post-8.3 simplify pass (3 sources now exist).
-_GRADE_TO_CONDITION: list[tuple[str, Condition]] = [
-    ("like new", "used_vg"),
-    ("very good", "used_vg"),
-    ("good", "used_g"),
-    ("acceptable", "used_acceptable"),
-    ("fair", "used_acceptable"),
-    ("poor", "used_acceptable"),
-]
 
 _BOT_MARKERS: tuple[str, ...] = (
     "Type the characters you see",
@@ -97,21 +84,8 @@ class AmazonUKInlineSource(InlineSource):
 
     async def fetch(self, book: Book) -> list[ObservationCandidate]:
         dp = self.dp_url(book.isbn13)
-        dp_html = await self._render(async_playwright, dp)
-        offers = parse_dp(dp_html, dp)
-        if offers:
-            return offers
-
         ol = self.offer_listing_url(book.isbn13)
-        ol_html = await self._render(async_playwright, ol)
-        return parse_offer_listing(ol_html, ol)
-
-    async def _render(self, playwright_factory, url: str) -> str:
-        """Open headless Chromium, navigate to url, return rendered HTML.
-
-        Split out so tests can monkeypatch the playwright_factory.
-        """
-        async with playwright_factory() as pw:
+        async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
@@ -121,32 +95,56 @@ class AmazonUKInlineSource(InlineSource):
                     viewport={"width": 1366, "height": 768},
                     locale="en-GB",
                 )
-                page = await context.new_page()
-                try:
-                    await page.goto(
-                        url, wait_until="domcontentloaded", timeout=self.timeout_s * 1000
-                    )
-                except PlaywrightTimeoutError as e:
-                    raise SourceError(self.name, f"navigation timed out: {e}") from e
-                # Wait for either a buy-box price or an AOD offer to appear.
-                # Selector-timeout is fine — capture content and let the parser
-                # decide whether to fall back / report empty.
-                try:
-                    await page.wait_for_selector(
+                dp_html = await self._render_page(
+                    context,
+                    dp,
+                    wait_selector=(
                         "#corePriceDisplay_desktop_feature_div, "
                         "#corePrice_feature_div, "
-                        "#aod-offer-list, "
-                        ".olpOfferList, "
-                        ".a-price .a-offscreen",
-                        timeout=self.timeout_s * 1000,
-                        state="attached",
-                    )
-                except PlaywrightTimeoutError:
-                    pass
-                html = await page.content()
+                        ".a-price .a-offscreen"
+                    ),
+                    # Buy-box renders fast; missing selector means no buy-box
+                    # here, fall back rather than burn the full timeout.
+                    wait_ms=min(10_000, int(self.timeout_s * 1000)),
+                )
+                offers = parse_dp(dp_html, dp)
+                if offers:
+                    return offers
+                ol_html = await self._render_page(
+                    context,
+                    ol,
+                    wait_selector="#aod-offer-list, .olpOfferList",
+                    wait_ms=int(self.timeout_s * 1000),
+                )
+                return parse_offer_listing(ol_html, ol)
             finally:
                 await browser.close()
 
+    async def _render_page(
+        self,
+        context,
+        url: str,
+        *,
+        wait_selector: str,
+        wait_ms: int,
+    ) -> str:
+        """Open a page in `context`, navigate, return HTML after wait.
+
+        Selector-timeout is fine — capture content and let the parser decide
+        whether to fall back / report empty.
+        """
+        page = await context.new_page()
+        try:
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=self.timeout_s * 1000
+            )
+        except PlaywrightTimeoutError as e:
+            raise SourceError(self.name, f"navigation timed out: {e}") from e
+        try:
+            await page.wait_for_selector(wait_selector, timeout=wait_ms, state="attached")
+        except PlaywrightTimeoutError:
+            pass
+        html = await page.content()
         for marker in _BOT_MARKERS:
             if marker in html:
                 raise SourceError(
@@ -167,7 +165,6 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
         return []
     tree = HTMLParser(html)
 
-    # Hunt for the buy-box price container.
     price_node: Node | None = None
     for sel in (
         "#corePriceDisplay_desktop_feature_div",
@@ -175,9 +172,8 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
         "#priceblock_ourprice",
         "#price",
     ):
-        node = tree.css_first(sel)
-        if node is not None:
-            price_node = node
+        price_node = tree.css_first(sel)
+        if price_node is not None:
             break
     if price_node is None:
         return []
@@ -241,35 +237,16 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
 
 
 def _extract_price_minor(scope: Node) -> int | None:
-    """Pull the price in pence from a scope node.
+    """Pull the price in pence from a `.a-price .a-offscreen` node under `scope`.
 
-    Prefers `.a-offscreen` (screen-reader-friendly full price like "£7.99").
-    Falls back to combining `.a-price-whole` + `.a-price-fraction` if the
-    offscreen text is missing or empty.
+    Amazon's price markup always pairs the visible `.a-price-whole/.a-price-fraction`
+    spans with a screen-reader `.a-offscreen` carrying the full "£7.99" string;
+    we read the latter.
     """
     for off in scope.css(".a-price .a-offscreen"):
-        text = (off.text() or "").strip()
-        minor = _parse_gbp_to_minor(text)
+        minor = _parse_gbp_to_minor((off.text() or "").strip())
         if minor is not None:
             return minor
-
-    whole = scope.css_first(".a-price-whole")
-    fraction = scope.css_first(".a-price-fraction")
-    if whole is not None:
-        try:
-            whole_n = int(re.sub(r"[^0-9]", "", whole.text() or ""))
-        except ValueError:
-            return None
-        frac_n = 0
-        if fraction is not None:
-            try:
-                frac_n = int(re.sub(r"[^0-9]", "", fraction.text() or "") or "0")
-            except ValueError:
-                frac_n = 0
-        # Normalise single-digit fractions ("9" -> 90 pence).
-        if frac_n < 10:
-            frac_n *= 10
-        return whole_n * 100 + frac_n
     return None
 
 
@@ -301,36 +278,18 @@ def _extract_shipping_minor(row: Node) -> int | None:
 
 def _extract_condition(row: Node) -> Condition:
     """Map the row's heading text ("Used - Very Good" etc.) to our enum."""
-    heading = row.css_first("#aod-offer-heading h5")
-    if heading is None:
-        heading = row.css_first("#aod-offer-heading")
-    if heading is None:
-        return "unknown"
-    text = (heading.text() or "").strip().lower()
-    if not text:
-        return "unknown"
-    if "new" in text and "like new" not in text and "used" not in text:
-        return "new"
-    for needle, mapped in _GRADE_TO_CONDITION:
-        if needle in text:
-            return mapped
-    return "unknown"
+    heading = row.css_first("#aod-offer-heading h5") or row.css_first("#aod-offer-heading")
+    return condition_from_grade_text(heading.text() or "") if heading else "unknown"
 
 
 def _extract_offer_seller(row: Node) -> str:
-    node = row.css_first("#aod-offer-soldBy a")
-    if node is None:
-        node = row.css_first("#aod-offer-soldBy")
-    if node is None:
-        return "?"
-    return (node.text() or "").strip() or "?"
+    node = row.css_first("#aod-offer-soldBy a") or row.css_first("#aod-offer-soldBy")
+    return _node_text(node) or "?"
 
 
 def _extract_clickout(row: Node, fallback_url: str) -> str:
     for anchor in row.css("a[href]"):
         href = anchor.attributes.get("href") or ""
-        if not href:
-            continue
         if href.startswith("http"):
             return href
         if href.startswith("/"):
@@ -339,14 +298,13 @@ def _extract_clickout(row: Node, fallback_url: str) -> str:
 
 
 def _extract_dp_seller(tree: HTMLParser) -> str:
-    node = tree.css_first("#merchant-info a")
-    if node is not None:
-        text = (node.text() or "").strip()
-        if text:
-            return text
-    node = tree.css_first("#merchant-info")
-    if node is not None:
-        text = (node.text() or "").strip()
-        if text:
-            return text
-    return "Amazon"
+    return (
+        _node_text(tree.css_first("#merchant-info a"))
+        or _node_text(tree.css_first("#merchant-info"))
+        or "Amazon"
+    )
+
+
+def _node_text(node: Node | None) -> str:
+    """Stripped inner text from a node, or '' if the node is None / empty."""
+    return (node.text() or "").strip() if node is not None else ""

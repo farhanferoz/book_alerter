@@ -11,8 +11,8 @@ from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
 )
+from book_alerter.sources.condition_normalizers import condition_from_token
 from book_alerter.sources.inline_source import InlineSource
-
 
 # WoB (a Shopify storefront) embeds product data as a JS object literal
 # `var meta = {...};` containing a `product.variants` array. Each variant has
@@ -22,17 +22,6 @@ from book_alerter.sources.inline_source import InlineSource
 #
 # This is far more stable than CSS selectors against the rendered HTML.
 _META_RE = re.compile(r"var\s+meta\s*=\s*(\{)", re.DOTALL)
-
-# Maps WoB's internal condition tokens (uppercased, underscore-separated) to
-# our Condition literal. Discovered empirically from the captured cassette.
-_CONDITION_MAP: dict[str, Condition] = {
-    "NEW": "new",
-    "LIKE_NEW": "used_vg",
-    "VERY_GOOD": "used_vg",
-    "GOOD": "used_g",
-    "WELL_READ": "used_acceptable",
-    "ACCEPTABLE": "used_acceptable",
-}
 
 
 def _extract_meta_json(html: str) -> dict | None:
@@ -72,11 +61,10 @@ def _extract_meta_json(html: str) -> dict | None:
 
 def _condition_from_title(public_title: str) -> Condition:
     """public_title is `REGION / CONDITION / SUPPLIER` — extract the middle slug."""
-    parts = [p.strip() for p in public_title.split("/")]
+    parts = public_title.split("/")
     if len(parts) < 2:
         return "unknown"
-    token = parts[1].upper()
-    return _CONDITION_MAP.get(token, "unknown")
+    return condition_from_token(parts[1])
 
 
 class WobInlineSource(InlineSource):

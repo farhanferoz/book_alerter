@@ -16,6 +16,7 @@ import pytest
 
 from book_alerter.db.models import Book
 from book_alerter.sources.bookfinder import BookfinderInlineSource
+from tests.integration.sources.helpers import make_fake_playwright_factory
 
 FIXTURE_GB = (
     Path(__file__).resolve().parents[2]
@@ -68,40 +69,10 @@ def test_waf_challenge_raises_source_error() -> None:
     )
 
     src = BookfinderInlineSource(region="UK")
-    fake_factory = _make_fake_playwright_factory(waf_html)
+    fake_factory = make_fake_playwright_factory(waf_html)
 
     with pytest.raises(SourceError, match="WAF challenge persisted"):
         asyncio.run(src._render(fake_factory, "https://www.bookfinder.com/"))
-
-
-def _make_fake_playwright_factory(html_to_return: str):
-    """Build a fake `async_playwright` callable matching the API surface
-    `_render` uses: factory()(async ctx mgr) → pw.chromium.launch() → browser
-    with new_context() → context with new_page() → page with goto / wait_for_selector / content.
-    """
-    class _Page:
-        async def goto(self, *a, **kw): return None
-        async def wait_for_selector(self, *a, **kw): return None
-        async def content(self): return html_to_return
-
-    class _Context:
-        async def new_page(self): return _Page()
-
-    class _Browser:
-        async def new_context(self, **kw): return _Context()
-        async def close(self): return None
-
-    class _Chromium:
-        async def launch(self, **kw): return _Browser()
-
-    class _PW:
-        chromium = _Chromium()
-
-    class _Factory:
-        async def __aenter__(self): return _PW()
-        async def __aexit__(self, *a): return None
-
-    return lambda: _Factory()
 
 
 def test_search_url_includes_required_params() -> None:

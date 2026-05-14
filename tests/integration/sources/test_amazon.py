@@ -1,7 +1,7 @@
 """Integration tests for AmazonUKInlineSource.
 
-Playwright/Chromium fetch is mocked at the `_render` boundary so the test
-exercises the full Source contract (fetch -> parse -> ObservationCandidate
+Playwright/Chromium fetch is mocked at the `_render_page` boundary so the
+test exercises the full Source contract (fetch -> parse -> ObservationCandidate
 list) without launching a browser. The dp -> offer-listing fallback path
 gets its own test.
 
@@ -20,6 +20,7 @@ import pytest
 
 from book_alerter.db.models import Book
 from book_alerter.sources.amazon import AmazonUKInlineSource
+from tests.integration.sources.helpers import make_fake_playwright_factory
 
 FIXTURE_DIR = (
     Path(__file__).resolve().parents[2] / "fixtures" / "amazon"
@@ -37,6 +38,27 @@ def _hp_book() -> Book:
     )
 
 
+def _install_fake_render_page(monkeypatch: pytest.MonkeyPatch, by_url: dict[str, str]) -> list[str]:
+    """Patch `_render_page` to return canned HTML keyed by url-substring; return the call log."""
+    calls: list[str] = []
+
+    async def fake_render_page(self, context, url: str, *, wait_selector, wait_ms):
+        calls.append(url)
+        for marker, html in by_url.items():
+            if marker in url:
+                return html
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(AmazonUKInlineSource, "_render_page", fake_render_page)
+    # Also bypass the real browser launch — `fetch` opens a chromium context;
+    # we replace `async_playwright` with the fake factory so no binary is needed.
+    monkeypatch.setattr(
+        "book_alerter.sources.amazon.async_playwright",
+        make_fake_playwright_factory(""),
+    )
+    return calls
+
+
 def test_dp_url_and_offer_listing_url() -> None:
     src = AmazonUKInlineSource(region="UK")
     assert src.dp_url("9780747532699") == "https://www.amazon.co.uk/dp/9780747532699"
@@ -51,18 +73,19 @@ def test_non_uk_region_rejected() -> None:
         AmazonUKInlineSource(region="US")
 
 
-def test_fetch_returns_observation_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mock the dp render and verify Source contract end-to-end."""
-    html = FIXTURE_DP.read_text(encoding="utf-8")
+def test_fetch_returns_dp_offer_when_buybox_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dp page with a usable buy-box: return that, never hit offer-listing."""
+    calls = _install_fake_render_page(
+        monkeypatch, {"/dp/": FIXTURE_DP.read_text(encoding="utf-8")}
+    )
 
-    async def fake_render(self, playwright_factory, url: str) -> str:
-        assert "9780747532699" in url
-        assert "amazon.co.uk/dp/" in url
-        return html
-
-    monkeypatch.setattr(AmazonUKInlineSource, "_render", fake_render)
     src = AmazonUKInlineSource(region="UK")
     offers = asyncio.run(src.fetch(_hp_book()))
+
+    assert len(calls) == 1
+    assert "/dp/" in calls[0]
     assert len(offers) == 1
     o = offers[0]
     assert o.price_minor == 799
@@ -72,20 +95,14 @@ def test_fetch_returns_observation_candidates(monkeypatch: pytest.MonkeyPatch) -
 
 def test_fetch_falls_back_to_offer_listing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Empty buy-box on dp -> source must follow up with offer-listing fetch."""
-    dp_no_price = FIXTURE_DP_NO_PRICE.read_text(encoding="utf-8")
-    ol_html = FIXTURE_OFFER_LISTING.read_text(encoding="utf-8")
+    calls = _install_fake_render_page(
+        monkeypatch,
+        {
+            "/dp/": FIXTURE_DP_NO_PRICE.read_text(encoding="utf-8"),
+            "/gp/offer-listing/": FIXTURE_OFFER_LISTING.read_text(encoding="utf-8"),
+        },
+    )
 
-    calls: list[str] = []
-
-    async def fake_render(self, playwright_factory, url: str) -> str:
-        calls.append(url)
-        if "/dp/" in url:
-            return dp_no_price
-        if "/gp/offer-listing/" in url:
-            return ol_html
-        raise AssertionError(f"unexpected url {url}")
-
-    monkeypatch.setattr(AmazonUKInlineSource, "_render", fake_render)
     src = AmazonUKInlineSource(region="UK")
     offers = asyncio.run(src.fetch(_hp_book()))
 
@@ -93,36 +110,14 @@ def test_fetch_falls_back_to_offer_listing(monkeypatch: pytest.MonkeyPatch) -> N
     assert "/dp/" in calls[0]
     assert "/gp/offer-listing/" in calls[1]
     assert len(offers) == 4
-    # All four rows from the offer-listing fixture should be present.
     sellers = {o.seller for o in offers}
     assert sellers == {"Amazon", "BetterWorldBooksUK", "WorldOfBooks Ltd", "MusicMagpie"}
 
 
-def test_fetch_does_not_fall_back_when_dp_has_price(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Sanity: if dp has a usable buy-box, the offer-listing page is never hit."""
-    dp_html = FIXTURE_DP.read_text(encoding="utf-8")
-    calls: list[str] = []
-
-    async def fake_render(self, playwright_factory, url: str) -> str:
-        calls.append(url)
-        return dp_html
-
-    monkeypatch.setattr(AmazonUKInlineSource, "_render", fake_render)
-    src = AmazonUKInlineSource(region="UK")
-    offers = asyncio.run(src.fetch(_hp_book()))
-
-    assert len(calls) == 1
-    assert "/dp/" in calls[0]
-    assert len(offers) == 1
-
-
 def test_bot_check_raises_source_error() -> None:
     """If Playwright fails to clear Amazon's anti-bot, the rendered HTML
-    contains a known marker — `_render` must raise SourceError so the caller
-    can alert rather than silently emit zero offers (indistinguishable from
-    'no listings')."""
+    contains a known marker — `_render_page` must raise SourceError so the
+    caller can alert rather than silently emit zero offers."""
     from book_alerter.sources.base import SourceError
 
     bot_html = (
@@ -132,37 +127,19 @@ def test_bot_check_raises_source_error() -> None:
     )
 
     src = AmazonUKInlineSource(region="UK")
-    fake_factory = _make_fake_playwright_factory(bot_html)
+    fake_factory = make_fake_playwright_factory(bot_html)
+
+    async def _drive() -> None:
+        async with fake_factory() as pw:
+            browser = await pw.chromium.launch()
+            context = await browser.new_context()
+            await src._render_page(
+                context, "https://www.amazon.co.uk/dp/x",
+                wait_selector="x", wait_ms=1000,
+            )
 
     with pytest.raises(SourceError, match="bot-protection challenge persisted"):
-        asyncio.run(src._render(fake_factory, "https://www.amazon.co.uk/dp/x"))
-
-
-def _make_fake_playwright_factory(html_to_return: str):
-    """Adapted from tests/integration/sources/test_bookfinder.py."""
-    class _Page:
-        async def goto(self, *a, **kw): return None
-        async def wait_for_selector(self, *a, **kw): return None
-        async def content(self): return html_to_return
-
-    class _Context:
-        async def new_page(self): return _Page()
-
-    class _Browser:
-        async def new_context(self, **kw): return _Context()
-        async def close(self): return None
-
-    class _Chromium:
-        async def launch(self, **kw): return _Browser()
-
-    class _PW:
-        chromium = _Chromium()
-
-    class _Factory:
-        async def __aenter__(self): return _PW()
-        async def __aexit__(self, *a): return None
-
-    return lambda: _Factory()
+        asyncio.run(_drive())
 
 
 @pytest.mark.skipif(
