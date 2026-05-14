@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import Column, JSON, String
+from sqlalchemy import Column, Index, JSON, String
 from sqlmodel import Field, SQLModel
 
 
@@ -27,3 +27,26 @@ class Book(SQLModel, table=True):
     muted_until: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PriceObservation(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    book_id: int = Field(foreign_key="book.id", index=True)
+    source: str
+    seller: str | None = None
+    condition: Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    price_minor: int
+    currency: str
+    shipping_minor: int | None = None
+    total_minor: int
+    url: str
+    observed_at: datetime = Field(index=True)
+    raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    is_duplicate_of: int | None = Field(default=None, foreign_key="priceobservation.id")
+
+    __table_args__ = (
+        Index("ix_obs_book_observed", "book_id", "observed_at"),
+        Index("ix_obs_book_source_observed", "book_id", "source", "observed_at"),
+    )
