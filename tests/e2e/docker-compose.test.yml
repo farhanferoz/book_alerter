@@ -1,0 +1,38 @@
+# E2E smoke-test compose definition.
+#
+# Mirrors the production docker-compose.yml, with three deliberate changes:
+#   1. tmpfs at /app/data — DB + config are volatile, so each test boot
+#      starts from an empty slate and nothing leaks onto the host.
+#   2. Port 18000 (instead of 8000) to avoid clashing with a running prod
+#      compose stack on a dev machine.
+#   3. Distinct container name (`book_alerter_e2e`) so `docker compose down`
+#      from the prod compose doesn't tear this down by accident.
+#
+# Build context is the repo root (two levels up from this file). The image
+# tag matches prod compose so the test reuses the already-built image when
+# available; build is a no-op cache hit in that case.
+
+services:
+  book_alerter:
+    build: ../..
+    image: book_alerter:dev
+    container_name: book_alerter_e2e
+    ports:
+      - "18000:8000"
+    tmpfs:
+      # uid/gid match pwuser inside the image (see Dockerfile USER pwuser).
+      # Without these, the tmpfs mount is owned by root and the unprivileged
+      # entrypoint can't create /app/data/{logs,backups,book_alerter.db}.
+      - /app/data:size=64m,uid=1001,gid=1001
+    init: true
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

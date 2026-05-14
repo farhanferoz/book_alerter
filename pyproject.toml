@@ -43,6 +43,12 @@ packages = ["src/book_alerter"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# E2E Docker-smoke tests boot a real container and are slow + require
+# docker; default runs skip them. Opt in with `pytest -m e2e tests/e2e/`.
+markers = [
+    "e2e: end-to-end docker container tests (slow, requires docker)",
+]
+addopts = "-m 'not e2e'"
 
 [tool.ruff]
 line-length = 100
