@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 6 COMPLETE + simplify pass applied. Tasks 6.1 (ISBN normalization) + 6.2 (OL+GB parallel metadata race) done; the simplify pass added `isinstance(dict)` guards to the OpenLibrary extractor and factored the two VCR fixtures into a shared `_vcr_factory`. 25 tasks across Phases 0–6, 113 tests passing. `lookup_isbn(isbn13)` in `src/book_alerter/metadata.py` races OpenLibrary + Google Books via `asyncio.wait(FIRST_COMPLETED)` and returns the first valid `BookMetadata` (title+author, cover optional); cancels + awaits the loser; raises `LookupError` if both fail.
+**Status:** Phase 7 IN PROGRESS. Task 7.1 (Books CRUD endpoints) live: `GET/POST /api/books` and `GET/PATCH/DELETE /api/books/{id}` with embedded `BookStats`, ISBN-13 normalization, 409-on-duplicate, soft-delete-by-default. New `src/book_alerter/api/deps.py` provides `get_session` / `get_config` / `get_scheduler` for shared FastAPI dependencies. 125 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Phase 6 simplify pass committed at `338cc9f`
+**Last update:** 2026-05-14, Task 7.1 committed at `15e6dbf`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 113 passed
+# expected: 125 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 58
+# expected: 61
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.1 (Books CRUD API)**, plan line 2504. Creates `src/book_alerter/api/books.py` + `src/book_alerter/api/deps.py` + `tests/integration/api/test_books_api.py`. Endpoints: `GET /api/books` (with `BookStats` attached), `POST /api/books`, `GET/PATCH/DELETE /api/books/{id}`.
+Dispatch **Phase 7 Task 7.2 (Observations + Stats endpoints)**, plan line 2523.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -51,6 +51,9 @@ _None._ All blockers from Phase 1 resolved.
 - **`book_stats` view DDL** lives in `src/book_alerter/db/views.py` as `BOOK_STATS_VIEW_SQL` + `DROP_BOOK_STATS_VIEW_SQL`. Migration 0004 imports from there; integration tests get the view via the `engine_with_view` fixture in `tests/integration/conftest.py`. **Don't redefine the DDL anywhere else.**
 - **`AlertKind` Literal lives in `src/book_alerter/config.py`** and is re-exported by `book_alerter.alerts`. `NotificationsConfig.alert_kinds_enabled` and `detect_alert_kinds`'s return tuple both use it; if you add a new alert kind, update only `config.py`.
 - **`detect_alert_kinds` returns `(kinds, cur_signal)`** as of the Phase 4 simplify pass — the dispatcher reuses `cur_signal` when persisting `BookSignalState`. Don't recompute `compute_signal` after calling `detect_alert_kinds`.
+- **API test pattern (Task 7.1)**: build a router-only `FastAPI()` test app rather than invoking `create_app()` + its lifespan. The `api_client` fixture in `tests/integration/api/conftest.py` is the template — `engine_with_view` for the DB, a default `Config.load(<missing-path>)` for `app.state.config`, `app.include_router(<module>.router)`. This avoids scheduler/notifier startup, gives full control over the engine (`book_stats` view installed), and keeps tests under a millisecond. Reuse + extend this fixture for Task 7.2+ (observations, alerts, settings endpoints); add more routers to the fixture as endpoints land. Production app uses `create_app()` + lifespan as usual — health test still covers that path.
+- **FastAPI dependency style (Task 7.1)**: use `SessionDep = Annotated[Session, Depends(get_session)]` (module-level) and write handlers as `def foo(... , session: SessionDep, ...)`. Avoids ruff's `B008` (`Depends(...)` in default argument) while keeping FastAPI's auto-DI working. Non-defaulted `SessionDep` must precede defaulted query params in the signature — reorder if needed.
+- **Pydantic mirrors for dataclass serialization**: when a handler needs to return a `@dataclass` from `stats.py` (or elsewhere), define a small Pydantic `BaseModel` mirror with a `.from_dataclass()` classmethod and use that in `response_model`. Cleaner OpenAPI schema than `arbitrary_types_allowed=True`, and lets you exclude internal fields (e.g. `sorted_totals` from `BookStats`).
 
 ## Incidents this session (for reference, not action)
 
