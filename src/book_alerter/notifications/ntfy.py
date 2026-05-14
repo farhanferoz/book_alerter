@@ -4,6 +4,7 @@
 delivery rather than treating it as an unexpected exception."""
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 
 import httpx
@@ -11,6 +12,13 @@ import httpx
 from book_alerter.config import NtfyChannelConfig
 from book_alerter.db.models import Alert, Book
 from book_alerter.notifications.base import Notifier
+
+
+def _encode_title(s: str) -> str:
+    if s.isascii():
+        return s
+    b64 = base64.b64encode(s.encode("utf-8")).decode("ascii")
+    return f"=?utf-8?b?{b64}?="
 
 
 class NtfyNotifier(Notifier):
@@ -29,11 +37,10 @@ class NtfyNotifier(Notifier):
             return {"status": "error", "error_message": "ntfy disabled or topic missing"}
         url = f"{self._cfg.server.rstrip('/')}/{self._cfg.topic}"
         body = alert.message
+        # httpx enforces ASCII header values; ntfy decodes RFC 2047 encoded-word
+        # titles (`=?utf-8?b?...?=`), so non-ASCII book titles round-trip cleanly.
         headers = {
-            # ntfy accepts UTF-8 titles, but httpx enforces ASCII header values.
-            # Use a plain hyphen separator and best-effort-ascii the book title so
-            # we never break delivery on non-ASCII titles.
-            "Title": f"{alert.kind} - {book.title}".encode("ascii", "replace").decode("ascii"),
+            "Title": _encode_title(f"{alert.kind} - {book.title}"),
             "Priority": self._cfg.priority,
             "Tags": ",".join(self._cfg.tags or []),
         }

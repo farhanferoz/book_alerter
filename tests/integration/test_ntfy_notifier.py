@@ -141,6 +141,50 @@ async def test_empty_topic_does_not_make_http_call():
     assert result["error_message"]
 
 
+async def test_non_ascii_book_title_uses_rfc2047_encoded_word():
+    """ntfy.sh decodes RFC 2047 encoded-word Title headers (=?utf-8?b?...?=),
+    so non-ASCII titles round-trip cleanly instead of being mangled to '?'."""
+    from email.header import decode_header, make_header
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200)
+
+    cfg = NtfyChannelConfig(enabled=True, topic="t")
+    notifier = NtfyNotifier(
+        cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
+    )
+    result = await notifier.send(_make_alert(), _make_book(title="Café Naïveté"))
+    assert result == {"status": "sent"}
+    raw_title = captured["headers"]["title"]
+    # Header value is pure ASCII on the wire (httpx requirement).
+    assert raw_title.isascii()
+    # Decoding RFC 2047 round-trips back to the original UTF-8 title.
+    decoded = str(make_header(decode_header(raw_title)))
+    assert "Café Naïveté" in decoded
+    assert "target_hit" in decoded
+
+
+async def test_ascii_title_passes_through_unencoded():
+    """When the title is pure ASCII, the Header is sent verbatim (no RFC 2047
+    overhead). Existing assertions that grep the header text rely on this."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200)
+
+    cfg = NtfyChannelConfig(enabled=True, topic="t")
+    notifier = NtfyNotifier(
+        cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
+    )
+    result = await notifier.send(_make_alert(), _make_book(title="The Great Book"))
+    assert result == {"status": "sent"}
+    assert captured["headers"]["title"] == "target_hit - The Great Book"
+
+
 async def test_tags_joined_with_commas_when_multiple():
     captured: dict = {}
 
