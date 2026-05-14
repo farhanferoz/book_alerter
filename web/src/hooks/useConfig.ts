@@ -1,6 +1,10 @@
 // React Query hooks over the `/api/config` endpoints.
 //
 //   useConfig()         → GET /api/config — current full Config as JSON.
+//   useConfigSchema()   → GET /api/config/schema — Pydantic JSON Schema for
+//                         the Config model. Consumer: Phase 11.5 Monaco
+//                         editor (read-only schema panel; live validation
+//                         happens via dry-run PUT, not Ajv).
 //   useUpdateConfig()   → PUT /api/config — body {config, dry_run}; returns
 //                         {diff, applied, errors}. A single mutation covers
 //                         both the dry-run (preview) and apply flows; the
@@ -97,6 +101,23 @@ export function useConfig() {
       const body = await apiGet("/api/config");
       return body as ConfigShape;
     },
+  });
+}
+
+// Pydantic-generated JSON Schema for the `Config` model. The shape is the
+// standard JSON-Schema dict with `properties`, `$defs`, etc. We keep the
+// return type as `Record<string, unknown>` since the consumer (Advanced
+// settings) only walks it for display — no typed access required.
+export function useConfigSchema() {
+  return useQuery<Record<string, unknown>, ApiError>({
+    queryKey: ["config", "schema"],
+    queryFn: async () => {
+      const body = await apiGet("/api/config/schema");
+      return body as Record<string, unknown>;
+    },
+    // Schema is keyed on the running server build — refetching on focus is
+    // wasteful. Treat as effectively static for the session.
+    staleTime: Infinity,
   });
 }
 

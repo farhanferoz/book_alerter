@@ -9,12 +9,20 @@ import { Settings } from "@/pages/Settings";
 import { SettingsSources } from "@/pages/settings/Sources";
 import { SettingsRecommendation } from "@/pages/settings/Recommendation";
 import { SettingsNotifications } from "@/pages/settings/Notifications";
-import { SettingsAdvanced } from "@/pages/settings/Advanced";
 
 // BookDetail pulls Recharts, which is heavy (~300 KB raw). Lazy-loading
 // keeps it off the dashboard's critical path.
 const BookDetail = lazy(() =>
   import("@/pages/BookDetail").then((m) => ({ default: m.BookDetail })),
+);
+
+// SettingsAdvanced pulls Monaco editor (~2 MB raw). Route-split so the
+// editor only loads when the user actually visits /settings/advanced —
+// same pattern as BookDetail above.
+const SettingsAdvanced = lazy(() =>
+  import("@/pages/settings/Advanced").then((m) => ({
+    default: m.SettingsAdvanced,
+  })),
 );
 
 function RouteSpinner() {
@@ -40,7 +48,14 @@ function App() {
           <Route path="sources" element={<SettingsSources />} />
           <Route path="recommendation" element={<SettingsRecommendation />} />
           <Route path="notifications" element={<SettingsNotifications />} />
-          <Route path="advanced" element={<SettingsAdvanced />} />
+          <Route
+            path="advanced"
+            element={
+              <Suspense fallback={<RouteSpinner />}>
+                <SettingsAdvanced />
+              </Suspense>
+            }
+          />
         </Route>
       </Route>
     </Routes>
