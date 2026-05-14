@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Task 7.1 (Books CRUD endpoints) live: `GET/POST /api/books` and `GET/PATCH/DELETE /api/books/{id}` with embedded `BookStats`, ISBN-13 normalization, 409-on-duplicate, soft-delete-by-default. New `src/book_alerter/api/deps.py` provides `get_session` / `get_config` / `get_scheduler` for shared FastAPI dependencies. 125 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 live. Task 7.2 adds `GET /api/books/{id}/observations` (cursor-paginated price history; `limit` 1–500 default 100, `before` ISO 8601 strict-`<`, `source` filter, duplicate-exclusion unconditional, `next_before` cursor) and `GET /api/books/{id}/stats` (wraps `compute_book_stats`, returns existing `BookStatsOut`); both 404 on unknown book. 136 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.1 committed at `15e6dbf`
+**Last update:** 2026-05-14, Task 7.2 committed at `cb951fa`
 
 ## Where we are
 
@@ -16,7 +16,7 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 125 passed
+# expected: 136 passed
 git log --oneline d953741..HEAD | wc -l
 # expected: 61
 uv run alembic current
@@ -25,7 +25,7 @@ uv run alembic current
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.2 (Observations + Stats endpoints)**, plan line 2523.
+Dispatch **Phase 7 Task 7.3 (Alerts endpoints — `GET /api/alerts`, `POST /api/alerts/{id}/dismiss`, `POST /api/alerts/dismiss-all`)**, plan line 2528.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -54,6 +54,7 @@ _None._ All blockers from Phase 1 resolved.
 - **API test pattern (Task 7.1)**: build a router-only `FastAPI()` test app rather than invoking `create_app()` + its lifespan. The `api_client` fixture in `tests/integration/api/conftest.py` is the template — `engine_with_view` for the DB, a default `Config.load(<missing-path>)` for `app.state.config`, `app.include_router(<module>.router)`. This avoids scheduler/notifier startup, gives full control over the engine (`book_stats` view installed), and keeps tests under a millisecond. Reuse + extend this fixture for Task 7.2+ (observations, alerts, settings endpoints); add more routers to the fixture as endpoints land. Production app uses `create_app()` + lifespan as usual — health test still covers that path.
 - **FastAPI dependency style (Task 7.1)**: use `SessionDep = Annotated[Session, Depends(get_session)]` (module-level) and write handlers as `def foo(... , session: SessionDep, ...)`. Avoids ruff's `B008` (`Depends(...)` in default argument) while keeping FastAPI's auto-DI working. Non-defaulted `SessionDep` must precede defaulted query params in the signature — reorder if needed.
 - **Pydantic mirrors for dataclass serialization**: when a handler needs to return a `@dataclass` from `stats.py` (or elsewhere), define a small Pydantic `BaseModel` mirror with a `.from_dataclass()` classmethod and use that in `response_model`. Cleaner OpenAPI schema than `arbitrary_types_allowed=True`, and lets you exclude internal fields (e.g. `sorted_totals` from `BookStats`).
+- **`make_observation` fixture (Task 7.2)** in `tests/integration/api/conftest.py` inserts `PriceObservation` rows directly via a SQLModel session, auto-computing `total_minor = price_minor + (shipping_minor or 0)` and accepting `is_duplicate_of` for duplicate-row scenarios. Reuse for Task 7.3+ alerts/runs fixtures rather than going through the full source pipeline. Note: capture `obs.id` immediately after `make_observation` returns — the row detaches from its session when the `with Session(...)` block exits.
 
 ## Incidents this session (for reference, not action)
 
