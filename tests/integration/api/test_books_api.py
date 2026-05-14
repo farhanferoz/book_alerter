@@ -1,6 +1,8 @@
-"""Integration tests for the Books CRUD endpoints (Task 7.1)."""
+"""Integration tests for the Books CRUD endpoints (Task 7.1 + 7.2)."""
 
 from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session
 
@@ -165,3 +167,159 @@ def test_get_books_excludes_archived_by_default(api_client):
     resp_all = api_client.get("/api/books?include_archived=true")
     assert resp_all.status_code == 200
     assert len(resp_all.json()) == 1
+
+
+# --- Task 7.2: observations + stats endpoints --------------------------------
+
+
+def _seed_book(api_client) -> int:
+    return api_client.post(
+        "/api/books",
+        json={"isbn": "9780241638194", "title": "T", "author": "A"},
+    ).json()["id"]
+
+
+def test_get_observations_happy_path_newest_first(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        for i in range(3):
+            make_observation(
+                s, book_id=bid,
+                observed_at=base + timedelta(hours=i),
+                price_minor=500 + i * 10,
+            )
+
+    resp = api_client.get(f"/api/books/{bid}/observations")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 3
+    # Newest first → totals descend by insertion order index.
+    totals = [item["total_minor"] for item in body["items"]]
+    assert totals == [520, 510, 500]
+    # Page not full (len(items) < default 100) → no cursor.
+    assert body["next_before"] is None
+
+
+def test_get_observations_limit_emits_next_before(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        for i in range(3):
+            make_observation(s, book_id=bid, observed_at=base + timedelta(hours=i))
+
+    resp = api_client.get(f"/api/books/{bid}/observations?limit=2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 2
+    # next_before = observed_at of the 2nd (last) row in the page.
+    assert body["next_before"] == body["items"][-1]["observed_at"]
+
+
+def test_get_observations_before_filters(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        for i in range(3):
+            make_observation(s, book_id=bid, observed_at=base + timedelta(hours=i))
+
+    cutoff = (base + timedelta(hours=1)).isoformat()
+    resp = api_client.get(
+        f"/api/books/{bid}/observations",
+        params={"before": cutoff},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Strict <: only the row at base+0h is included.
+    assert len(body["items"]) == 1
+    assert body["items"][0]["observed_at"].startswith("2026-01-01T12:00")
+
+
+def test_get_observations_source_filter(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        make_observation(s, book_id=bid, observed_at=base, source="wob")
+        make_observation(s, book_id=bid, observed_at=base + timedelta(hours=1), source="abebooks")
+
+    resp = api_client.get(f"/api/books/{bid}/observations?source=wob")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["source"] == "wob"
+
+
+def test_get_observations_excludes_duplicates(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        canonical = make_observation(s, book_id=bid, observed_at=base)
+        canonical_id = canonical.id
+        make_observation(
+            s, book_id=bid,
+            observed_at=base + timedelta(hours=1),
+            is_duplicate_of=canonical_id,
+        )
+
+    resp = api_client.get(f"/api/books/{bid}/observations")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["id"] == canonical_id
+
+
+def test_get_observations_unknown_book_returns_404(api_client):
+    resp = api_client.get("/api/books/99999/observations")
+    assert resp.status_code == 404
+
+
+def test_get_observations_limit_zero_returns_422(api_client):
+    bid = _seed_book(api_client)
+    resp = api_client.get(f"/api/books/{bid}/observations?limit=0")
+    assert resp.status_code == 422
+
+
+def test_get_observations_limit_too_large_returns_422(api_client):
+    bid = _seed_book(api_client)
+    resp = api_client.get(f"/api/books/{bid}/observations?limit=10000")
+    assert resp.status_code == 422
+
+
+def test_get_stats_happy_path(api_client, engine_with_view, make_observation):
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        # Insert in time order; the latest observation (price=500) defines
+        # `current_best_total_minor` per the book_stats view semantics.
+        for i, price in enumerate([700, 600, 500]):
+            make_observation(
+                s, book_id=bid,
+                observed_at=base + timedelta(hours=i),
+                price_minor=price,
+            )
+
+    resp = api_client.get(f"/api/books/{bid}/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["book_id"] == bid
+    assert body["current_best_total_minor"] == 500
+    assert body["all_time_min_total_minor"] == 500
+    assert body["all_time_max_total_minor"] == 700
+    assert body["observation_count"] == 3
+    # sorted_totals is internal — excluded from the wire DTO.
+    assert "sorted_totals" not in body
+
+
+def test_get_stats_zero_observations(api_client):
+    bid = _seed_book(api_client)
+    resp = api_client.get(f"/api/books/{bid}/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["book_id"] == bid
+    assert body["current_best_total_minor"] is None
+    assert body["observation_count"] == 0
+
+
+def test_get_stats_unknown_book_returns_404(api_client):
+    resp = api_client.get("/api/books/99999/stats")
+    assert resp.status_code == 404

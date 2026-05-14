@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -100,6 +100,53 @@ class BookStatsOut(BaseModel):
             days_of_history=s.days_of_history,
             last_observed_at=s.last_observed_at,
         )
+
+
+class PriceObservationOut(BaseModel):
+    """Wire mirror of `book_alerter.db.models.PriceObservation`.
+
+    Excludes the internal `raw` source payload and the `is_duplicate_of`
+    dedup pointer — the observations endpoint filters duplicates out before
+    serializing, so the pointer is irrelevant to callers.
+    """
+    id: int
+    book_id: int
+    source: str
+    seller: str | None
+    condition: str
+    price_minor: int
+    currency: str
+    shipping_minor: int | None
+    total_minor: int
+    url: str
+    observed_at: datetime
+
+    @classmethod
+    def from_obs(cls, obs: models.PriceObservation) -> PriceObservationOut:
+        return cls(
+            id=obs.id or 0,
+            book_id=obs.book_id,
+            source=obs.source,
+            seller=obs.seller,
+            condition=obs.condition,
+            price_minor=obs.price_minor,
+            currency=obs.currency,
+            shipping_minor=obs.shipping_minor,
+            total_minor=obs.total_minor,
+            url=obs.url,
+            observed_at=obs.observed_at,
+        )
+
+
+class ObservationsPage(BaseModel):
+    """Cursor-paginated page of price observations (newest-first).
+
+    `next_before` is the `observed_at` (ISO 8601) of the last row in `items`;
+    pass it as the `before` query param to fetch the next page. `None` when
+    `len(items) < limit` (i.e., the page is not full → no more rows).
+    """
+    items: list[PriceObservationOut]
+    next_before: str | None
 
 
 class BookOut(BaseModel):
@@ -266,3 +313,50 @@ def delete_book(
     session.refresh(book)
     stats = compute_book_stats(book_id, session)
     return BookOut.from_book(book, stats)
+
+
+@router.get("/{book_id}/observations", response_model=ObservationsPage)
+def list_observations(
+    book_id: int,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    before: datetime | None = None,
+    source: str | None = None,
+) -> ObservationsPage:
+    """Paginated price history for a book (newest-first).
+
+    Excludes deduplicated rows (`is_duplicate_of IS NOT NULL`). Cursor via
+    `before` (ISO 8601 `observed_at`); response includes `next_before` for the
+    next page.
+    """
+    if session.get(models.Book, book_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
+
+    stmt = (
+        select(models.PriceObservation)
+        .where(models.PriceObservation.book_id == book_id)
+        .where(models.PriceObservation.is_duplicate_of.is_(None))  # type: ignore[union-attr]
+    )
+    if source is not None:
+        stmt = stmt.where(models.PriceObservation.source == source)
+    if before is not None:
+        stmt = stmt.where(models.PriceObservation.observed_at < before)
+    stmt = stmt.order_by(models.PriceObservation.observed_at.desc()).limit(limit)  # type: ignore[attr-defined]
+
+    rows = session.exec(stmt).all()
+    items = [PriceObservationOut.from_obs(r) for r in rows]
+    next_before = (
+        rows[-1].observed_at.isoformat() if len(rows) == limit and rows else None
+    )
+    return ObservationsPage(items=items, next_before=next_before)
+
+
+@router.get("/{book_id}/stats", response_model=BookStatsOut)
+def get_book_stats(
+    book_id: int,
+    session: SessionDep,
+) -> BookStatsOut:
+    """Return the full `BookStats` for a book (zero-obs case included)."""
+    if session.get(models.Book, book_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
+    return BookStatsOut.from_dataclass(compute_book_stats(book_id, session))
