@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 + 7.6 + 7.7 live. Task 7.7 adds two endpoints: `POST /api/books/{id}/refetch` (extends `books` router) fans out across every configured source via `scheduler.trigger_now(name)` — disabled sources surface in `skipped` with `reason="disabled"` (no scheduler call), backoff-active sources (scheduler returns 0) surface with `reason="backoff_active"`; 404 unknown book, 200 with empty lists when `cfg.sources` is empty. `POST /api/notifications/{channel}/test` (new `notifications` router at `src/book_alerter/api/notifications.py`) synthesizes an in-memory `Book` + `Alert` (NEVER persisted — `id=None`, no DB write) and dispatches through `notifier.send(alert, book)`. Notifier lookup via new `app.state.notifiers = {n.name: n for n in notifiers}` (set in lifespan + test fixture) + `get_notifiers` dep + `NotifiersDep` alias in `api/deps.py`. Non-shadowing import alias `notifications_routes` mirrors the `config_routes` / `metadata_routes` pattern (avoids collision with top-level `book_alerter.notifications` package). Test wiring adds `_StubNotifier` (sibling of `_StubScheduler`) attached under name `"stub"` in the `api_client` fixture. 184 tests passing.
+**Status:** Phase 7 COMPLETE. All eight tasks (7.1 Books CRUD → 7.2 Observations/Stats → 7.3 Alerts feed → 7.4 Sources status/trigger/patch → 7.5 Config GET/schema/PUT → 7.6 Metadata lookup/search → 7.7 Refetch + notifications-test → 7.8 Optional HTTP Basic auth) live. Task 7.8 adds `src/book_alerter/auth.py` with `is_basic_auth_enabled()` (returns True iff **both** `APP_BASIC_AUTH_USER` + `APP_BASIC_AUTH_PASS` are non-empty — partial-set stays off) and `basic_auth_dep` (Annotated style; `secrets.compare_digest` for both username + password; 401 carries `WWW-Authenticate: Basic`). Wired in `create_app()` via `auth_deps = [Depends(basic_auth_dep)] if is_basic_auth_enabled() else []` passed to every `include_router(..., dependencies=auth_deps)` — disabled mode pays zero per-request cost. Auth state captured once at startup; env-var changes need restart. 190 tests passing.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.7 committed at `f2c8c5c`
+**Last update:** 2026-05-14, Task 7.8 committed at `8b313c1`
 
 ## Where we are
 
@@ -16,16 +16,14 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 184 passed
-git log --oneline d953741..HEAD | wc -l
-# expected: 79
+# expected: 190 passed
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.8 (Optional HTTP Basic auth — gate the API behind a single configurable basic-auth credential; off by default; matches the "Tailscale-only access; HTTP Basic optional but off by default" working agreement)**, plan line 2554.
+Run **Phase 7 simplify pass** (3-agent review — same cadence as Phase 4/5 simplifies: dispatch three subagents independently against the Phase 7 surface, dedupe + prioritise findings, apply low-risk simplifications, then update CHANGELOG/RESUME), then dispatch **Phase 8 Task 8.1** (`printing-press` `bookfinder-pp-cli` generation — plan line 2594; Go CLI scaffolded via the `printing-press` skill, scrapes Bookfinder's "all editions" view to return per-edition prices/sellers; matches the existing `wob` source's `fetch_book(isbn)` contract for downstream registry integration).
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -66,6 +64,7 @@ _None._ All blockers from Phase 1 resolved.
 - **Refetch fan-out pattern (Task 7.7)**: `POST /api/books/{id}/refetch` iterates `cfg.sources.items()`, **not** the set of sources that have observed the book — the refetch button is "ask all sources about this book again". Disabled sources skip the scheduler entirely (`reason="disabled"`); the scheduler returning 0 surfaces as `reason="backoff_active"` rather than a 409 (the 409 contract from `POST /api/sources/{name}/run` doesn't apply here because refetch is a multi-source operation where partial success is the norm). Result shape `{triggered, skipped}` with nested literal-typed DTOs (`RefetchTriggered`, `RefetchSkipped`).
 - **Synthetic Alert non-persistence (Task 7.7)**: `POST /api/notifications/{channel}/test` builds an in-memory `Book` + `Alert` (`id=None`, `book_id=0`) and passes them to `notifier.send` — no DB write. The notifier just reads fields off the model. If you add a notifier that needs the DB (none yet — the in-app notifier writes a `NotificationDelivery` row through the dispatcher, not in `send`), reconsider this pattern, but for now: do NOT persist the test alert. The "alert table stays empty after the test call" assertion in `test_notifications_api.py` is load-bearing.
 - **Config PUT pattern (Task 7.5)**: `PUT /api/config` always returns `{diff, applied, errors}` and validates in both dry-run and apply modes — 422 fires identically in either. The wire shape is opinionated: do **NOT** add 200-with-errors as a "validation failed" channel. **Backup rotation** uses `shutil.copy2(config_path, config_path.with_suffix(suffix + ".bak"))` before `Config.save` — single rotating backup, overwrites any prior `.bak`, **skipped on first-write** (`config_path.exists()` guard). Don't ring-rotate (`.bak.1`, `.bak.2`); the user can keep their own snapshots if they need history. **Diff is top-level only** by deliberate choice — computed via `model_dump(mode="json")` on both sides so nested Pydantic models become plain dicts and `dict.__eq__` does deep equality. Recursive diff was rejected for MVP; UI renders the block-level changes. Env-var substitution is NOT re-run on PUT — `_substitute_env` only fires in `Config.load` from YAML on disk; the PUT body is the already-materialized config dict.
+- **Cross-cutting router dependencies (Task 7.8)**: when a dep needs to apply to **every** endpoint on a router (e.g. auth, rate limiting, audit logging), wire it via `app.include_router(router, dependencies=[Depends(my_dep)])` in `create_app()` rather than decorating every handler individually. The `dependencies=` argument runs the dep on every request to that router but discards the return value (use `Depends(get_x)` parameters when you need the value). For **optionally-enabled** deps, compute the list once at `create_app()` time and pass the same list to all `include_router` calls — when the dep is disabled the list is empty so there's zero per-request cost (vs. an unconditional dep that early-returns, which still pays the dispatch tax). Auth is the canonical example: `auth_deps = [Depends(basic_auth_dep)] if is_basic_auth_enabled() else []` then `app.include_router(r, dependencies=auth_deps)` for all seven routers. Caveat: state captured at `create_app()` time — env-var changes require restart. Acceptable for the NAS deployment model; revisit if dynamic toggles are ever needed.
 
 ## Incidents this session (for reference, not action)
 
