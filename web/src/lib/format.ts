@@ -55,3 +55,31 @@ export function formatRelativeTime(
   }
   return RELATIVE_FORMATTER.format(0, "second");
 }
+
+// Absolute timestamp in the user's locale; backend ships UTC ISO strings.
+const DATETIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return DATETIME_FORMATTER.format(new Date(iso));
+}
+
+// GBP minor units (pence) ↔ display pounds. Used in the settings panel where
+// the user enters whole pounds; the backend stores minor.
+export function poundsToMinor(pounds: string): number | null {
+  const trimmed = pounds.trim();
+  if (trimmed === "") return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return Math.round(value * 100);
+}
+
+export function minorToPoundsInput(minor: number | null | undefined): string {
+  if (minor == null) return "";
+  // Two decimals; matches how `formatMoneyMinor` would render but without the
+  // currency symbol / grouping commas (those break <input type="number">).
+  return (minor / 100).toFixed(2);
+}
