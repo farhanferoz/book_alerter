@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 9.1 SHIPPED. `web/` scaffold landed: Vite 8 + React 19 + TS 6 (`npm create vite@latest web -- --template react-ts`), Tailwind v4 via `@tailwindcss/vite`, shadcn/ui init clean (neutral base, CSS variables, lucide icons, `@` alias wired in both `vite.config.ts` and `tsconfig.app.json`/`tsconfig.json`). Runtime deps: `recharts @tanstack/react-query @monaco-editor/react clsx`. Vite dev-server proxy `/api → http://127.0.0.1:8000` configured per plan. Minimal `App.tsx` fetches `/api/health` and renders the JSON. `npm run build` clean (16 modules, 191 kB JS / 22.5 kB CSS, 150 ms). Smoke test confirmed: backend + Vite running side-by-side; `curl http://localhost:5173/api/health` returns the backend's JSON via proxy. Phase 8.3 + post-8.3 simplify + architecture revision still uncommitted (this is the intended state — those three were ready before Phase 9 started; commit order is up to the user). Python test baseline unchanged: **205 passed, 2 skipped** (RESUME's prior "206 passed" was stale; the 8.3 simplify pass had already dropped one redundant test — see CHANGELOG line 230).
+**Status:** Phase 9.2 SHIPPED. OpenAPI codegen + typed fetch client landed under `web/src/api/`. `openapi-typescript@7.13.0` installed (`--legacy-peer-deps` — generator peers on TS5, we're on TS6; flagged in CHANGELOG). `gen:api` npm script in `web/package.json` regenerates `src/api/schema.ts` from the live backend's `/openapi.json`. `web/src/api/client.ts` (117 LOC) exports `apiGet`/`apiPost`/`apiPatch`/`apiPut`/`apiDelete` + `ApiError`, all typed against the generated `paths` tree (mapped-type helpers `PathsFor<M>` + `JsonResponse<P, M>` + `JsonBody<P, M>`). `App.tsx` refactored to `apiGet("/api/health")`. `schema.ts` is checked in (frontend typechecks without backend running). Verification: `npx tsc --noEmit` clean, `npm run build` clean (17 modules, 191.85 kB JS, 148 ms), smoke test through Vite proxy returned `{"status":"ok","config_version":1}`. Python baseline still **205 passed, 2 skipped** (no Python edits).
 **Branch:** `master` (no worktree).
-**Last update:** 2026-05-14, Phase 9.1 shipped.
+**Last update:** 2026-05-14, Phase 9.2 shipped.
 
 ## Where we are
 
@@ -25,12 +25,14 @@ cd web && npm run build              # expected: tsc -b + vite build pass; ~16 m
 
 ## Next action
 
-Dispatch **Phase 9.2** (Generated types from OpenAPI — plan line 2723+). Add `openapi-typescript` as a devDep, add a `gen:api` npm script that runs against `http://127.0.0.1:8000/openapi.json -> src/api/schema.ts`, then wrap with a typed fetch client (`web/src/api/client.ts` exporting `apiGet`/`apiPost`/etc.). The backend must be running when `gen:api` is invoked; the implementer should boot it once, regen, and tear down.
+Dispatch **Phase 9.3** (Routing + layout — plan line ~2820+). Decide router (TanStack Router vs React Router 7; plan-of-record is React Router 7 unless spec says otherwise — confirm against plan section first). Wire `QueryClientProvider` at the root (TanStack Query already installed in 9.1), build the app shell (sidebar nav + header + main outlet) using shadcn primitives, and stub the route tree for Books / Alerts / Sources / Config / Metadata (empty pages are fine; Phase 10 fills them in). Continue using `apiGet`/`apiPost` from `@/api/client` for any data fetches; route-level fetches should go through `useQuery` with a `queryKey` of the form `["api", "/api/...", params]`.
 
-**Known follow-ups carried from Phase 9.1**:
+**Known follow-ups carried from Phase 9.1 + 9.2**:
 - shadcn base color is `neutral` (default); plan called for `slate`. Hand-edit `components.json` + re-init if/when the design decision matters.
 - 2 transitive moderate-severity audit findings in `monaco-editor → dompurify`. Address at Task 11.5 when Monaco is actually wired in (`npm audit fix` or pin newer monaco-editor).
 - `web/.gitignore` is the Vite default; repo-root `.gitignore` already covers `node_modules`/`web/dist`/`web/.vite`.
+- `openapi-typescript@7` peer-deps `typescript@^5` but we're on TS6; installed with `--legacy-peer-deps`. Revisit if upstream widens its peer or if our typecheck ever breaks against regenerated `schema.ts`.
+- `gen:api` requires a running backend. Could add a Python script that dumps `/openapi.json` to disk for offline regen. Plan said hit live backend; revisit if CI ever needs to regen without uvicorn.
 
 **Carried from Phase 8.3 simplify (still DEFERRED)**: (a) Source-ABC `prepare()`/`cleanup()` hooks for per-scheduler-run shared browser; (b) shared `PlaywrightInlineSource` base for the `_render` skeleton — both scoped as a single follow-up PR best done alongside the ABC redesign. **Phase 8.1 (printing-press CLI generation) remains permanently dropped.**
 

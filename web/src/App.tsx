@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiGet, ApiError } from "@/api/client";
 
 type HealthState =
   | { status: "loading" }
@@ -10,20 +11,20 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/health")
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    apiGet("/api/health")
       .then((data) => {
         if (!cancelled) setHealth({ status: "ok", data });
       })
       .catch((err: unknown) => {
-        if (!cancelled)
-          setHealth({
-            status: "error",
-            message: err instanceof Error ? err.message : String(err),
-          });
+        if (!cancelled) {
+          const message =
+            err instanceof ApiError
+              ? `${err.message}`
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          setHealth({ status: "error", message });
+        }
       });
     return () => {
       cancelled = true;
