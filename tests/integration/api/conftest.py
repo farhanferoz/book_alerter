@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from book_alerter.api import books
+from book_alerter.api import alerts, books
 from book_alerter.config import Config
 from book_alerter.db import models
 
@@ -30,6 +30,7 @@ def api_client(engine_with_view, tmp_path: Path):
     app.state.engine = engine_with_view
     app.state.config = cfg
     app.include_router(books.router)
+    app.include_router(alerts.router)
     with TestClient(app) as client:
         yield client
 
@@ -76,5 +77,48 @@ def make_observation():
         session.commit()
         session.refresh(obs)
         return obs
+
+    return _make
+
+
+@pytest.fixture
+def make_alert():
+    """Insert an `Alert` directly via SQLModel session.
+
+    Used by Task 7.3+ tests that need alert-feed fixtures without running the
+    full detection/dispatch pipeline. Note: capture `alert.id` immediately
+    after `make_alert` returns — the row detaches from its session when the
+    `with Session(...)` block exits (same gotcha as `make_observation`).
+    """
+    def _make(
+        session: Session,
+        *,
+        book_id: int,
+        fired_at: datetime,
+        kind: str = "target_hit",
+        price_minor: int = 500,
+        currency: str = "GBP",
+        source: str = "wob",
+        condition: str = "used_g",
+        message: str = "test alert",
+        dismissed_at: datetime | None = None,
+        delivered_via: list[str] | None = None,
+    ) -> models.Alert:
+        alert = models.Alert(
+            book_id=book_id,
+            kind=kind,  # type: ignore[arg-type]
+            price_minor=price_minor,
+            currency=currency,
+            source=source,
+            condition=condition,
+            message=message,
+            fired_at=fired_at,
+            dismissed_at=dismissed_at,
+            delivered_via=list(delivered_via or []),
+        )
+        session.add(alert)
+        session.commit()
+        session.refresh(alert)
+        return alert
 
     return _make
