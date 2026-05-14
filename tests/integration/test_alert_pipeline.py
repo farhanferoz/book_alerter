@@ -10,12 +10,34 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from freezegun import freeze_time
 from sqlmodel import Session, select
 
-from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
+from book_alerter.config import (
+    Config,
+    NotificationsConfig,
+    QuietHours,
+    RecommendationConfig,
+)
 from book_alerter.db import models
+from book_alerter.db.models import Alert, Book
+from book_alerter.notifications.base import Notifier
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
+
+
+class _RecordingNotifier(Notifier):
+    """Captures `send` calls without performing any I/O. Stands in for ntfy
+    so we can assert it was (or wasn't) invoked during quiet hours."""
+
+    name = "ntfy"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int | None, int | None]] = []
+
+    async def send(self, alert: Alert, book: Book) -> dict:
+        self.calls.append((alert.id, book.id))
+        return {"status": "sent"}
 
 
 def _seed_observations(session: Session, *, book_id: int, totals: list[int],
@@ -239,6 +261,80 @@ def test_pipeline_no_alert_when_insufficient_observations(
     # And target_hit alert did fire (current_best=800 <= target 1000).
     assert len(alerts) == 1
     assert alerts[0].kind == "target_hit"
+
+
+def test_pipeline_quiet_hours_suppresses_non_inapp(engine_with_view, make_book):
+    """During quiet hours, the in-app Alert + delivery still land, but the
+    captured "ntfy" notifier is never called."""
+    # 00:00–23:59 UTC window means any UTC moment is inside quiet hours.
+    cfg = _make_cfg(quiet_hours=QuietHours(start="00:00", end="23:59", tz="UTC"))
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000107")
+        book.target_price_minor = 1000
+        s.add(book); s.commit(); s.refresh(book)
+        _seed_observations(s, book_id=book.id,
+                           totals=[900 + i for i in range(14)])
+        book_id = book.id
+
+    recorder = _RecordingNotifier()
+    pipeline = AlertPipeline(
+        cfg=cfg,
+        session_factory=lambda: Session(engine_with_view),
+        notifiers=[InAppNotifier(), recorder],
+    )
+    # Freeze inside the window so datetime.now(ZoneInfo("UTC")) inside
+    # _deliver lands at 12:00 UTC.
+    with freeze_time("2026-05-14 12:00:00"):
+        _run(pipeline, [book_id])
+
+    with Session(engine_with_view) as s:
+        alerts = s.exec(select(models.Alert)).all()
+        deliveries = s.exec(select(models.NotificationDelivery)).all()
+
+    assert len(alerts) == 1
+    assert alerts[0].kind == "target_hit"
+    # delivered_via lists only the inapp channel — ntfy was gated out.
+    assert alerts[0].delivered_via == ["inapp"]
+    # Only one NotificationDelivery row (inapp); the skipped channel is not
+    # persisted with a "skipped" status — it's simply absent.
+    assert [d.channel for d in deliveries] == ["inapp"]
+    assert deliveries[0].status == "sent"
+    # And the recording notifier was never invoked.
+    assert recorder.calls == []
+
+
+def test_pipeline_outside_quiet_hours_sends_to_all_channels(
+    engine_with_view, make_book,
+):
+    """Sanity-check: same config, but a time outside the window — both
+    channels are exercised."""
+    cfg = _make_cfg(quiet_hours=QuietHours(start="22:00", end="08:00", tz="UTC"))
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000108")
+        book.target_price_minor = 1000
+        s.add(book); s.commit(); s.refresh(book)
+        _seed_observations(s, book_id=book.id,
+                           totals=[900 + i for i in range(14)])
+        book_id = book.id
+
+    recorder = _RecordingNotifier()
+    pipeline = AlertPipeline(
+        cfg=cfg,
+        session_factory=lambda: Session(engine_with_view),
+        notifiers=[InAppNotifier(), recorder],
+    )
+    # 12:00 UTC is outside the 22:00–08:00 window.
+    with freeze_time("2026-05-14 12:00:00"):
+        _run(pipeline, [book_id])
+
+    with Session(engine_with_view) as s:
+        alerts = s.exec(select(models.Alert)).all()
+        deliveries = s.exec(select(models.NotificationDelivery)).all()
+
+    assert len(alerts) == 1
+    assert set(alerts[0].delivered_via) == {"inapp", "ntfy"}
+    assert {d.channel for d in deliveries} == {"inapp", "ntfy"}
+    assert len(recorder.calls) == 1
 
 
 def test_pipeline_persists_book_signal_state_on_first_run(

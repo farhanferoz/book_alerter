@@ -7,11 +7,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
 from book_alerter.alerts import AlertKind, detect_alert_kinds
-from book_alerter.config import Config
+from book_alerter.config import Config, QuietHours
 from book_alerter.db.models import (
     Alert,
     Book,
@@ -20,6 +21,20 @@ from book_alerter.db.models import (
 )
 from book_alerter.notifications.base import Notifier
 from book_alerter.stats import BookStats, Signal, compute_book_stats
+
+
+def _in_quiet_hours(now_local: datetime, qh: QuietHours | None) -> bool:
+    """Return True if `now_local` (in the user's tz) falls inside the configured
+    quiet-hours window. `start` is inclusive, `end` is exclusive. Supports both
+    normal (start < end) and wrapping (start > end, e.g. 22:00–08:00) windows."""
+    if qh is None:
+        return False
+    start_h, start_m = map(int, qh.start.split(":"))
+    end_h, end_m = map(int, qh.end.split(":"))
+    cur = now_local.hour * 60 + now_local.minute
+    s = start_h * 60 + start_m
+    e = end_h * 60 + end_m
+    return (s <= cur or cur < e) if s > e else (s <= cur < e)
 
 
 class AlertPipeline:
@@ -148,12 +163,25 @@ class AlertPipeline:
     async def _deliver(
         self, alert: Alert, book: Book, session: Session,
     ) -> None:
+        # Quiet-hours gate: during the configured window, suppress non-inapp
+        # channels entirely. The in-app Alert row (already written above) and
+        # its NotificationDelivery row still land — the user can see it in the
+        # feed; we just don't push to ntfy / future push channels. Re-firing
+        # after the window relies on the buy condition still holding + the
+        # dedup window having passed (plan-documented MVP simplification).
+        qh = self.cfg.notifications.quiet_hours
+        now_local = datetime.now(ZoneInfo(qh.tz)) if qh is not None else None
+        in_quiet = _in_quiet_hours(now_local, qh) if now_local is not None else False
+        active_notifiers = [
+            n for n in self.notifiers if not in_quiet or n.name == "inapp"
+        ]
+
         results = await asyncio.gather(
-            *[n.send(alert, book) for n in self.notifiers],
+            *[n.send(alert, book) for n in active_notifiers],
             return_exceptions=True,
         )
         delivered: list[str] = []
-        for n, r in zip(self.notifiers, results):
+        for n, r in zip(active_notifiers, results):
             if isinstance(r, Exception):
                 session.add(NotificationDelivery(
                     alert_id=alert.id,
