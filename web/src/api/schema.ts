@@ -218,6 +218,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources/{name}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Source Runs
+         * @description Recent `SourceRun` rows for `name`, newest first (default 10, max 100).
+         *
+         *     404 if `name` is not configured. Matches the wire shape of `last_run` in
+         *     `GET /api/sources` (excludes `error_traceback`).
+         */
+        get: operations["list_source_runs_api_sources__name__runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sources/{name}/run": {
         parameters: {
             query?: never;
@@ -769,6 +792,9 @@ export interface components {
         /**
          * SourcePatch
          * @description Partial update to a `SourceConfig`. `None` means "don't change".
+         *
+         *     `per_book_delay_seconds` accepts a 2-tuple `(min, max)` matching the YAML
+         *     shape on `SourceConfig`. `jitter_seconds` is a non-negative scalar.
          */
         SourcePatch: {
             /** Enabled */
@@ -777,6 +803,13 @@ export interface components {
             schedule?: string | null;
             /** Concurrency */
             concurrency?: number | null;
+            /** Jitter Seconds */
+            jitter_seconds?: number | null;
+            /** Per Book Delay Seconds */
+            per_book_delay_seconds?: [
+                number,
+                number
+            ] | null;
         };
         /**
          * SourceRunOut
@@ -1226,6 +1259,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourceStatusOut"][];
+                };
+            };
+        };
+    };
+    list_source_runs_api_sources__name__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRunOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

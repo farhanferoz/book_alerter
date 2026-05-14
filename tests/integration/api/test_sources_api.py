@@ -160,6 +160,111 @@ def test_patch_source_unknown_returns_404(api_client):
     assert resp.status_code == 404
 
 
+def test_patch_source_updates_jitter(api_client):
+    _install_sources(api_client, wob=SourceConfig(jitter_seconds=600))
+    cfg_path: Path = api_client.app.state.config_path
+
+    resp = api_client.patch("/api/sources/wob", json={"jitter_seconds": 42})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["jitter_seconds"] == 42
+
+    # In-memory config swapped.
+    new_cfg: Config = api_client.app.state.config
+    assert new_cfg.sources["wob"].jitter_seconds == 42
+
+    # YAML on disk reflects the change.
+    on_disk = yaml.safe_load(cfg_path.read_text())
+    assert on_disk["sources"]["wob"]["jitter_seconds"] == 42
+
+
+def test_patch_source_updates_per_book_delay(api_client):
+    _install_sources(
+        api_client, wob=SourceConfig(per_book_delay_seconds=(5, 15))
+    )
+    cfg_path: Path = api_client.app.state.config_path
+
+    resp = api_client.patch(
+        "/api/sources/wob", json={"per_book_delay_seconds": [10, 30]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["per_book_delay_seconds"] == [10, 30]
+
+    new_cfg: Config = api_client.app.state.config
+    assert new_cfg.sources["wob"].per_book_delay_seconds == (10, 30)
+
+    on_disk = yaml.safe_load(cfg_path.read_text())
+    assert on_disk["sources"]["wob"]["per_book_delay_seconds"] == [10, 30]
+
+
+# --- GET /api/sources/{name}/runs -------------------------------------------
+
+
+def test_get_source_runs_returns_history(
+    api_client, engine_with_view, make_source_run
+):
+    _install_sources(api_client, wob=SourceConfig())
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        make_source_run(s, source="wob", started_at=base, status="error")
+        make_source_run(
+            s,
+            source="wob",
+            started_at=base + timedelta(hours=2),
+            status="success",
+        )
+        make_source_run(
+            s,
+            source="wob",
+            started_at=base + timedelta(hours=1),
+            status="partial",
+        )
+        # Different source — must be filtered out.
+        make_source_run(
+            s,
+            source="amazon",
+            started_at=base + timedelta(hours=3),
+            status="success",
+        )
+
+    resp = api_client.get("/api/sources/wob/runs")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body) == 3
+    assert [r["status"] for r in body] == ["success", "partial", "error"]
+    # No traceback leakage.
+    assert "error_traceback" not in body[0]
+
+
+def test_get_source_runs_respects_limit(
+    api_client, engine_with_view, make_source_run
+):
+    _install_sources(api_client, wob=SourceConfig())
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        for i in range(5):
+            make_source_run(
+                s,
+                source="wob",
+                started_at=base + timedelta(hours=i),
+                status="success",
+            )
+
+    resp = api_client.get("/api/sources/wob/runs?limit=2")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body) == 2
+    # Newest two.
+    ts = [r["started_at"] for r in body]
+    assert ts == sorted(ts, reverse=True)
+
+
+def test_get_source_runs_404_on_unknown(api_client):
+    _install_sources(api_client, wob=SourceConfig())
+
+    resp = api_client.get("/api/sources/nonexistent/runs")
+    assert resp.status_code == 404
+
+
 def test_patch_source_empty_body_is_idempotent_noop(api_client):
     _install_sources(api_client, wob=SourceConfig(schedule="0 */6 * * *"))
     cfg_path: Path = api_client.app.state.config_path

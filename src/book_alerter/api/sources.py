@@ -1,16 +1,20 @@
 """Sources status, trigger, and config-patch endpoints.
 
-Implements three endpoints under `/api/sources` (Phase 7 Task 7.4, plan line
-2532-2536):
+Implements endpoints under `/api/sources` (Phase 7 Task 7.4, plan line
+2532-2536; runs-history extension added for Phase 11.2 UI):
 
 - `GET /api/sources` — per-source status: name + `SourceConfig` (config) + last
   `SourceRun` (or `null`). Sorted alphabetically by source name.
+- `GET /api/sources/{name}/runs?limit=10` — recent `SourceRun` rows for one
+  source, newest first. `limit` defaults to 10 and is capped at 100. 404 if
+  unknown source.
 - `POST /api/sources/{name}/run` — manual one-shot via `scheduler.trigger_now`.
   Returns `{run_id: int}`. 404 if unknown source. 409 when the scheduler returns
   0 (backoff gate active).
 - `PATCH /api/sources/{name}` — partial update of `SourceConfig` fields
-  (`enabled`, `schedule`, `concurrency`). Validates via Pydantic, writes the
-  full config back to disk via `Config.save` (atomic tmp-replace), and replaces
+  (`enabled`, `schedule`, `concurrency`, `jitter_seconds`,
+  `per_book_delay_seconds`). Validates via Pydantic, writes the full config
+  back to disk via `Config.save` (atomic tmp-replace), and replaces
   `app.state.config` with the new validated config. 404 unknown source, 422 on
   invalid values (e.g. concurrency out of `ge=1, le=5`).
 
@@ -29,9 +33,9 @@ Design notes:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -115,10 +119,16 @@ class TriggerRunResult(BaseModel):
 
 
 class SourcePatch(BaseModel):
-    """Partial update to a `SourceConfig`. `None` means "don't change"."""
+    """Partial update to a `SourceConfig`. `None` means "don't change".
+
+    `per_book_delay_seconds` accepts a 2-tuple `(min, max)` matching the YAML
+    shape on `SourceConfig`. `jitter_seconds` is a non-negative scalar.
+    """
     enabled: bool | None = None
     schedule: str | None = None
     concurrency: int | None = Field(default=None, ge=1, le=5)
+    jitter_seconds: int | None = Field(default=None, ge=0)
+    per_book_delay_seconds: tuple[int, int] | None = None
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -132,6 +142,18 @@ def _last_run_for(session, source_name: str) -> models.SourceRun | None:
         .limit(1)
     )
     return session.exec(stmt).first()
+
+
+def _runs_for(
+    session, source_name: str, limit: int
+) -> list[models.SourceRun]:
+    stmt = (
+        select(models.SourceRun)
+        .where(models.SourceRun.source == source_name)
+        .order_by(models.SourceRun.started_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    return list(session.exec(stmt).all())
 
 
 def _status_for(
@@ -155,6 +177,25 @@ def list_sources(session: SessionDep, cfg: ConfigDep) -> list[SourceStatusOut]:
         _status_for(session, name, cfg.sources[name])
         for name in sorted(cfg.sources.keys())
     ]
+
+
+@router.get("/{name}/runs", response_model=list[SourceRunOut])
+def list_source_runs(
+    name: str,
+    session: SessionDep,
+    cfg: ConfigDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+) -> list[SourceRunOut]:
+    """Recent `SourceRun` rows for `name`, newest first (default 10, max 100).
+
+    404 if `name` is not configured. Matches the wire shape of `last_run` in
+    `GET /api/sources` (excludes `error_traceback`).
+    """
+    if name not in cfg.sources:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="source not found"
+        )
+    return [SourceRunOut.from_run(r) for r in _runs_for(session, name, limit)]
 
 
 @router.post("/{name}/run", response_model=TriggerRunResult)
