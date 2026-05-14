@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 + 7.6 live. Task 7.6 adds the metadata router (`src/book_alerter/api/metadata.py`, prefix `/api/metadata`): `GET /api/metadata/lookup?isbn=...` normalizes via `to_isbn13` (422 on invalid) then races OL+GB through `lookup_isbn` (**404** when both empty). `GET /api/metadata/search?q=...&limit=...` is a Google Books free-text wrapper (`limit` capped at 40 via `Query(ge=1, le=40)`; 422 out-of-range; empty `q` → 422) returning `list[BookMetadataWithIsbn]` for the add-book UI's click-to-add candidates. New `search_books(query, limit=10)` in `book_alerter.metadata` prefers native `ISBN_13`, falls back to promoting `ISBN_10` via `to_isbn13`, filters items lacking title/author/ISBN (no ISBN → can't add, row useless). `isinstance(...)` guards on every level of the untrusted JSON. New `BookMetadataWithIsbn` model (isbn13 + title + author + optional cover_url) is the search wire shape; `BookMetadata` is unchanged. 175 tests passing.
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 + 7.6 + 7.7 live. Task 7.7 adds two endpoints: `POST /api/books/{id}/refetch` (extends `books` router) fans out across every configured source via `scheduler.trigger_now(name)` — disabled sources surface in `skipped` with `reason="disabled"` (no scheduler call), backoff-active sources (scheduler returns 0) surface with `reason="backoff_active"`; 404 unknown book, 200 with empty lists when `cfg.sources` is empty. `POST /api/notifications/{channel}/test` (new `notifications` router at `src/book_alerter/api/notifications.py`) synthesizes an in-memory `Book` + `Alert` (NEVER persisted — `id=None`, no DB write) and dispatches through `notifier.send(alert, book)`. Notifier lookup via new `app.state.notifiers = {n.name: n for n in notifiers}` (set in lifespan + test fixture) + `get_notifiers` dep + `NotifiersDep` alias in `api/deps.py`. Non-shadowing import alias `notifications_routes` mirrors the `config_routes` / `metadata_routes` pattern (avoids collision with top-level `book_alerter.notifications` package). Test wiring adds `_StubNotifier` (sibling of `_StubScheduler`) attached under name `"stub"` in the `api_client` fixture. 184 tests passing.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.6 committed at `2ea43d7`
+**Last update:** 2026-05-14, Task 7.7 committed at `f2c8c5c`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 175 passed
+# expected: 184 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 76
+# expected: 79
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.7 (Refetch + notifications test — `POST /api/books/{id}/refetch` calls `scheduler.trigger_now` for each source; `POST /api/notifications/{channel}/test` synthesises an Alert and sends it through the named channel)**, plan line 2549.
+Dispatch **Phase 7 Task 7.8 (Optional HTTP Basic auth — gate the API behind a single configurable basic-auth credential; off by default; matches the "Tailscale-only access; HTTP Basic optional but off by default" working agreement)**, plan line 2554.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -62,6 +62,9 @@ _None._ All blockers from Phase 1 resolved.
 - **`app.state.config_path` (Task 7.4)**: set by both `lifespan` (after `cfg = Config.load(cfg_path)`) and the `api_client` test fixture (before the app starts). PATCH-style endpoints that persist config back to disk pull it via `ConfigPathDep`. If you build a new test app outside of `api_client`, remember to set this attribute — the dep will `AttributeError` otherwise.
 - **Monkeypatch at the import site, not the source module (Task 7.6)**: when an API handler does `from book_alerter.metadata import lookup_isbn` (or any star-style import), the handler binds the name in its own module namespace at import time. Tests must `monkeypatch.setattr("book_alerter.api.metadata.lookup_isbn", fake)` — patching `"book_alerter.metadata.lookup_isbn"` leaves the handler's already-resolved reference pointing at the original function and the fake never fires. Same rule applies to `search_books` and any other dependency imported by name. If you instead `import book_alerter.metadata as m` and call `m.lookup_isbn(...)`, patching the source module works — but the established pattern in this codebase is direct-name imports, so default to import-site patching. See `tests/integration/api/test_metadata_api.py` for the canonical example.
 - **HTTP integration tests without cassettes (Task 7.6)**: when the code-under-test builds its own `httpx.AsyncClient` internally (e.g. `search_books`), inject `httpx.MockTransport` by monkeypatching `httpx.AsyncClient` in the target module's namespace to wrap a fake client that injects the transport. Cleaner than recording a real cassette for a small controlled payload; matches the `test_ntfy_notifier.py` pattern. The handler retains its 5s timeout etc. — only the transport is swapped.
+- **Notifier-by-name lookup (Task 7.7)**: `app.state.notifiers` is a `dict[str, Notifier]` keyed by `notifier.name` — set by `lifespan` (after building the notifier list) and the `api_client` test fixture. Pull via `NotifiersDep` from `api/deps.py`. The `notifications` router uses this for `POST /api/notifications/{channel}/test`; future channel-management endpoints (mute, dedupe stats, delivery history) should pull from the same dict rather than re-instantiating notifiers per request. The `_StubNotifier` in the test conftest is the test-side sibling of `_StubScheduler` — attached under name `"stub"`, exposes `calls: list[tuple[Alert, Book]]` and `next_result: NotificationResult` for driving sent/error branches. Use it for any future test that needs to inspect notifier dispatch without spinning up a real channel.
+- **Refetch fan-out pattern (Task 7.7)**: `POST /api/books/{id}/refetch` iterates `cfg.sources.items()`, **not** the set of sources that have observed the book — the refetch button is "ask all sources about this book again". Disabled sources skip the scheduler entirely (`reason="disabled"`); the scheduler returning 0 surfaces as `reason="backoff_active"` rather than a 409 (the 409 contract from `POST /api/sources/{name}/run` doesn't apply here because refetch is a multi-source operation where partial success is the norm). Result shape `{triggered, skipped}` with nested literal-typed DTOs (`RefetchTriggered`, `RefetchSkipped`).
+- **Synthetic Alert non-persistence (Task 7.7)**: `POST /api/notifications/{channel}/test` builds an in-memory `Book` + `Alert` (`id=None`, `book_id=0`) and passes them to `notifier.send` — no DB write. The notifier just reads fields off the model. If you add a notifier that needs the DB (none yet — the in-app notifier writes a `NotificationDelivery` row through the dispatcher, not in `send`), reconsider this pattern, but for now: do NOT persist the test alert. The "alert table stays empty after the test call" assertion in `test_notifications_api.py` is load-bearing.
 - **Config PUT pattern (Task 7.5)**: `PUT /api/config` always returns `{diff, applied, errors}` and validates in both dry-run and apply modes — 422 fires identically in either. The wire shape is opinionated: do **NOT** add 200-with-errors as a "validation failed" channel. **Backup rotation** uses `shutil.copy2(config_path, config_path.with_suffix(suffix + ".bak"))` before `Config.save` — single rotating backup, overwrites any prior `.bak`, **skipped on first-write** (`config_path.exists()` guard). Don't ring-rotate (`.bak.1`, `.bak.2`); the user can keep their own snapshots if they need history. **Diff is top-level only** by deliberate choice — computed via `model_dump(mode="json")` on both sides so nested Pydantic models become plain dicts and `dict.__eq__` does deep equality. Recursive diff was rejected for MVP; UI renders the block-level changes. Env-var substitution is NOT re-run on PUT — `_substitute_env` only fires in `Config.load` from YAML on disk; the PUT body is the already-materialized config dict.
 
 ## Incidents this session (for reference, not action)
