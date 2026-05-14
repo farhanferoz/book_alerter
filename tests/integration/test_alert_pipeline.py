@@ -150,7 +150,15 @@ def test_pipeline_skips_muted_book(engine_with_view, make_book):
 
     with Session(engine_with_view) as s:
         alerts = s.exec(select(models.Alert)).all()
+        state = s.exec(
+            select(models.BookSignalState).where(
+                models.BookSignalState.book_id == book_id
+            )
+        ).one_or_none()
     assert alerts == []
+    # Mute skips the entire evaluation — no BookSignalState row either, so a
+    # price drop during the mute can still fire new_low when the mute lifts.
+    assert state is None
 
 
 def test_pipeline_skips_per_book_disabled_kind(engine_with_view, make_book):

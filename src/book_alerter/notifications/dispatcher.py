@@ -55,6 +55,16 @@ class AlertPipeline:
                     prev.last_all_time_min_total_minor if prev else None
                 )
 
+                # Per-book mute — skip the entire evaluation (no alerts AND no
+                # state update). Keeping the pre-mute prev_signal /
+                # prev_all_time_min lets a price drop during the mute still
+                # fire new_low when the mute lifts.
+                if (
+                    book.muted_until is not None
+                    and datetime.now(UTC) < book.muted_until.replace(tzinfo=UTC)
+                ):
+                    continue
+
                 kinds: list[AlertKind] = detect_alert_kinds(
                     book, stats, prev_signal, prev_all_time_min,
                     self.cfg.recommendation,
@@ -65,15 +75,6 @@ class AlertPipeline:
                     if k in self.cfg.notifications.alert_kinds_enabled
                     and k not in book.alert_kinds_disabled
                 ]
-                # Per-book mute — gate AFTER filters; skip alerts entirely but
-                # continue to refresh BookSignalState so a future unmute has
-                # an up-to-date prev_signal/prev_all_time_min baseline.
-                muted = (
-                    book.muted_until is not None
-                    and datetime.now(UTC) < book.muted_until.replace(tzinfo=UTC)
-                )
-                if muted:
-                    kinds = []
                 kinds = self._filter_dedup(book, kinds, session)
 
                 for k in kinds:
