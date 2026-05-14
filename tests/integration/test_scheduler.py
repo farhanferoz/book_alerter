@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+from sqlmodel import Session, select
+
+from tests.integration.conftest import WOB_CARRIED_ISBN
+
 from book_alerter.config import Config, SourceConfig
+from book_alerter.db import models
 from book_alerter.scheduler import Scheduler
+from book_alerter.sources.wob import WobInlineSource
 
 
 async def test_scheduler_registers_jobs_from_config():
@@ -88,24 +94,12 @@ async def test_scheduler_skips_unknown_source_in_config():
         sched.shutdown()
 
 
-async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book):
+async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book, wob_vcr):
     """Trigger WoB inline source via scheduler; assert observations persist."""
-    from pathlib import Path
-
-    import vcr
-    from sqlmodel import Session, select
-
-    from book_alerter.config import Config, SourceConfig
-    from book_alerter.db import models
-    from book_alerter.scheduler import Scheduler
-    from book_alerter.sources.wob import WobInlineSource
-
-    # Seed one Book matching the cassette ISBN.
-    ISBN = "9780241638194"
     with Session(sqlite_engine) as s:
-        make_book(s, isbn13=ISBN)
+        book = make_book(s, isbn13=WOB_CARRIED_ISBN)
+        seeded_book_id = book.id
 
-    # Build scheduler with WoB inline source + no per-book delay.
     cfg = Config(
         sources={
             "wob": SourceConfig(
@@ -128,23 +122,13 @@ async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book):
         alert_pipeline=_capture_alert_pipeline,
     )
 
-    # We DO NOT call scheduler.start() — we use trigger_now directly so the
-    # cron loop never spins up. This keeps the test deterministic.
-
-    cassette_dir = Path(__file__).parent / "sources" / "cassettes"
-    my_vcr = vcr.VCR(
-        cassette_library_dir=str(cassette_dir),
-        record_mode="none",  # MUST replay; fail loud if cassette missing
-        match_on=("method", "scheme", "host", "port", "path"),
-        decode_compressed_response=True,
-    )
-
-    with my_vcr.use_cassette(f"wob_{ISBN}.yaml"):
+    # Skip scheduler.start() — trigger_now drives _run_source directly so the
+    # cron loop never spins up and the test is deterministic.
+    with wob_vcr("none").use_cassette(f"wob_{WOB_CARRIED_ISBN}.yaml"):
         run_id = await scheduler.trigger_now("wob")
 
     assert run_id > 0
 
-    # Assert observations landed.
     with Session(sqlite_engine) as s:
         obs = s.exec(
             select(models.PriceObservation).where(models.PriceObservation.source == "wob")
@@ -156,13 +140,48 @@ async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book):
         assert o.total_minor == o.price_minor + (o.shipping_minor or 0)
         assert o.currency == "GBP"
 
-    # Assert SourceRun audit was written and marked success.
     with Session(sqlite_engine) as s:
         run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
     assert run.status == "success"
     assert run.books_attempted == 1
     assert run.books_succeeded == 1
 
-    # Assert the alert pipeline got the book id of the affected book.
     assert len(alert_calls) == 1
-    assert len(alert_calls[0]) == 1
+    assert alert_calls[0] == [seeded_book_id]
+
+
+async def test_scheduler_alert_pipeline_failure_does_not_corrupt_audit(
+    sqlite_engine, make_book, wob_vcr,
+):
+    """A raising alert_pipeline must not flip a successful SourceRun to error."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13=WOB_CARRIED_ISBN)
+
+    cfg = Config(
+        sources={
+            "wob": SourceConfig(
+                enabled=True, type="inline", region="UK",
+                per_book_delay_seconds=(0, 0), concurrency=1,
+            ),
+        },
+    )
+
+    async def _failing_pipeline(book_ids: list[int]) -> None:
+        raise RuntimeError("pipeline blew up")
+
+    scheduler = Scheduler(
+        config=cfg,
+        sources={"wob": WobInlineSource(name="wob", region="UK")},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipeline=_failing_pipeline,
+    )
+
+    with wob_vcr("none").use_cassette(f"wob_{WOB_CARRIED_ISBN}.yaml"):
+        run_id = await scheduler.trigger_now("wob")
+
+    with Session(sqlite_engine) as s:
+        run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
+    assert run.status == "success", (
+        "alert pipeline RuntimeError must not corrupt a successful SourceRun audit"
+    )
+    assert run.books_succeeded == 1

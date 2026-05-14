@@ -1,33 +1,17 @@
 import asyncio
-from pathlib import Path
 
-import vcr
+from tests.integration.conftest import WOB_CARRIED_ISBN, WOB_MAYBE_NOT_CARRIED_ISBN
 
 from book_alerter.sources.wob import WobInlineSource
 
 
-CASSETTE_DIR = Path(__file__).parent / "cassettes"
-my_vcr = vcr.VCR(
-    cassette_library_dir=str(CASSETTE_DIR),
-    record_mode="once",
-    match_on=("method", "scheme", "host", "port", "path"),
-    decode_compressed_response=True,
-)
-
-
-# 9780241638194 — popular Penguin paperback, reliably carried by WoB.
-# 9789693531374 — obscure ISBN; may or may not be carried.
-ISBN_LIKELY_CARRIED = "9780241638194"
-ISBN_MAYBE_NOT_CARRIED = "9789693531374"
-
-
-def test_wob_extracts_at_least_one_offer_from_carried_isbn(transient_book):
+def test_wob_extracts_at_least_one_offer_from_carried_isbn(transient_book, wob_vcr):
     """The popular ISBN must return at least one parsed offer with a known
     condition. Guards against both broken selectors AND a silent WoB rename
     that would coerce real offers to `unknown`."""
     src = WobInlineSource(name="wob", region="UK")
-    with my_vcr.use_cassette(f"wob_{ISBN_LIKELY_CARRIED}.yaml"):
-        out = asyncio.run(src.fetch(transient_book(ISBN_LIKELY_CARRIED)))
+    with wob_vcr("once").use_cassette(f"wob_{WOB_CARRIED_ISBN}.yaml"):
+        out = asyncio.run(src.fetch(transient_book(WOB_CARRIED_ISBN)))
     assert len(out) > 0, "expected >=1 offer for a popular ISBN; selectors may be wrong"
     for c in out:
         assert c.condition in {"new", "used_vg", "used_g", "used_acceptable"}, (
@@ -39,8 +23,8 @@ def test_wob_extracts_at_least_one_offer_from_carried_isbn(transient_book):
         assert c.url.startswith("https://")
 
 
-def test_wob_handles_uncarried_isbn_gracefully(transient_book):
+def test_wob_handles_uncarried_isbn_gracefully(transient_book, wob_vcr):
     src = WobInlineSource(name="wob", region="UK")
-    with my_vcr.use_cassette(f"wob_{ISBN_MAYBE_NOT_CARRIED}.yaml"):
-        out = asyncio.run(src.fetch(transient_book(ISBN_MAYBE_NOT_CARRIED)))
+    with wob_vcr("once").use_cassette(f"wob_{WOB_MAYBE_NOT_CARRIED_ISBN}.yaml"):
+        out = asyncio.run(src.fetch(transient_book(WOB_MAYBE_NOT_CARRIED_ISBN)))
     assert isinstance(out, list)

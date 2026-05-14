@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+import vcr
 from sqlmodel import Session, SQLModel
 from sqlalchemy.engine import Engine
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
+
+
+WOB_CASSETTE_DIR = Path(__file__).parent / "sources" / "cassettes"
+WOB_CARRIED_ISBN = "9780241638194"
+WOB_MAYBE_NOT_CARRIED_ISBN = "9789693531374"
 
 
 @pytest.fixture
@@ -29,5 +36,18 @@ def make_book():
         session.commit()
         session.refresh(book)
         return book
+
+    return _make
+
+
+@pytest.fixture
+def wob_vcr():
+    def _make(record_mode: str = "once") -> vcr.VCR:
+        return vcr.VCR(
+            cassette_library_dir=str(WOB_CASSETTE_DIR),
+            record_mode=record_mode,
+            match_on=("method", "scheme", "host", "port", "path"),
+            decode_compressed_response=True,
+        )
 
     return _make

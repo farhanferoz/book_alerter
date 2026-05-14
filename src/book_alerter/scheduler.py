@@ -127,9 +127,7 @@ class Scheduler:
             await asyncio.gather(*[_one(b) for b in books])
 
             with self._session_factory() as session:
-                run = session.exec(
-                    select(SourceRun).where(SourceRun.id == run_id)
-                ).one()
+                run = session.get(SourceRun, run_id)
                 run.finished_at = datetime.now(UTC)
                 run.books_attempted = attempted
                 run.books_succeeded = succeeded
@@ -139,7 +137,6 @@ class Scheduler:
                     run.status = "partial"
                 else:
                     run.status = "error"
-                session.add(run)
                 session.commit()
 
             if succeeded > 0:
@@ -150,7 +147,12 @@ class Scheduler:
                     self._consecutive_errors.get(source_name, 0) + 1
                 )
                 self._apply_backoff(source_name)
-            await self._alert_pipeline(affected_book_ids)
+            # Run alert pipeline AFTER the audit row commits, with its own
+            # try/except so a Phase 4 pipeline bug can't corrupt the run record.
+            try:
+                await self._alert_pipeline(affected_book_ids)
+            except Exception:
+                log.exception("alert_pipeline.failed", source=source_name)
         except Exception as e:
             log.error(
                 "source.run.exception",
@@ -159,14 +161,11 @@ class Scheduler:
                 tb=traceback.format_exc(),
             )
             with self._session_factory() as session:
-                run = session.exec(
-                    select(SourceRun).where(SourceRun.id == run_id)
-                ).one()
+                run = session.get(SourceRun, run_id)
                 run.finished_at = datetime.now(UTC)
                 run.status = "error"
                 run.error_message = str(e)
                 run.error_traceback = traceback.format_exc()
-                session.add(run)
                 session.commit()
             self._consecutive_errors[source_name] = (
                 self._consecutive_errors.get(source_name, 0) + 1
