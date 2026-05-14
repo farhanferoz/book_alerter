@@ -2,6 +2,11 @@
 data/
 !data/.gitkeep
 
+# Scenario artifacts (test DB + per-scenario config)
+tests/scenarios/.test.db
+tests/scenarios/.scenario_config.yaml
+tests/scenarios/screenshots/
+
 # Python
 __pycache__/
 *.py[cod]
