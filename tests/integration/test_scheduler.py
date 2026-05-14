@@ -4,12 +4,11 @@ from unittest.mock import AsyncMock
 
 from sqlmodel import Session, select
 
-from tests.integration.conftest import WOB_CARRIED_ISBN
-
 from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
 from book_alerter.scheduler import Scheduler
 from book_alerter.sources.wob import WobInlineSource
+from tests.integration.conftest import WOB_CARRIED_ISBN
 
 
 async def test_scheduler_registers_jobs_from_config():
@@ -17,7 +16,6 @@ async def test_scheduler_registers_jobs_from_config():
         sources={
             "wob": SourceConfig(
                 enabled=True,
-                type="inline",
                 region="UK",
                 schedule="0 */6 * * *",
             ),
@@ -43,7 +41,6 @@ async def test_scheduler_no_jobs_when_source_disabled():
         sources={
             "wob": SourceConfig(
                 enabled=False,
-                type="inline",
                 region="UK",
                 schedule="0 */6 * * *",
             ),
@@ -70,11 +67,11 @@ async def test_scheduler_skips_unknown_source_in_config():
     cfg = Config(
         sources={
             "wob": SourceConfig(
-                enabled=True, type="inline", region="UK",
+                enabled=True, region="UK",
                 schedule="0 */6 * * *",
             ),
             "ghost": SourceConfig(
-                enabled=True, type="inline", region="UK",
+                enabled=True, region="UK",
                 schedule="0 */4 * * *",
             ),
         },
@@ -103,7 +100,7 @@ async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book, wob_vcr):
     cfg = Config(
         sources={
             "wob": SourceConfig(
-                enabled=True, type="inline", region="UK",
+                enabled=True, region="UK",
                 per_book_delay_seconds=(0, 0),
                 concurrency=1,
             ),
@@ -160,7 +157,7 @@ async def test_scheduler_alert_pipeline_failure_does_not_corrupt_audit(
     cfg = Config(
         sources={
             "wob": SourceConfig(
-                enabled=True, type="inline", region="UK",
+                enabled=True, region="UK",
                 per_book_delay_seconds=(0, 0), concurrency=1,
             ),
         },

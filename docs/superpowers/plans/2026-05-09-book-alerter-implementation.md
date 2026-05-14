@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a self-hosted book-price comparison tool — Python (FastAPI + APScheduler + SQLite) orchestrating Go source-CLIs (printing-press) over a pluggable Source interface, with a React dashboard and ntfy push notifications, deployed via Docker on a NAS.
+> **⚠ Architecture revision (2026-05-14)** — this plan still describes Phase 8 as "printing-press CLIs (Bookfinder + Amazon)" and references `SubprocessSource` throughout (Task 2.2, Phase 8.1, Phase 8.2 as originally written). **That path is abandoned.** Every source is now an `InlineSource`: `WobInlineSource` (httpx), `BookfinderInlineSource` (Playwright headless Chromium). `SubprocessSource` was deleted from the codebase on the same day the abandonment landed, along with the `type`/`binary` fields on `SourceConfig`. Phase 8.1 (`bookfinder-pp-cli` generation) is dropped permanently. Phase 8.2 shipped as a Playwright-backed inline source rather than a SubprocessSource wrapper. Phase 8.3 (Amazon UK) will follow the Playwright pattern. The Phase 8 section below is historical; see `docs/CHANGELOG.md` Phase 8 entries for what actually shipped.
 
-**Architecture:** Single-process FastAPI app holding APScheduler in its lifespan; per-source jobs shell out to printing-press-generated Go CLIs (and one inline Python source for bootstrap). SQLite on a host-mounted volume. React + Vite SPA served statically. Tailscale-only access; no app-level auth by default.
+**Goal:** Build a self-hosted book-price comparison tool — Python (FastAPI + APScheduler + SQLite) with a pluggable Source interface (all sources are inline Python; HTTP-only sources use `httpx`, sites that need a real browser use Playwright), a React dashboard, and ntfy push notifications, deployed via Docker on a NAS.
+
+**Architecture:** Single-process FastAPI app holding APScheduler in its lifespan; per-source jobs call into inline Python `Source.fetch()` implementations. SQLite on a host-mounted volume. React + Vite SPA served statically. Tailscale-only access; no app-level auth by default.
 
 **Tech Stack:** Python 3.12 · uv · FastAPI · SQLModel · Alembic · APScheduler · Pydantic-Settings · structlog · httpx · selectolax · isbnlib · pytest · pytest-asyncio · vcrpy · hypothesis · React 18 · TypeScript · Vite · Tailwind · shadcn/ui · Recharts · TanStack Query · openapi-typescript · Monaco · Docker (multi-stage Go + Python).
 

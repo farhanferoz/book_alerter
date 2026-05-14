@@ -68,8 +68,6 @@ class NotificationsConfig(BaseModel):
 
 class SourceConfig(BaseModel):
     enabled: bool = True
-    type: Literal["subprocess", "inline"] = "subprocess"
-    binary: str | None = None
     region: str = "UK"
     schedule: str = "0 */6 * * *"
     jitter_seconds: int = 600

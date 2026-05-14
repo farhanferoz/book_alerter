@@ -9,6 +9,8 @@ owner: ff235
 
 A self-hosted personal book-price comparison and alerting tool that runs on a home NAS, polls multiple book retailers periodically, builds its own price history, and surfaces buy/wait recommendations through a web dashboard and push notifications.
 
+> **⚠ Architecture revision (2026-05-14)** — this document still describes the original design where source CLIs were Go binaries generated via `printing-press` and orchestrated through a `SubprocessSource` ABC. As of Phase 8.2, **that path is abandoned**. The actual shipped architecture: a single Python process where every source is an `InlineSource` subclass — `WobInlineSource` uses `httpx`, `BookfinderInlineSource` uses Playwright (headless Chromium) because bookfinder.com is fronted by AWS WAF's `mp_verify` challenge variant which defeats every static-cookie / pure-Go-solver replay attempt. Amazon UK (Phase 8.3) will follow the Playwright pattern. `SubprocessSource` has been removed from the codebase along with `Literal["subprocess","inline"]`/`binary` fields on `SourceConfig`. There are no Go binaries, no `cli_bins/` directory, and no `printing-press` dependency. The original printing-press-aligned descriptions below are kept as historical context but no longer match the code. See the Phase 8 entries in `docs/CHANGELOG.md` for the investigation trail.
+
 ## TL;DR
 
 - **Architecture**: single Python container (FastAPI + APScheduler in-process) orchestrating Go source-CLIs (printing-press-generated) over a pluggable `Source` interface; SQLite on a host volume.

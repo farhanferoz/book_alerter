@@ -2,9 +2,12 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 COMPLETE + simplify pass applied. All eight tasks live (7.1 Books CRUD → 7.2 Observations/Stats → 7.3 Alerts feed → 7.4 Sources status/trigger/patch → 7.5 Config GET/schema/PUT → 7.6 Metadata lookup/search → 7.7 Refetch + notifications-test → 7.8 Optional HTTP Basic auth). Simplify pass `c6a9b49` renamed the deprecated `HTTP_422_UNPROCESSABLE_ENTITY` constant in 3 files (now `_CONTENT`), dropped local `SessionDep` re-definitions in `books.py` + `alerts.py`, hoisted 7 `include_router` calls in `app.py` into a loop, collapsed two `model_validate` passes in `sources.py` PATCH into one, and parallelized refetch's `scheduler.trigger_now` fan-out via `asyncio.gather`. 190 tests passing (incl. under `-W error::DeprecationWarning`).
-**Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Phase 7 simplify pass committed at `c6a9b49`
+**Status:** Phase 8.2 SHIPPED + architecture revision applied + simplify pass applied (all uncommitted, one combined commit pending) — `BookfinderInlineSource` at `src/book_alerter/sources/bookfinder.py` (~210 LOC). Backed by headless Chromium via Playwright because bookfinder.com is fronted by AWS WAF's `mp_verify` challenge variant which no static-cookie or pure-Go-solver path clears (verified: stdlib HTTP, Surf Chrome-133 TLS, curl_cffi Chrome-120/124/131 impersonation, AND decrypted live cookie from Brave all return 202+WAF). Same day: removed `SubprocessSource` ABC + all printing-press affordances since every current and planned source is now an `InlineSource`; spec/plan got "Architecture revision (2026-05-14)" banners at the top, body left intact as historical context. 192 tests passing (190 prior + 8 new bookfinder − 6 removed subprocess; also clean under `-W error::DeprecationWarning`). 1 opt-in live test (`BOOKFINDER_LIVE=1`) verified — Playwright clears the WAF. Phase 7 remains COMPLETE + simplify pass applied.
+**Branch:** `master` (no worktree); uncommitted changes:
+  - **new**: `src/book_alerter/sources/bookfinder.py`, `tests/unit/sources/{__init__.py,test_bookfinder_parser.py}`, `tests/integration/sources/test_bookfinder.py`, `tests/fixtures/bookfinder/9780747532699-gb-all.html` (115 KB)
+  - **deleted**: `src/book_alerter/sources/subprocess_source.py`, `tests/unit/test_subprocess_source.py`
+  - **modified**: `src/book_alerter/sources/registry.py` (registry collapse), `src/book_alerter/config.py` (dropped `type`/`binary` from `SourceConfig`), `src/book_alerter/api/sources.py` (dropped same from `SourceConfigOut`), `tests/unit/test_source_registry.py` (rewritten), `tests/integration/test_scheduler.py` (stripped `type="inline"` kwargs), `pyproject.toml` + workspace `uv.lock` (playwright added), `docs/CHANGELOG.md`, `docs/superpowers/specs/2026-05-09-book-alerter-design.md` (banner), `docs/superpowers/plans/2026-05-09-book-alerter-implementation.md` (banner), `RESUME.md`
+**Last update:** 2026-05-14, Phase 8.2 ready to commit.
 
 ## Where we are
 
@@ -16,14 +19,15 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 190 passed
+# expected: 198 passed (+ 1 skipped: live bookfinder test gated by BOOKFINDER_LIVE=1)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
+uv run playwright install chromium  # first-time setup on a new machine
 ```
 
 ## Next action
 
-Dispatch **Phase 8 Task 8.1** (`printing-press` `bookfinder-pp-cli` generation — plan line 2594). Go CLI scaffolded via the `printing-press` skill, scrapes Bookfinder's "all editions" view to return per-edition prices/sellers; matches the existing `wob` source's `fetch_book(isbn)` contract for downstream registry integration.
+Dispatch **Phase 8 Task 8.3** (Amazon UK source — plan line 2625-2654). The Phase 8.2 Playwright pattern is the likely template: headless Chromium + `data-csa-c-*`-style selectors + region-driven URL. Amazon's bot protection is generally even more aggressive than AWS WAF; expect to need the same `_render()` indirection point for testability, and to hand-tune the wait-selector + WAF/Captcha detection logic separately. **Do NOT attempt printing-press for Amazon UK** — its `browser_clearance_http` runtime is the same mismatch that killed Phase 8.1, and Amazon's anti-bot will be at least as adversarial as bookfinder's. **Phase 8.1 is permanently dropped**.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -72,9 +76,9 @@ _None._ All blockers from Phase 1 resolved.
 
 ## Working agreements (do NOT re-decide)
 
-- Tech stack: Python 3.13 / uv / FastAPI / SQLModel / Alembic / APScheduler / structlog · React 18 / Vite / TS / Tailwind / shadcn/ui / Recharts · Go (printing-press CLIs)
+- Tech stack: Python 3.12 / uv / FastAPI / SQLModel / Alembic / APScheduler / structlog · React 18 / Vite / TS / Tailwind / shadcn/ui / Recharts · Playwright (for browser-required sources)
 - Deployment: Docker (multi-stage) on NAS; Tailscale-only access; HTTP Basic optional but off by default
-- Sources at MVP: Bookfinder (printing-press), WoB UK (inline Python first), Amazon UK (printing-press)
+- Sources at MVP: WoB UK (inline `httpx` scraper), Bookfinder (inline Playwright scraper, Phase 8.2), Amazon UK (inline Playwright, Phase 8.3 — not yet built). **Architecture revision 2026-05-14**: original design called for Go source-CLIs generated via `printing-press` and orchestrated through a `SubprocessSource` ABC; that path was abandoned for Phase 8.2 (AWS WAF `mp_verify` defeats every static-cookie / pure-Go-solver replay) and removed entirely on the same day — `SubprocessSource` deleted, no Go binaries, no printing-press dependency. See spec + plan revision notes and the Phase 8 entries in `docs/CHANGELOG.md`.
 - Push at MVP: **ntfy only**; Telegram + Pushover deferred (slots reserved)
 - Region: UK only at MVP; schema pluggable
 - Identity: ISBN-pinned; `isbnlib` normalises ISBN-10 → ISBN-13

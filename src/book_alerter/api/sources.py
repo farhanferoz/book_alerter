@@ -53,8 +53,6 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 class SourceConfigOut(BaseModel):
     """Wire mirror of `book_alerter.config.SourceConfig`."""
     enabled: bool
-    type: Literal["subprocess", "inline"]
-    binary: str | None
     region: str
     schedule: str
     jitter_seconds: int
@@ -67,8 +65,6 @@ class SourceConfigOut(BaseModel):
     def from_config(cls, sc: SourceConfig) -> SourceConfigOut:
         return cls(
             enabled=sc.enabled,
-            type=sc.type,
-            binary=sc.binary,
             region=sc.region,
             schedule=sc.schedule,
             jitter_seconds=sc.jitter_seconds,
