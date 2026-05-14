@@ -28,7 +28,6 @@ class SubprocessSource(Source):
         self.env = env
 
     def build_command(self, book: Book) -> list[str]:
-        # Default contract — subclasses override if their CLI uses different flags.
         return [self.binary, "search", "--isbn", book.isbn13, "--region", self.region, "--json"]
 
     def parse(self, stdout: str) -> list[ObservationCandidate]:
@@ -53,10 +52,15 @@ class SubprocessSource(Source):
         except asyncio.TimeoutError:
             try:
                 proc.kill()
+                # Reap the killed process so it doesn't linger as a zombie.
+                await proc.wait()
             except ProcessLookupError:
                 pass
             raise SourceError(self.name, f"timeout after {self.timeout_s}s")
 
         if proc.returncode != 0:
             raise SourceError(self.name, stderr.decode("utf-8", errors="replace").strip())
-        return self.parse(stdout.decode("utf-8", errors="replace"))
+        try:
+            return self.parse(stdout.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            raise SourceError(self.name, f"parse failed: {e}") from e

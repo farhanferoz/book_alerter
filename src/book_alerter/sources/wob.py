@@ -40,7 +40,7 @@ def _extract_meta_json(html: str) -> dict | None:
     m = _META_RE.search(html)
     if m is None:
         return None
-    start = m.end() - 1  # position of the opening '{'
+    start = m.end() - 1
     depth = 0
     in_str = False
     esc = False
@@ -80,8 +80,6 @@ def _condition_from_title(public_title: str) -> Condition:
 
 
 class WobInlineSource(InlineSource):
-    name: str
-
     def __init__(self, name: str = "wob", region: str = "UK", timeout_s: float = 30.0) -> None:
         self.name = name
         self.region = region
@@ -103,12 +101,12 @@ class WobInlineSource(InlineSource):
             ) as client:
                 resp = await client.get(url)
         except httpx.HTTPError as e:
-            raise SourceError(self.name, f"http error: {e}") from e
+            raise SourceError(self.name, f"http error at {url}: {e}") from e
 
         if resp.status_code == 404:
             return []
         if resp.status_code >= 400:
-            raise SourceError(self.name, f"http {resp.status_code}")
+            raise SourceError(self.name, f"http {resp.status_code} at {url}")
 
         # The final URL after redirects is the canonical product page (Shopify
         # rewrites `/books/<isbn>` -> `/products/<slug>-<isbn>`). Prefer that

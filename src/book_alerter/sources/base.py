@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Literal
 
 from pydantic import BaseModel
 
-from book_alerter.db.models import Book
+from book_alerter.db.models import Book, Condition
 
-
-Condition = Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"]
+__all__ = ["Condition", "ObservationCandidate", "Source", "SourceError"]
 
 
 class ObservationCandidate(BaseModel):

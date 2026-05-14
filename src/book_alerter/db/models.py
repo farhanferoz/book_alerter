@@ -9,6 +9,9 @@ from sqlalchemy import Column, Index, JSON, String
 from sqlmodel import Field, SQLModel
 
 
+Condition = Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"]
+
+
 class Book(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     isbn13: str = Field(unique=True, index=True)
@@ -34,9 +37,7 @@ class PriceObservation(SQLModel, table=True):
     book_id: int = Field(foreign_key="book.id", index=True)
     source: str
     seller: str | None = None
-    condition: Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"] = Field(
-        sa_column=Column(String, nullable=False)
-    )
+    condition: Condition = Field(sa_column=Column(String, nullable=False))
     price_minor: int
     currency: str
     shipping_minor: int | None = None

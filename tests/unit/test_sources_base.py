@@ -1,9 +1,7 @@
 import asyncio
-from datetime import datetime
 
 import pytest
 
-from book_alerter.db.models import Book
 from book_alerter.sources.base import (
     ObservationCandidate,
     Source,
@@ -29,28 +27,14 @@ class _Stub(Source):
         ]
 
 
-def test_stub_source_returns_candidates():
+def test_stub_source_returns_candidates(transient_book):
     src = _Stub()
-    book = Book(
-        isbn13="9780000000000",
-        title="t",
-        author="a",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-    )
-    out = asyncio.run(src.fetch(book))
+    out = asyncio.run(src.fetch(transient_book()))
     assert len(out) == 1
     assert out[0].condition == "new"
 
 
-def test_stub_source_raises_source_error():
+def test_stub_source_raises_source_error(transient_book):
     src = _Stub()
-    book = Book(
-        isbn13="fail",
-        title="t",
-        author="a",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-    )
     with pytest.raises(SourceError):
-        asyncio.run(src.fetch(book))
+        asyncio.run(src.fetch(transient_book("fail")))
