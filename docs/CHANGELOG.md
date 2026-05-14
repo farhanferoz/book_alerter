@@ -52,3 +52,8 @@ b0b34b4456fa (book)
     → 242d0f24dcef (source_run/alert/notification_delivery/book_signal_state)
       → 0004_book_stats_view (book_stats view)
 ```
+
+- **Simplify pass** — `bfdb144` Two findings applied from 3-agent review (reuse / quality / efficiency):
+  - **Reuse (HIGH)**: added `tests/integration/conftest.py` with `sqlite_engine` (engine + `create_all`) and `make_book` (minimal Book factory) fixtures; refactored the three model tests to use them. ~30 lines of duplicated setup removed. `test_book_stats_view.py` deliberately stays on its own subprocess-alembic path so the view DDL is actually applied.
+  - **Quality (LOW)**: `raw: dict` → `raw: dict[str, Any]` on `PriceObservation` for type-parameterisation consistency.
+  - **Deferred**: redundant single-column indexes on `PriceObservation.book_id`/`observed_at` (covered by composite indexes; not worth a drop-only migration with no concrete query to optimise against yet); forcing `session_scope` into tests (tests need mid-block `commit()` before `refresh()`, helper would add nothing); 0004 revision-id slug style mismatch (plan-prescribed at line 1147).

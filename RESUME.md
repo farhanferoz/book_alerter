@@ -2,7 +2,7 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 1 COMPLETE. 11 tasks done across Phases 0–1, 14 tests passing, 5 tables + `book_stats` view migrated. Next phase: Phase 2 — Source plugin layer + WoB inline scraper.
+**Status:** Phase 1 COMPLETE + simplify pass applied. 11 tasks done across Phases 0–1, 14 tests passing, 5 tables + `book_stats` view migrated, shared test fixtures (`sqlite_engine`, `make_book`) extracted. Next phase: Phase 2 — Source plugin layer + WoB inline scraper.
 **Branch:** `master` (no worktree)
 **Last update:** 2026-05-14, end of autonomous session
 
@@ -21,8 +21,7 @@ Phases 0–1 complete. Foundation + data model live:
 cd /home/ff235/dev/book_alerter && uv run pytest -v
 # expected: 14 passed
 git log --oneline d953741..HEAD
-# expected: 17 commits ending at cfcb955
-# (or 16 if you exclude the simplify-pass commit — see CHANGELOG)
+# expected: 18 commits ending at bfdb144 (simplify pass)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
