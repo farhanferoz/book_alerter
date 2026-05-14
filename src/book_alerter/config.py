@@ -55,8 +55,11 @@ class NotificationChannels(BaseModel):
     ntfy: NtfyChannelConfig = Field(default_factory=NtfyChannelConfig)
 
 
+AlertKind = Literal["target_hit", "percentile_cross", "new_low"]
+
+
 class NotificationsConfig(BaseModel):
-    alert_kinds_enabled: list[Literal["target_hit", "percentile_cross", "new_low"]] = Field(
+    alert_kinds_enabled: list[AlertKind] = Field(
         default_factory=lambda: ["target_hit", "percentile_cross", "new_low"]
     )
     quiet_hours: QuietHours | None = Field(default_factory=QuietHours)

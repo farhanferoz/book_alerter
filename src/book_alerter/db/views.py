@@ -1,0 +1,61 @@
+"""Canonical DDL for SQL views. Imported by Alembic migrations and by
+integration tests (SQLModel.metadata.create_all does not create views)."""
+from __future__ import annotations
+
+
+BOOK_STATS_VIEW_SQL = """
+CREATE VIEW book_stats AS
+WITH non_dupes AS (
+    SELECT * FROM priceobservation WHERE is_duplicate_of IS NULL
+),
+latest_per_source AS (
+    SELECT book_id, source, total_minor, condition, seller, url, observed_at,
+           ROW_NUMBER() OVER (PARTITION BY book_id, source ORDER BY observed_at DESC) AS rn
+    FROM non_dupes
+),
+current_best AS (
+    -- When two sources tie at the same lowest price, deterministically prefer
+    -- the alphabetically-first source name. Otherwise the view returns
+    -- non-deterministic rows for ties.
+    SELECT lp.book_id, lp.total_minor, lp.source, lp.condition, lp.seller, lp.url
+    FROM latest_per_source lp
+    JOIN (
+        SELECT book_id, MIN(total_minor) AS m
+        FROM latest_per_source
+        WHERE rn = 1
+        GROUP BY book_id
+    ) best ON best.book_id = lp.book_id AND best.m = lp.total_minor AND lp.rn = 1
+    WHERE lp.source = (
+        SELECT MIN(source) FROM latest_per_source lp2
+        WHERE lp2.book_id = lp.book_id AND lp2.total_minor = lp.total_minor AND lp2.rn = 1
+    )
+),
+agg AS (
+    SELECT book_id,
+           MIN(total_minor) AS all_time_min_total_minor,
+           MAX(total_minor) AS all_time_max_total_minor,
+           COUNT(*)         AS observation_count,
+           MAX(observed_at) AS last_observed_at,
+           CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
+    FROM non_dupes
+    GROUP BY book_id
+)
+SELECT b.id AS book_id,
+       b.title,
+       b.isbn13,
+       cb.total_minor AS current_best_total_minor,
+       cb.source      AS current_best_source,
+       cb.condition   AS current_best_condition,
+       cb.seller      AS current_best_seller,
+       cb.url         AS current_best_url,
+       a.all_time_min_total_minor,
+       a.all_time_max_total_minor,
+       a.observation_count,
+       a.last_observed_at,
+       a.days_of_history
+FROM book b
+LEFT JOIN current_best cb ON cb.book_id = b.id
+LEFT JOIN agg a          ON a.book_id  = b.id
+"""
+
+DROP_BOOK_STATS_VIEW_SQL = "DROP VIEW IF EXISTS book_stats"

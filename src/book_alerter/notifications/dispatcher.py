@@ -1,9 +1,6 @@
 """Alert pipeline. Given a list of affected book_ids, recompute stats, detect
 alert kinds, apply global/per-book/mute/dedup filters, persist Alert +
 NotificationDelivery rows, and update BookSignalState for the next eval.
-
-Wired into Scheduler via `Scheduler(..., alert_pipeline=AlertPipeline.run)`
-in `book_alerter.app.lifespan`.
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ from book_alerter.db.models import (
     NotificationDelivery,
 )
 from book_alerter.notifications.base import Notifier
-from book_alerter.stats import compute_book_stats, compute_signal
+from book_alerter.stats import BookStats, Signal, compute_book_stats
 
 
 class AlertPipeline:
@@ -39,73 +36,71 @@ class AlertPipeline:
     async def run(self, book_ids: list[int]) -> None:
         for bid in book_ids:
             with self.session_factory() as session:
-                book = session.exec(
-                    select(Book).where(Book.id == bid)
-                ).one_or_none()
-                if book is None:
-                    continue
-                stats = compute_book_stats(bid, session)
+                await self._run_one(session, bid)
 
-                # Prior state — absent on first eval (no transition fires yet).
-                prev = session.exec(
-                    select(BookSignalState).where(BookSignalState.book_id == bid)
-                ).one_or_none()
-                prev_signal = prev.last_signal if prev else None
-                prev_all_time_min = (
-                    prev.last_all_time_min_total_minor if prev else None
-                )
+    async def _run_one(self, session: Session, bid: int) -> None:
+        book = session.get(Book, bid)
+        if book is None:
+            return
 
-                # Per-book mute — skip the entire evaluation (no alerts AND no
-                # state update). Keeping the pre-mute prev_signal /
-                # prev_all_time_min lets a price drop during the mute still
-                # fire new_low when the mute lifts.
-                if (
-                    book.muted_until is not None
-                    and datetime.now(UTC) < book.muted_until.replace(tzinfo=UTC)
-                ):
-                    continue
+        # Per-book mute — skip the entire evaluation before any view reads.
+        # Keeping the pre-mute prev_signal / prev_all_time_min lets a price
+        # drop during the mute still fire new_low when the mute lifts.
+        if (
+            book.muted_until is not None
+            and datetime.now(UTC) < book.muted_until.replace(tzinfo=UTC)
+        ):
+            return
 
-                kinds: list[AlertKind] = detect_alert_kinds(
-                    book, stats, prev_signal, prev_all_time_min,
-                    self.cfg.recommendation,
-                )
-                # Global per-kind toggle + per-book disabled list.
-                kinds = [
-                    k for k in kinds
-                    if k in self.cfg.notifications.alert_kinds_enabled
-                    and k not in book.alert_kinds_disabled
-                ]
-                kinds = self._filter_dedup(book, kinds, session)
+        stats = compute_book_stats(bid, session)
 
-                for k in kinds:
-                    alert = Alert(
-                        book_id=book.id,
-                        kind=k,
-                        price_minor=stats.current_best_total_minor or 0,
-                        currency=book.currency,
-                        source=stats.current_best_source or "",
-                        condition=stats.current_best_condition or "",
-                        message=self._format_message(book, k, stats),
-                        fired_at=datetime.now(UTC),
-                        delivered_via=[],
-                    )
-                    session.add(alert)
-                    session.commit()
-                    session.refresh(alert)
-                    await self._deliver(alert, book, session)
-
-                self._persist_state(session, bid, book, stats)
-
-    def _persist_state(
-        self, session: Session, bid: int, book: Book, stats,
-    ) -> None:
-        # NOTE: compute_signal is also invoked inside detect_alert_kinds — once
-        # per eval. Acceptable double-call for Phase 4; follow-up could thread
-        # cur_signal through detect_alert_kinds to dedupe.
-        cur_signal = compute_signal(book, stats, self.cfg.recommendation)
-        state = session.exec(
+        # Prior state — absent on first eval (no transition fires yet).
+        prev = session.exec(
             select(BookSignalState).where(BookSignalState.book_id == bid)
         ).one_or_none()
+        prev_signal = prev.last_signal if prev else None
+        prev_all_time_min = prev.last_all_time_min_total_minor if prev else None
+
+        kinds, cur_signal = detect_alert_kinds(
+            book, stats, prev_signal, prev_all_time_min, self.cfg.recommendation,
+        )
+        kinds = [
+            k for k in kinds
+            if k in self.cfg.notifications.alert_kinds_enabled
+            and k not in book.alert_kinds_disabled
+        ]
+        kinds = self._filter_dedup(book, kinds, session)
+
+        for k in kinds:
+            # At this point detect_alert_kinds guarantees current_best is non-None.
+            assert stats.current_best_total_minor is not None
+            alert = Alert(
+                book_id=book.id,
+                kind=k,
+                price_minor=stats.current_best_total_minor,
+                currency=book.currency,
+                source=stats.current_best_source or "",
+                condition=stats.current_best_condition or "",
+                message=self._format_message(book, k, stats),
+                fired_at=datetime.now(UTC),
+                delivered_via=[],
+            )
+            session.add(alert)
+            session.commit()
+            session.refresh(alert)
+            await self._deliver(alert, book, session)
+
+        self._persist_state(session, prev, bid, cur_signal, stats)
+
+    def _persist_state(
+        self,
+        session: Session,
+        prev: BookSignalState | None,
+        bid: int,
+        cur_signal: Signal,
+        stats: BookStats,
+    ) -> None:
+        state = prev
         if state is None:
             state = BookSignalState(book_id=bid)
             session.add(state)
@@ -133,21 +128,21 @@ class AlertPipeline:
                 out.append(k)
         return out
 
-    def _format_message(self, book: Book, kind: str, stats) -> str:
+    def _format_message(
+        self, book: Book, kind: AlertKind, stats: BookStats,
+    ) -> str:
+        assert stats.current_best_total_minor is not None
+        current = stats.current_best_total_minor
         delta = ""
-        if stats.p50_total_minor:
-            pct = (
-                100
-                * (stats.p50_total_minor - (stats.current_best_total_minor or 0))
-                / stats.p50_total_minor
-            )
+        if stats.p50_total_minor is not None:
+            pct = 100 * (stats.p50_total_minor - current) / stats.p50_total_minor
             delta = (
                 f" (was median {stats.p50_total_minor / 100:.2f},"
                 f" {pct:+.0f}%)"
             )
         return (
             f"[{kind.upper()}] {book.title} —"
-            f" {(stats.current_best_total_minor or 0)/100:.2f} {book.currency}{delta}"
+            f" {current / 100:.2f} {book.currency}{delta}"
         )
 
     async def _deliver(

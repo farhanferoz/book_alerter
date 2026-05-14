@@ -10,21 +10,12 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlmodel import Session, select
 
 from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
 from book_alerter.db import models
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
-from tests.integration.test_stats import CREATE_VIEW_SQL
-
-
-@pytest.fixture
-def engine_with_view(sqlite_engine):
-    with sqlite_engine.begin() as conn:
-        conn.exec_driver_sql(CREATE_VIEW_SQL)
-    return sqlite_engine
 
 
 def _seed_observations(session: Session, *, book_id: int, totals: list[int],

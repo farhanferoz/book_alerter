@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
+from book_alerter.db.views import BOOK_STATS_VIEW_SQL
 
 
 WOB_CASSETTE_DIR = Path(__file__).parent / "sources" / "cassettes"
@@ -22,6 +23,13 @@ def sqlite_engine(tmp_path) -> Engine:
     engine = get_engine(f"sqlite:///{tmp_path}/t.db")
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+@pytest.fixture
+def engine_with_view(sqlite_engine):
+    with sqlite_engine.begin() as conn:
+        conn.exec_driver_sql(BOOK_STATS_VIEW_SQL)
+    return sqlite_engine
 
 
 @pytest.fixture

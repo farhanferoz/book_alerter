@@ -11,69 +11,6 @@ from book_alerter.db import models
 from book_alerter.stats import BookStats, _percentiles, compute_book_stats
 
 
-# Duplicated from migration 0004_book_stats_view — keep in sync.
-# The integration sqlite_engine fixture uses SQLModel.metadata.create_all,
-# which does not create SQL views, so we install the view DDL manually here.
-CREATE_VIEW_SQL = """
-CREATE VIEW book_stats AS
-WITH non_dupes AS (
-    SELECT * FROM priceobservation WHERE is_duplicate_of IS NULL
-),
-latest_per_source AS (
-    SELECT book_id, source, total_minor, condition, seller, url, observed_at,
-           ROW_NUMBER() OVER (PARTITION BY book_id, source ORDER BY observed_at DESC) AS rn
-    FROM non_dupes
-),
-current_best AS (
-    SELECT lp.book_id, lp.total_minor, lp.source, lp.condition, lp.seller, lp.url
-    FROM latest_per_source lp
-    JOIN (
-        SELECT book_id, MIN(total_minor) AS m
-        FROM latest_per_source
-        WHERE rn = 1
-        GROUP BY book_id
-    ) best ON best.book_id = lp.book_id AND best.m = lp.total_minor AND lp.rn = 1
-    WHERE lp.source = (
-        SELECT MIN(source) FROM latest_per_source lp2
-        WHERE lp2.book_id = lp.book_id AND lp2.total_minor = lp.total_minor AND lp2.rn = 1
-    )
-),
-agg AS (
-    SELECT book_id,
-           MIN(total_minor) AS all_time_min_total_minor,
-           MAX(total_minor) AS all_time_max_total_minor,
-           COUNT(*)         AS observation_count,
-           MAX(observed_at) AS last_observed_at,
-           CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
-    FROM non_dupes
-    GROUP BY book_id
-)
-SELECT b.id AS book_id,
-       b.title,
-       b.isbn13,
-       cb.total_minor AS current_best_total_minor,
-       cb.source      AS current_best_source,
-       cb.condition   AS current_best_condition,
-       cb.seller      AS current_best_seller,
-       cb.url         AS current_best_url,
-       a.all_time_min_total_minor,
-       a.all_time_max_total_minor,
-       a.observation_count,
-       a.last_observed_at,
-       a.days_of_history
-FROM book b
-LEFT JOIN current_best cb ON cb.book_id = b.id
-LEFT JOIN agg a          ON a.book_id  = b.id
-"""
-
-
-@pytest.fixture
-def engine_with_view(sqlite_engine):
-    with sqlite_engine.begin() as conn:
-        conn.exec_driver_sql(CREATE_VIEW_SQL)
-    return sqlite_engine
-
-
 def _add_obs(session: Session, *, book_id: int, total: int, source: str = "wob",
              observed_at: datetime | None = None, is_duplicate_of: int | None = None) -> models.PriceObservation:
     obs = models.PriceObservation(
