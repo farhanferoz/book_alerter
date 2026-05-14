@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 COMPLETE. All eight tasks (7.1 Books CRUD → 7.2 Observations/Stats → 7.3 Alerts feed → 7.4 Sources status/trigger/patch → 7.5 Config GET/schema/PUT → 7.6 Metadata lookup/search → 7.7 Refetch + notifications-test → 7.8 Optional HTTP Basic auth) live. Task 7.8 adds `src/book_alerter/auth.py` with `is_basic_auth_enabled()` (returns True iff **both** `APP_BASIC_AUTH_USER` + `APP_BASIC_AUTH_PASS` are non-empty — partial-set stays off) and `basic_auth_dep` (Annotated style; `secrets.compare_digest` for both username + password; 401 carries `WWW-Authenticate: Basic`). Wired in `create_app()` via `auth_deps = [Depends(basic_auth_dep)] if is_basic_auth_enabled() else []` passed to every `include_router(..., dependencies=auth_deps)` — disabled mode pays zero per-request cost. Auth state captured once at startup; env-var changes need restart. 190 tests passing.
+**Status:** Phase 7 COMPLETE + simplify pass applied. All eight tasks live (7.1 Books CRUD → 7.2 Observations/Stats → 7.3 Alerts feed → 7.4 Sources status/trigger/patch → 7.5 Config GET/schema/PUT → 7.6 Metadata lookup/search → 7.7 Refetch + notifications-test → 7.8 Optional HTTP Basic auth). Simplify pass `c6a9b49` renamed the deprecated `HTTP_422_UNPROCESSABLE_ENTITY` constant in 3 files (now `_CONTENT`), dropped local `SessionDep` re-definitions in `books.py` + `alerts.py`, hoisted 7 `include_router` calls in `app.py` into a loop, collapsed two `model_validate` passes in `sources.py` PATCH into one, and parallelized refetch's `scheduler.trigger_now` fan-out via `asyncio.gather`. 190 tests passing (incl. under `-W error::DeprecationWarning`).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.8 committed at `8b313c1`
+**Last update:** 2026-05-14, Phase 7 simplify pass committed at `c6a9b49`
 
 ## Where we are
 
@@ -23,7 +23,7 @@ uv run alembic current
 
 ## Next action
 
-Run **Phase 7 simplify pass** (3-agent review — same cadence as Phase 4/5 simplifies: dispatch three subagents independently against the Phase 7 surface, dedupe + prioritise findings, apply low-risk simplifications, then update CHANGELOG/RESUME), then dispatch **Phase 8 Task 8.1** (`printing-press` `bookfinder-pp-cli` generation — plan line 2594; Go CLI scaffolded via the `printing-press` skill, scrapes Bookfinder's "all editions" view to return per-edition prices/sellers; matches the existing `wob` source's `fetch_book(isbn)` contract for downstream registry integration).
+Dispatch **Phase 8 Task 8.1** (`printing-press` `bookfinder-pp-cli` generation — plan line 2594). Go CLI scaffolded via the `printing-press` skill, scrapes Bookfinder's "all editions" view to return per-edition prices/sellers; matches the existing `wob` source's `fetch_book(isbn)` contract for downstream registry integration.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
