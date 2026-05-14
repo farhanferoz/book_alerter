@@ -4,7 +4,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/layout/ThemeToggle";
 import { apiGet, ApiError } from "@/api/client";
-import { cn } from "@/lib/utils";
+import { cn, navLinkClass } from "@/lib/utils";
 
 const SIDEBAR_STORAGE_KEY = "book-alerter:alerts-sidebar-open";
 
@@ -21,15 +21,6 @@ function readSidebarInitial(): boolean {
   } catch {
     return true;
   }
-}
-
-function navLinkClass({ isActive }: { isActive: boolean }): string {
-  return cn(
-    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-    isActive
-      ? "bg-muted text-foreground"
-      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-  );
 }
 
 function BackendHealthBadge() {

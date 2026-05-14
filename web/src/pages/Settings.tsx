@@ -1,15 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-import { cn } from "@/lib/utils";
-
-function tabClass({ isActive }: { isActive: boolean }): string {
-  return cn(
-    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-    isActive
-      ? "bg-muted text-foreground"
-      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-  );
-}
+import { navLinkClass } from "@/lib/utils";
 
 export function Settings() {
   return (
@@ -21,16 +12,16 @@ export function Settings() {
         </p>
       </header>
       <nav className="flex flex-wrap gap-1 border-b border-border pb-2">
-        <NavLink to="/settings" end className={tabClass}>
+        <NavLink to="/settings" end className={navLinkClass}>
           Overview
         </NavLink>
-        <NavLink to="/settings/sources" className={tabClass}>
+        <NavLink to="/settings/sources" className={navLinkClass}>
           Sources
         </NavLink>
-        <NavLink to="/settings/notifications" className={tabClass}>
+        <NavLink to="/settings/notifications" className={navLinkClass}>
           Notifications
         </NavLink>
-        <NavLink to="/settings/config" className={tabClass}>
+        <NavLink to="/settings/config" className={navLinkClass}>
           Config (YAML)
         </NavLink>
       </nav>
