@@ -88,3 +88,11 @@ b0b34b4456fa (book)
   - Test config sets `per_book_delay_seconds=(0, 0)` so the scheduler doesn't sleep 5–15 real seconds per book.
 
 **Phase 3 complete.** Scheduler now produces persisted observations from a real source. The alert pipeline is a no-op placeholder (Phase 4 wires the real one). Next: Phase 4 — stats, signal, alert detection.
+
+- **Simplify pass** — `7efe741` Six findings from 3-agent review applied:
+  - **Quality (real bug)**: wrap `await self._alert_pipeline(...)` in its own `try/except` so a failing pipeline can't corrupt a successful `SourceRun` audit row. Phase 4 will replace the no-op pipeline with the real one; without this isolation, any exception there would flip the run to `status="error"` despite the books having been fetched successfully. Regression test added — `test_scheduler_alert_pipeline_failure_does_not_corrupt_audit` exercises a deliberately-raising pipeline and asserts `run.status == "success"`. 33/33 tests passing.
+  - **Reuse**: extracted `wob_vcr` fixture + `WOB_CARRIED_ISBN` / `WOB_MAYBE_NOT_CARRIED_ISBN` / `WOB_CASSETTE_DIR` constants into `tests/integration/conftest.py`. `test_wob.py` and `test_scheduler.py` both consume them — no more duplicated `vcr.VCR(...)` setup with subtly different `record_mode` values across files.
+  - **Reuse**: hoisted inline imports in the scheduler E2E test to module top.
+  - **Quality**: tightened E2E alert assertion from `len(alert_calls[0]) == 1` to `alert_calls[0] == [seeded_book_id]`.
+  - **Efficiency**: replaced `session.exec(select(SourceRun).where(id == run_id)).one()` with `session.get(SourceRun, run_id)` (PK lookup) in the two audit-row-update branches. Dropped redundant `session.add(run)` on the fetched-then-mutated paths.
+  - **Deferred**: `or 0` fallbacks on `run.id` / `book.id` (defensive type-checker appeasement for `id: int | None`); per-book session in `_persist` (plan-prescribed; Phase 6 if catalog grows); `session_scope` reuse vs `session_factory` (deliberate per task prompt); `StrEnum` for status literals (over-engineering); books-read-after-session-close fragility (currently safe — `.all()` loads attrs eagerly).
