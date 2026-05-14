@@ -4,13 +4,14 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlmodel import Session
 
 from book_alerter.api import alerts, books, health, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
 from book_alerter.api import notifications as notifications_routes
+from book_alerter.auth import basic_auth_dep, is_basic_auth_enabled
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
@@ -65,13 +66,15 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Book Alerter", version="0.0.1", lifespan=lifespan)
-    app.include_router(health.router)
-    app.include_router(books.router)
-    app.include_router(alerts.router)
-    app.include_router(sources.router)
-    app.include_router(config_routes.router)
-    app.include_router(metadata_routes.router)
-    app.include_router(notifications_routes.router)
+    # Evaluated once at startup; env-var changes don't flip auth without restart.
+    auth_deps = [Depends(basic_auth_dep)] if is_basic_auth_enabled() else []
+    app.include_router(health.router, dependencies=auth_deps)
+    app.include_router(books.router, dependencies=auth_deps)
+    app.include_router(alerts.router, dependencies=auth_deps)
+    app.include_router(sources.router, dependencies=auth_deps)
+    app.include_router(config_routes.router, dependencies=auth_deps)
+    app.include_router(metadata_routes.router, dependencies=auth_deps)
+    app.include_router(notifications_routes.router, dependencies=auth_deps)
     return app
 
 
