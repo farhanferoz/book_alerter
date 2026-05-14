@@ -15,6 +15,9 @@ from typing import Literal
 from sqlalchemy import text
 from sqlmodel import Session
 
+from book_alerter.config import RecommendationConfig
+from book_alerter.db import models
+
 
 Signal = Literal["BUY", "WATCH", "WAIT", "TARGET_HIT", "INSUFFICIENT_DATA"]
 
@@ -123,3 +126,36 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
         p75_total_minor=p75,
         sorted_totals=sorted(totals),
     )
+
+
+def compute_signal(
+    book: models.Book, stats: BookStats, cfg: RecommendationConfig
+) -> Signal:
+    if stats.observation_count < cfg.min_observations_for_signal:
+        return "INSUFFICIENT_DATA"
+    if stats.current_best_total_minor is None:
+        return "INSUFFICIENT_DATA"
+
+    threshold_pct = book.percentile_threshold or cfg.buy_percentile
+
+    if book.target_price_minor is not None:
+        tolerance = int(book.target_price_minor * (1 + cfg.target_tolerance_pct / 100))
+        if stats.current_best_total_minor <= book.target_price_minor:
+            return "TARGET_HIT"
+        if stats.current_best_total_minor <= tolerance:
+            return "BUY"
+        # fall through to percentile evaluation
+
+    # threshold_pct is any integer percentile in 1..99; we compute it from the
+    # sorted-totals list carried inside BookStats so any value works.
+    p_field = stats.percentile_at(threshold_pct)
+    if p_field is None:
+        return "INSUFFICIENT_DATA"
+    if stats.current_best_total_minor <= p_field:
+        return "BUY"
+    if (
+        stats.p50_total_minor is not None
+        and stats.current_best_total_minor <= stats.p50_total_minor
+    ):
+        return "WATCH"
+    return "WAIT"
