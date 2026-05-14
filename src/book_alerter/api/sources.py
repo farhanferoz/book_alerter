@@ -217,23 +217,24 @@ def patch_source(
 
     current = cfg.sources[name]
     if patch_data:
+        # `model_copy(update=...)` does NOT re-validate, so a bad value (e.g.
+        # `concurrency=99` outside `ge=1, le=5`) slips through here and is
+        # caught by the single `Config.model_validate` pass below. One
+        # validation, one 422 path. Keeping it at the `Config` level means
+        # any future cross-field invariants are also enforced here.
+        updated = current.model_copy(update=patch_data)
+        new_sources = {**cfg.sources, name: updated}
         try:
-            updated = current.model_copy(update=patch_data)
-            # Defensive re-validation: catches edge cases where model_copy
-            # bypasses field validators (it doesn't here, but cheap insurance).
-            updated = SourceConfig.model_validate(updated.model_dump())
+            new_cfg = Config.model_validate(
+                cfg.model_copy(update={"sources": new_sources}).model_dump()
+            )
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
             ) from exc
-
-        new_sources = {**cfg.sources, name: updated}
-        new_cfg = cfg.model_copy(update={"sources": new_sources})
-        # One more end-to-end validation pass before persisting.
-        new_cfg = Config.model_validate(new_cfg.model_dump())
         new_cfg.save(cfg_path)
         request.app.state.config = new_cfg
-        sc = updated
+        sc = new_cfg.sources[name]
     else:
         sc = current
 

@@ -129,7 +129,7 @@ def put_config(
         new_cfg = Config.model_validate(body.config)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"errors": [str(e) for e in exc.errors()]},
         ) from exc
 

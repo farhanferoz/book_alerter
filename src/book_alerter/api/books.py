@@ -22,21 +22,20 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from book_alerter.api.deps import ConfigDep, SchedulerDep, get_session
+from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.db import models
 from book_alerter.sources.normalizers import to_isbn13
 from book_alerter.stats import BookStats, compute_book_stats
 
 router = APIRouter(prefix="/api/books", tags=["books"])
-
-SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # --- DTOs -------------------------------------------------------------------
@@ -395,15 +394,21 @@ async def refetch_book(
         )
     triggered: list[RefetchTriggered] = []
     skipped: list[RefetchSkipped] = []
-    for name, source_cfg in cfg.sources.items():
-        if not source_cfg.enabled:
-            skipped.append(RefetchSkipped(source=name, reason="disabled"))
-            continue
-        run_id = await scheduler.trigger_now(name)
+    enabled_names = [n for n, sc in cfg.sources.items() if sc.enabled]
+    for n, sc in cfg.sources.items():
+        if not sc.enabled:
+            skipped.append(RefetchSkipped(source=n, reason="disabled"))
+    # Fire enabled sources concurrently — each `trigger_now` is async and may
+    # block on network I/O / scheduler queue. `gather` preserves input order
+    # so `triggered`/`skipped` follow `cfg.sources` iteration order.
+    run_ids = await asyncio.gather(
+        *(scheduler.trigger_now(n) for n in enabled_names)
+    )
+    for n, run_id in zip(enabled_names, run_ids, strict=True):
         if run_id == 0:
-            skipped.append(RefetchSkipped(source=name, reason="backoff_active"))
+            skipped.append(RefetchSkipped(source=n, reason="backoff_active"))
         else:
-            triggered.append(RefetchTriggered(source=name, run_id=run_id))
+            triggered.append(RefetchTriggered(source=n, run_id=run_id))
     return RefetchResult(triggered=triggered, skipped=skipped)
 
 

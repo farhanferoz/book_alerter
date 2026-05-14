@@ -22,17 +22,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import update
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from book_alerter.api.deps import get_session
+from book_alerter.api.deps import SessionDep
 from book_alerter.db import models
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
-
-SessionDep = Annotated[Session, Depends(get_session)]
 
 AlertKind = Literal["new_low", "target_hit", "percentile_cross"]
 

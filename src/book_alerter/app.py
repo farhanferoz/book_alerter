@@ -68,13 +68,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Book Alerter", version="0.0.1", lifespan=lifespan)
     # Evaluated once at startup; env-var changes don't flip auth without restart.
     auth_deps = [Depends(basic_auth_dep)] if is_basic_auth_enabled() else []
-    app.include_router(health.router, dependencies=auth_deps)
-    app.include_router(books.router, dependencies=auth_deps)
-    app.include_router(alerts.router, dependencies=auth_deps)
-    app.include_router(sources.router, dependencies=auth_deps)
-    app.include_router(config_routes.router, dependencies=auth_deps)
-    app.include_router(metadata_routes.router, dependencies=auth_deps)
-    app.include_router(notifications_routes.router, dependencies=auth_deps)
+    for router in (
+        health.router,
+        books.router,
+        alerts.router,
+        sources.router,
+        config_routes.router,
+        metadata_routes.router,
+        notifications_routes.router,
+    ):
+        app.include_router(router, dependencies=auth_deps)
     return app
 
 
