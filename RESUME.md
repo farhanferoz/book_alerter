@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 6 IN PROGRESS — Task 6.1 (ISBN normalization) done. 24 tasks across Phases 0–6, 107 tests passing. Phases 0–5 complete; `to_isbn13` now available in `src/book_alerter/sources/normalizers.py`. Next: Task 6.2 — OpenLibrary + Google Books metadata race.
+**Status:** Phase 6 COMPLETE — Tasks 6.1 (ISBN normalization) + 6.2 (OL+GB parallel metadata race) done. 25 tasks across Phases 0–6, 113 tests passing. `lookup_isbn(isbn13)` in `src/book_alerter/metadata.py` races OpenLibrary + Google Books via `asyncio.wait(FIRST_COMPLETED)` and returns the first valid `BookMetadata` (title+author, cover optional); cancels + awaits the loser; raises `LookupError` if both fail.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 6.1 committed at `5add68a`
+**Last update:** 2026-05-14, Task 6.2 committed at `cd30d05`
 
 ## Where we are
 
@@ -25,7 +25,7 @@ uv run alembic current
 
 ## Next action
 
-Dispatch **Phase 6, Task 6.2: OpenLibrary + Google Books metadata race** (plan line 2475). Builds a metadata service that races both providers concurrently and returns the first valid response (title/author/cover). VCR-cassette integration tests using real responses for at least one of the five spec fixtures. Should consume `to_isbn13` from `book_alerter.sources.normalizers` (added in Task 6.1).
+Run Phase 6 simplify pass (3-agent review), then dispatch **Phase 7 Task 7.1 (Books CRUD API)**, plan line 2504.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -40,7 +40,9 @@ _None._ All blockers from Phase 1 resolved.
 - **After every migration task, run `uv run alembic upgrade head`** so the dev DB at `data/book_alerter.db` stays at head. Otherwise the next `alembic revision --autogenerate` fails with "Target database is not up to date." (Discovered during Tasks 1.3 → 1.4 — see CHANGELOG.)
 - **`Literal[...]` SQLModel fields** must be declared with `sa_column=Column(String, nullable=False)` because SQLModel 0.0.22's type inference calls `issubclass(Literal, Enum)` → `TypeError`. See `Book.format`, `Book.status`, `PriceObservation.condition`, `SourceRun.status`, `Alert.kind`, `NotificationDelivery.status` for the established pattern.
 - **`Condition` Literal lives in `book_alerter.db.models`** and is re-exported by `book_alerter.sources.base`. New sources should import it from `sources.base` (semantic origin) but the canonical definition is in `db.models`.
-- **`tests/conftest.py` provides `transient_book(isbn, *, title, author, target_price_minor, percentile_threshold)`** + **`transient_stats(*, observation_count, current_best_total_minor, p50_total_minor, sorted_totals)`** for unpersisted construction. `tests/integration/conftest.py` provides `sqlite_engine` + `engine_with_view` (sqlite_engine with `book_stats` view installed) + `make_book` (persisted) + `wob_vcr(record_mode)` (VCR factory) + `WOB_CARRIED_ISBN` / `WOB_MAYBE_NOT_CARRIED_ISBN` / `WOB_CASSETTE_DIR` constants. Reach for these before writing local helpers.
+- **`tests/conftest.py` provides `transient_book(isbn, *, title, author, target_price_minor, percentile_threshold)`** + **`transient_stats(*, observation_count, current_best_total_minor, p50_total_minor, sorted_totals)`** for unpersisted construction. `tests/integration/conftest.py` provides `sqlite_engine` + `engine_with_view` (sqlite_engine with `book_stats` view installed) + `make_book` (persisted) + `wob_vcr(record_mode)` + `metadata_vcr(record_mode)` (VCR factories) + `WOB_CARRIED_ISBN` / `WOB_MAYBE_NOT_CARRIED_ISBN` / `WOB_CASSETTE_DIR` / `METADATA_CASSETTE_DIR` constants. Reach for these before writing local helpers.
+- **HTTP API cassette convention**: per-source cassettes live under `tests/integration/cassettes/<source>/` (e.g. `cassettes/metadata/` for OL+GB). The WoB cassettes still live under `tests/integration/sources/cassettes/` for historical reasons — new HTTP integrations should follow the `cassettes/<name>/` layout. Use `record_mode="none"` for CI replay and include `("method","scheme","host","port","path","query")` in `match_on` when query strings carry the request semantics (e.g. ISBN lookups).
+- **For new HTTP integrations**, mirror `notifications/ntfy.py` and `sources/wob.py`: per-call `httpx.AsyncClient`, short timeout (5–10s), no retries (rely on race/orchestration). For OL+GB-style fan-outs, use a single shared `AsyncClient` inside the orchestrator and let helpers take it as an argument — see `metadata.lookup_isbn`.
 - **`Notifier` ABC has `bypasses_quiet_hours: bool = False`** (Phase 5 simplify). New push channels leave it False; the in-app channel sets it True. The dispatcher uses this flag rather than checking `n.name == "inapp"` — keep new channels consistent with this pattern.
 - **`Notifier.send` returns `NotificationResult` (TypedDict)** from `book_alerter.notifications.base`: `{"status": Literal["sent","error"], "error_message"?: str}`. Don't return plain `dict` — narrow the type so the dispatcher's `r["status"]` access is type-checked.
 - **Don't `git add -A`** during simplify/follow-up commits — `.claudesignore` is auto-generated by ccage and intentionally untracked. Add explicit paths or stage selectively.
