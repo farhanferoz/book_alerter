@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 import warnings
 
+import httpx
 import pytest
 
-from book_alerter.metadata import BookMetadata, lookup_isbn
+from book_alerter.metadata import BookMetadata, lookup_isbn, search_books
 
 
 def test_ol_wins_when_gb_invalid(metadata_vcr):
@@ -65,6 +66,80 @@ def test_ol_wins_without_cover(metadata_vcr):
     assert result.title == "Gemini and Mercury Remastered"
     assert result.author == "Andy Saunders"
     assert result.cover_url is None
+
+
+def test_search_books_extracts_isbn13_and_promotes_isbn10(monkeypatch):
+    """Three-item Google Books payload exercises every extraction path:
+
+    - item 0 has both ISBN_13 and ISBN_10 → prefer the 13 verbatim.
+    - item 1 has only ISBN_10 → promote via `to_isbn13`.
+    - item 2 has no industry identifiers → filtered out (an unaddable row
+      is useless to the add-book UI).
+
+    Uses `httpx.MockTransport` (same pattern as `test_ntfy_notifier`) by
+    monkeypatching the `httpx.AsyncClient` constructor in the metadata
+    module namespace — `search_books` builds its own client internally, so
+    transport injection has to happen there. Cleaner than recording a real
+    cassette for a 3-row controlled payload.
+    """
+    payload = {
+        "items": [
+            {
+                "volumeInfo": {
+                    "title": "Both",
+                    "authors": ["A1"],
+                    "industryIdentifiers": [
+                        {"type": "ISBN_10", "identifier": "0241638194"},
+                        {"type": "ISBN_13", "identifier": "9780241638194"},
+                    ],
+                    "imageLinks": {"thumbnail": "https://x/both.jpg"},
+                }
+            },
+            {
+                "volumeInfo": {
+                    "title": "Ten only",
+                    "authors": ["A2"],
+                    # 0140449132 is a valid ISBN-10 → promotes cleanly.
+                    "industryIdentifiers": [
+                        {"type": "ISBN_10", "identifier": "0140449132"},
+                    ],
+                }
+            },
+            {
+                "volumeInfo": {
+                    "title": "No ISBN",
+                    "authors": ["A3"],
+                    "industryIdentifiers": [
+                        {"type": "OTHER", "identifier": "xyz"},
+                    ],
+                }
+            },
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/books/v1/volumes"
+        assert request.url.params.get("q") == "apollo"
+        assert request.url.params.get("maxResults") == "5"
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("book_alerter.metadata.httpx.AsyncClient", fake_client)
+
+    results = asyncio.run(search_books("apollo", limit=5))
+    assert len(results) == 2
+    assert results[0].isbn13 == "9780241638194"
+    assert results[0].title == "Both"
+    assert results[0].cover_url == "https://x/both.jpg"
+    assert results[1].isbn13 == "9780140449136"  # promoted from ISBN_10
+    assert results[1].title == "Ten only"
+    assert results[1].cover_url is None
 
 
 def test_cancellation_hygiene_no_warnings(metadata_vcr):

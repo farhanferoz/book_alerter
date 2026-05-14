@@ -20,6 +20,7 @@ from sqlmodel import Session
 
 from book_alerter.api import alerts, books, sources
 from book_alerter.api import config as config_routes
+from book_alerter.api import metadata as metadata_routes
 from book_alerter.config import Config
 from book_alerter.db import models
 
@@ -58,6 +59,7 @@ def api_client(engine_with_view, tmp_path: Path):
     app.include_router(alerts.router)
     app.include_router(sources.router)
     app.include_router(config_routes.router)
+    app.include_router(metadata_routes.router)
     with TestClient(app) as client:
         yield client
 
