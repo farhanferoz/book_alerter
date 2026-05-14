@@ -1,17 +1,15 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import { AppShell } from "@/layout/AppShell";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alerts } from "@/pages/Alerts";
 import { Dashboard } from "@/pages/Dashboard";
-import {
-  Settings,
-  SettingsConfig,
-  SettingsNotifications,
-  SettingsOverview,
-  SettingsSources,
-} from "@/pages/Settings";
+import { Settings } from "@/pages/Settings";
+import { SettingsSources } from "@/pages/settings/Sources";
+import { SettingsRecommendation } from "@/pages/settings/Recommendation";
+import { SettingsNotifications } from "@/pages/settings/Notifications";
+import { SettingsAdvanced } from "@/pages/settings/Advanced";
 
 // BookDetail pulls Recharts, which is heavy (~300 KB raw). Lazy-loading
 // keeps it off the dashboard's critical path.
@@ -38,10 +36,11 @@ function App() {
         />
         <Route path="alerts" element={<Alerts />} />
         <Route path="settings" element={<Settings />}>
-          <Route index element={<SettingsOverview />} />
+          <Route index element={<Navigate replace to="/settings/sources" />} />
           <Route path="sources" element={<SettingsSources />} />
+          <Route path="recommendation" element={<SettingsRecommendation />} />
           <Route path="notifications" element={<SettingsNotifications />} />
-          <Route path="config" element={<SettingsConfig />} />
+          <Route path="advanced" element={<SettingsAdvanced />} />
         </Route>
       </Route>
     </Routes>
