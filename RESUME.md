@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 8.3 SHIPPED + post-8.3 simplify pass applied (uncommitted). `AmazonUKInlineSource` at `src/book_alerter/sources/amazon.py` (~290 LOC, mirrors bookfinder). Backed by headless Chromium via Playwright. **dp-first, offer-listing-fallback** strategy: try `/dp/<ISBN>` for the buy-box, fall back to `/gp/offer-listing/<ISBN>?condition=all` if no usable price. UK only at MVP (`region != "UK"` raises `ValueError`). Bot-protection detection on rendered HTML raises `SourceError` (markers: `Type the characters you see`, `Robot Check`, `To discuss automated access to Amazon`, `validateCaptcha`). **Fixtures are SYNTHETIC** — Amazon's anti-bot defeated headless Chromium on every probe attempt 2026-05-14 (both bare and stealth-headers variants returned the 2,130-byte interstitial); fixtures hand-crafted to mirror Amazon's documented public DOM contract. Live test `AMAZON_LIVE=1` retained as a canary for if/when the protection eases. **206 tests passing** (192 prior + 14 new amazon: 8 parser unit + 6 source integration); also clean under `-W error::DeprecationWarning`. Phase 8.2 (`BookfinderInlineSource`) + architecture revision + 8.2 simplify pass committed previously.
+**Status:** Phase 9.1 SHIPPED. `web/` scaffold landed: Vite 8 + React 19 + TS 6 (`npm create vite@latest web -- --template react-ts`), Tailwind v4 via `@tailwindcss/vite`, shadcn/ui init clean (neutral base, CSS variables, lucide icons, `@` alias wired in both `vite.config.ts` and `tsconfig.app.json`/`tsconfig.json`). Runtime deps: `recharts @tanstack/react-query @monaco-editor/react clsx`. Vite dev-server proxy `/api → http://127.0.0.1:8000` configured per plan. Minimal `App.tsx` fetches `/api/health` and renders the JSON. `npm run build` clean (16 modules, 191 kB JS / 22.5 kB CSS, 150 ms). Smoke test confirmed: backend + Vite running side-by-side; `curl http://localhost:5173/api/health` returns the backend's JSON via proxy. Phase 8.3 + post-8.3 simplify + architecture revision still uncommitted (this is the intended state — those three were ready before Phase 9 started; commit order is up to the user). Python test baseline unchanged: **205 passed, 2 skipped** (RESUME's prior "206 passed" was stale; the 8.3 simplify pass had already dropped one redundant test — see CHANGELOG line 230).
 **Branch:** `master` (no worktree).
-**Last update:** 2026-05-14, Phase 8.3 shipped.
+**Last update:** 2026-05-14, Phase 9.1 shipped.
 
 ## Where we are
 
@@ -16,15 +16,23 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 206 passed, 2 skipped (live bookfinder + live amazon gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
+# expected: 205 passed, 2 skipped (live bookfinder + live amazon gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 uv run playwright install chromium  # first-time setup on a new machine
+cd web && npm run build              # expected: tsc -b + vite build pass; ~16 modules, ~150ms
 ```
 
 ## Next action
 
-Dispatch **Phase 9.1** (Vite + React + TS scaffold — plan line 2658+). Front-end work starts here; the multi-source ingestion phase (Phase 8) is complete with WoB (httpx) + Bookfinder (Playwright/WAF) + Amazon UK (Playwright/anti-bot) all shipped as `InlineSource`s. The post-8.3 simplify pass applied condition-mapping unification + in-fetch shared browser for Amazon + dead-code removal. Two design-level efficiency items remain DEFERRED: (a) Source-ABC `prepare()`/`cleanup()` hooks for per-scheduler-run shared browser; (b) shared `PlaywrightInlineSource` base for the `_render` skeleton — both are scoped as a single follow-up PR best done alongside the ABC redesign. **Phase 8.1 (printing-press CLI generation) remains permanently dropped.**
+Dispatch **Phase 9.2** (Generated types from OpenAPI — plan line 2723+). Add `openapi-typescript` as a devDep, add a `gen:api` npm script that runs against `http://127.0.0.1:8000/openapi.json -> src/api/schema.ts`, then wrap with a typed fetch client (`web/src/api/client.ts` exporting `apiGet`/`apiPost`/etc.). The backend must be running when `gen:api` is invoked; the implementer should boot it once, regen, and tear down.
+
+**Known follow-ups carried from Phase 9.1**:
+- shadcn base color is `neutral` (default); plan called for `slate`. Hand-edit `components.json` + re-init if/when the design decision matters.
+- 2 transitive moderate-severity audit findings in `monaco-editor → dompurify`. Address at Task 11.5 when Monaco is actually wired in (`npm audit fix` or pin newer monaco-editor).
+- `web/.gitignore` is the Vite default; repo-root `.gitignore` already covers `node_modules`/`web/dist`/`web/.vite`.
+
+**Carried from Phase 8.3 simplify (still DEFERRED)**: (a) Source-ABC `prepare()`/`cleanup()` hooks for per-scheduler-run shared browser; (b) shared `PlaywrightInlineSource` base for the `_render` skeleton — both scoped as a single follow-up PR best done alongside the ABC redesign. **Phase 8.1 (printing-press CLI generation) remains permanently dropped.**
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
