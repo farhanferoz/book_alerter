@@ -49,27 +49,25 @@ def make_book():
     return _make
 
 
-@pytest.fixture
-def wob_vcr():
-    def _make(record_mode: str = "once") -> vcr.VCR:
+def _vcr_factory(cassette_dir: Path, default_record_mode: str, *, match_query: bool = False):
+    extra = ("query",) if match_query else ()
+
+    def _make(record_mode: str = default_record_mode) -> vcr.VCR:
         return vcr.VCR(
-            cassette_library_dir=str(WOB_CASSETTE_DIR),
+            cassette_library_dir=str(cassette_dir),
             record_mode=record_mode,
-            match_on=("method", "scheme", "host", "port", "path"),
+            match_on=("method", "scheme", "host", "port", "path", *extra),
             decode_compressed_response=True,
         )
 
     return _make
+
+
+@pytest.fixture
+def wob_vcr():
+    return _vcr_factory(WOB_CASSETTE_DIR, "once")
 
 
 @pytest.fixture
 def metadata_vcr():
-    def _make(record_mode: str = "none") -> vcr.VCR:
-        return vcr.VCR(
-            cassette_library_dir=str(METADATA_CASSETTE_DIR),
-            record_mode=record_mode,
-            match_on=("method", "scheme", "host", "port", "path", "query"),
-            decode_compressed_response=True,
-        )
-
-    return _make
+    return _vcr_factory(METADATA_CASSETTE_DIR, "none", match_query=True)

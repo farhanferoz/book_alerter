@@ -40,11 +40,14 @@ async def _fetch_openlibrary(
         return None
     title = entry.get("title")
     authors = entry.get("authors") or []
-    author = authors[0].get("name") if authors else None
+    first = authors[0] if authors else None
+    author = first.get("name") if isinstance(first, dict) else None
     if not title or not author:
         return None
-    cover = entry.get("cover") or {}
-    cover_url = cover.get("medium") or cover.get("large") or cover.get("small")
+    cover = entry.get("cover")
+    cover_url = None
+    if isinstance(cover, dict):
+        cover_url = cover.get("medium") or cover.get("large") or cover.get("small")
     return BookMetadata(title=title, author=author, cover_url=cover_url)
 
 
@@ -77,7 +80,10 @@ async def lookup_isbn(isbn13: str) -> BookMetadata:
     """Race OpenLibrary and Google Books in parallel and return the first
     valid `BookMetadata`. Cancels the losing task and awaits its
     cancellation so no warnings leak. Raises `LookupError` if neither
-    provider returns usable data."""
+    provider returns usable data.
+
+    Caller is responsible for passing a canonical ISBN-13. Pre-normalize
+    raw user input via `book_alerter.sources.normalizers.to_isbn13`."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         tasks: set[asyncio.Task[BookMetadata | None]] = {
             asyncio.create_task(_fetch_openlibrary(isbn13, client), name="ol"),
