@@ -35,7 +35,7 @@ export function SettingsSources() {
     return (
       <p className="text-sm text-muted-foreground">
         No sources configured. Add entries under <code>sources:</code> in{" "}
-        <code>config.yaml</code> (or the Advanced tab once Phase 11.5 lands).
+        <code>config.yaml</code> (or via the Advanced tab).
       </p>
     );
   }

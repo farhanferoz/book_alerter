@@ -31,13 +31,9 @@ import { useCallback, useMemo, useState } from "react";
 import yaml from "js-yaml";
 import Editor from "@monaco-editor/react";
 
-import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  DiffPreviewDialog,
-  type DiffRow,
-} from "@/components/settings/DiffPreviewDialog";
+import { DiffPreviewDialog } from "@/components/settings/DiffPreviewDialog";
 import {
   useConfig,
   useConfigSchema,
@@ -45,6 +41,8 @@ import {
   type ConfigShape,
   type ConfigUpdateResult,
 } from "@/hooks/useConfig";
+import { useSavedFlash } from "@/hooks/useSavedFlash";
+import { diffToRows, formatPutError } from "@/lib/config-diff";
 import { formatErrorMessage } from "@/lib/utils";
 
 const EDITOR_HEIGHT = "600px";
@@ -60,41 +58,6 @@ function configToYaml(cfg: ConfigShape): string {
   // round-trips); `sortKeys: false` preserves insertion order so the editor
   // matches the on-disk file's natural layout.
   return yaml.dump(cfg, { noRefs: true, sortKeys: false, lineWidth: 100 });
-}
-
-function diffToRows(diff: ConfigUpdateResult["diff"]): DiffRow[] {
-  const rows: DiffRow[] = [];
-  for (const [key, ba] of Object.entries(diff.changed ?? {})) {
-    const before = (ba as { before?: unknown }).before;
-    const after = (ba as { after?: unknown }).after;
-    rows.push({
-      field: key,
-      oldValue: JSON.stringify(before),
-      newValue: JSON.stringify(after),
-    });
-  }
-  for (const [key, value] of Object.entries(diff.added ?? {})) {
-    rows.push({ field: key, oldValue: "—", newValue: JSON.stringify(value) });
-  }
-  for (const [key, value] of Object.entries(diff.removed ?? {})) {
-    rows.push({ field: key, oldValue: JSON.stringify(value), newValue: "—" });
-  }
-  return rows;
-}
-
-function formatPutError(err: ApiError | null | undefined): string[] {
-  if (!err) return [];
-  if (err.status === 422 && err.body && typeof err.body === "object") {
-    const body = err.body as { detail?: unknown };
-    const detail = body.detail;
-    if (detail && typeof detail === "object") {
-      const errors = (detail as { errors?: unknown }).errors;
-      if (Array.isArray(errors) && errors.length > 0) {
-        return errors.map((e) => String(e));
-      }
-    }
-  }
-  return [formatErrorMessage(err)];
 }
 
 function readInitialDark(): boolean {
@@ -141,7 +104,7 @@ function AdvancedEditor({ config, schema }: AdvancedEditorProps) {
   const [validation, setValidation] = useState<ValidationState>({ kind: "idle" });
   const [diffOpen, setDiffOpen] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const { savedAt, flash: flashSaved } = useSavedFlash();
   const update = useUpdateConfig();
   // Theme captured at mount via useMemo — Monaco doesn't live-react to
   // dark-mode toggles after mount (documented deviation). Pulling this
@@ -217,11 +180,7 @@ function AdvancedEditor({ config, schema }: AdvancedEditorProps) {
             const fresh = configToYaml(validation.candidate);
             setDraftYaml(fresh);
             setValidation({ kind: "idle" });
-            const now = new Date().toLocaleTimeString();
-            setSavedAt(now);
-            setTimeout(() => {
-              setSavedAt((prev) => (prev === now ? null : prev));
-            }, 3000);
+            flashSaved();
           }
         },
       },

@@ -20,7 +20,6 @@
 
 import { useMemo, useState } from "react";
 
-import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertKindsEditor } from "@/components/settings/AlertKindsEditor";
@@ -37,16 +36,17 @@ import {
   useConfig,
   useUpdateConfig,
   type ConfigShape,
-  type ConfigUpdateResult,
   type InAppChannelShape,
   type NotificationsConfigShape,
   type NtfyChannelShape,
   type QuietHoursShape,
   type AlertKind,
 } from "@/hooks/useConfig";
+import { useSavedFlash } from "@/hooks/useSavedFlash";
+import { diffToRows, formatPutErrorMessage } from "@/lib/config-diff";
 import { formatErrorMessage } from "@/lib/utils";
 
-const SAVED_FLASH_MS = 3000;
+const EXPAND_KEYS = new Set(["notifications"]);
 
 // --- Equality + diffing ----------------------------------------------------
 
@@ -120,98 +120,6 @@ function mountKey(n: NotificationsConfigShape): string {
   return `${inapp}|${ntfy}|${quiet}|${kinds}`;
 }
 
-// Flatten the backend's top-level diff for the dialog. Same pattern as the
-// recommendation tab — we walk the `changed.notifications = {before, after}`
-// sub-dict and emit one row per nested field path.
-function diffToRows(diff: ConfigUpdateResult["diff"]): DiffRow[] {
-  const rows: DiffRow[] = [];
-  const changed = diff.changed ?? {};
-  for (const [key, ba] of Object.entries(changed)) {
-    const before = (ba as { before?: unknown }).before;
-    const after = (ba as { after?: unknown }).after;
-    if (
-      key === "notifications" &&
-      before &&
-      after &&
-      typeof before === "object" &&
-      typeof after === "object"
-    ) {
-      walkNotifDiff(
-        before as Record<string, unknown>,
-        after as Record<string, unknown>,
-        "notifications",
-        rows,
-      );
-      continue;
-    }
-    rows.push({
-      field: key,
-      oldValue: JSON.stringify(before),
-      newValue: JSON.stringify(after),
-    });
-  }
-  for (const [key, value] of Object.entries(diff.added ?? {})) {
-    rows.push({ field: key, oldValue: "—", newValue: JSON.stringify(value) });
-  }
-  for (const [key, value] of Object.entries(diff.removed ?? {})) {
-    rows.push({ field: key, oldValue: JSON.stringify(value), newValue: "—" });
-  }
-  return rows;
-}
-
-// Recursive walk over the notifications sub-tree. Each leaf becomes one row;
-// nested objects (channels.{inapp,ntfy}, quiet_hours) descend one level.
-function walkNotifDiff(
-  before: Record<string, unknown>,
-  after: Record<string, unknown>,
-  prefix: string,
-  out: DiffRow[],
-): void {
-  const fields = new Set([...Object.keys(before), ...Object.keys(after)]);
-  for (const f of fields) {
-    const b = before[f];
-    const a = after[f];
-    if (
-      b !== null &&
-      a !== null &&
-      typeof b === "object" &&
-      typeof a === "object" &&
-      !Array.isArray(b) &&
-      !Array.isArray(a)
-    ) {
-      walkNotifDiff(
-        b as Record<string, unknown>,
-        a as Record<string, unknown>,
-        `${prefix}.${f}`,
-        out,
-      );
-      continue;
-    }
-    if (JSON.stringify(b) !== JSON.stringify(a)) {
-      out.push({
-        field: `${prefix}.${f}`,
-        oldValue: JSON.stringify(b),
-        newValue: JSON.stringify(a),
-      });
-    }
-  }
-}
-
-function formatPutError(err: ApiError | null | undefined): string | null {
-  if (!err) return null;
-  if (err.status === 422 && err.body && typeof err.body === "object") {
-    const body = err.body as { detail?: unknown };
-    const detail = body.detail;
-    if (detail && typeof detail === "object") {
-      const errors = (detail as { errors?: unknown }).errors;
-      if (Array.isArray(errors) && errors.length > 0) {
-        return `Validation failed: ${errors.map((e) => String(e)).join("; ")}`;
-      }
-    }
-  }
-  return `Save failed (${formatErrorMessage(err)})`;
-}
-
 // --- Outer page ------------------------------------------------------------
 
 export function SettingsNotifications() {
@@ -251,7 +159,7 @@ function NotificationsForm({ config }: { config: ConfigShape }) {
   const [draft, setDraft] = useState<NotificationsConfigShape>(server);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffRows, setDiffRows] = useState<DiffRow[]>([]);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const { savedAt, flash: flashSaved } = useSavedFlash();
 
   const update = useUpdateConfig();
 
@@ -267,14 +175,6 @@ function NotificationsForm({ config }: { config: ConfigShape }) {
     return null;
   }, [draft]);
 
-  const flashSaved = () => {
-    const now = new Date().toLocaleTimeString();
-    setSavedAt(now);
-    setTimeout(() => {
-      setSavedAt((prev) => (prev === now ? null : prev));
-    }, SAVED_FLASH_MS);
-  };
-
   const onPreview = () => {
     if (!dirty || validationError) return;
     update.reset();
@@ -283,7 +183,7 @@ function NotificationsForm({ config }: { config: ConfigShape }) {
       { config: candidate, dryRun: true },
       {
         onSuccess: (result) => {
-          setDiffRows(diffToRows(result.diff));
+          setDiffRows(diffToRows(result.diff, { expand: EXPAND_KEYS }));
           setDiffOpen(true);
         },
       },
@@ -305,7 +205,7 @@ function NotificationsForm({ config }: { config: ConfigShape }) {
     );
   };
 
-  const errorMessage = formatPutError(update.error);
+  const errorMessage = formatPutErrorMessage(update.error);
 
   // Sub-component setters — keep individual cards stateless.
   const setInApp = (next: InAppChannelShape) =>

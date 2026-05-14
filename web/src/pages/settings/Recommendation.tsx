@@ -22,7 +22,6 @@
 
 import { useMemo, useState } from "react";
 
-import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,12 +34,13 @@ import {
   useConfig,
   useUpdateConfig,
   type ConfigShape,
-  type ConfigUpdateResult,
   type RecommendationConfigShape,
 } from "@/hooks/useConfig";
+import { useSavedFlash } from "@/hooks/useSavedFlash";
+import { diffToRows, formatPutErrorMessage } from "@/lib/config-diff";
 import { formatErrorMessage } from "@/lib/utils";
 
-const SAVED_FLASH_MS = 3000;
+const EXPAND_KEYS = new Set(["recommendation"]);
 
 type FieldKey = keyof RecommendationConfigShape;
 
@@ -128,68 +128,6 @@ function validateDraft(d: RecommendationConfigShape): ValidationErrors {
   return errors;
 }
 
-// Flatten the backend's top-level diff (`{added, removed, changed}`) into
-// `DiffRow[]` for the dialog. For the recommendation tab the only entry of
-// interest is `changed.recommendation = {before, after}` — we walk the
-// sub-dict and emit one row per field so the dialog stays readable.
-function diffToRows(diff: ConfigUpdateResult["diff"]): DiffRow[] {
-  const rows: DiffRow[] = [];
-  const changed = diff.changed ?? {};
-  for (const [key, ba] of Object.entries(changed)) {
-    const before = (ba as { before?: unknown }).before;
-    const after = (ba as { after?: unknown }).after;
-    if (
-      key === "recommendation" &&
-      before &&
-      after &&
-      typeof before === "object" &&
-      typeof after === "object"
-    ) {
-      const bObj = before as Record<string, unknown>;
-      const aObj = after as Record<string, unknown>;
-      const fields = new Set([...Object.keys(bObj), ...Object.keys(aObj)]);
-      for (const f of fields) {
-        if (bObj[f] !== aObj[f]) {
-          rows.push({
-            field: `recommendation.${f}`,
-            oldValue: String(bObj[f]),
-            newValue: String(aObj[f]),
-          });
-        }
-      }
-      continue;
-    }
-    rows.push({
-      field: key,
-      oldValue: JSON.stringify(before),
-      newValue: JSON.stringify(after),
-    });
-  }
-  for (const [key, value] of Object.entries(diff.added ?? {})) {
-    rows.push({ field: key, oldValue: "—", newValue: JSON.stringify(value) });
-  }
-  for (const [key, value] of Object.entries(diff.removed ?? {})) {
-    rows.push({ field: key, oldValue: JSON.stringify(value), newValue: "—" });
-  }
-  return rows;
-}
-
-function formatPutError(err: ApiError | null | undefined): string | null {
-  if (!err) return null;
-  // PUT /api/config returns 422 with detail.errors: list[str]
-  if (err.status === 422 && err.body && typeof err.body === "object") {
-    const body = err.body as { detail?: unknown };
-    const detail = body.detail;
-    if (detail && typeof detail === "object") {
-      const errors = (detail as { errors?: unknown }).errors;
-      if (Array.isArray(errors) && errors.length > 0) {
-        return `Validation failed: ${errors.map((e) => String(e)).join("; ")}`;
-      }
-    }
-  }
-  return `Save failed (${formatErrorMessage(err)})`;
-}
-
 export function SettingsRecommendation() {
   const cfg = useConfig();
 
@@ -235,23 +173,13 @@ function RecommendationForm({ config }: { config: ConfigShape }) {
   const [draft, setDraft] = useState<RecommendationConfigShape>(server);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffRows, setDiffRows] = useState<DiffRow[]>([]);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const { savedAt, flash: flashSaved } = useSavedFlash();
 
   const update = useUpdateConfig();
 
   const validation = useMemo(() => validateDraft(draft), [draft]);
   const isValid = Object.keys(validation).length === 0;
   const dirty = !draftsEqual(server, draft);
-
-  // useEffect timer would trip set-state-in-effect — instead, wrap the
-  // setSavedAt with a setTimeout inline at the call site.
-  const flashSaved = () => {
-    const now = new Date().toLocaleTimeString();
-    setSavedAt(now);
-    setTimeout(() => {
-      setSavedAt((prev) => (prev === now ? null : prev));
-    }, SAVED_FLASH_MS);
-  };
 
   const onPreview = () => {
     if (!dirty || !isValid) return;
@@ -261,7 +189,7 @@ function RecommendationForm({ config }: { config: ConfigShape }) {
       { config: candidate, dryRun: true },
       {
         onSuccess: (result) => {
-          setDiffRows(diffToRows(result.diff));
+          setDiffRows(diffToRows(result.diff, { expand: EXPAND_KEYS }));
           setDiffOpen(true);
         },
       },
@@ -290,7 +218,7 @@ function RecommendationForm({ config }: { config: ConfigShape }) {
     setDraft((d) => ({ ...d, [key]: parsed }));
   };
 
-  const errorMessage = formatPutError(update.error);
+  const errorMessage = formatPutErrorMessage(update.error);
 
   return (
     <section className="space-y-4">
