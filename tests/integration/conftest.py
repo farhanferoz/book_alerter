@@ -5,17 +5,18 @@ from pathlib import Path
 
 import pytest
 import vcr
-from sqlmodel import Session, SQLModel
 from sqlalchemy.engine import Engine
+from sqlmodel import Session, SQLModel
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
 from book_alerter.db.views import BOOK_STATS_VIEW_SQL
 
-
 WOB_CASSETTE_DIR = Path(__file__).parent / "sources" / "cassettes"
 WOB_CARRIED_ISBN = "9780241638194"
 WOB_MAYBE_NOT_CARRIED_ISBN = "9789693531374"
+
+METADATA_CASSETTE_DIR = Path(__file__).parent / "cassettes" / "metadata"
 
 
 @pytest.fixture
@@ -55,6 +56,19 @@ def wob_vcr():
             cassette_library_dir=str(WOB_CASSETTE_DIR),
             record_mode=record_mode,
             match_on=("method", "scheme", "host", "port", "path"),
+            decode_compressed_response=True,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def metadata_vcr():
+    def _make(record_mode: str = "none") -> vcr.VCR:
+        return vcr.VCR(
+            cassette_library_dir=str(METADATA_CASSETTE_DIR),
+            record_mode=record_mode,
+            match_on=("method", "scheme", "host", "port", "path", "query"),
             decode_compressed_response=True,
         )
 
