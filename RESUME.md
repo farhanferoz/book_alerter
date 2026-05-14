@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 6 COMPLETE — Tasks 6.1 (ISBN normalization) + 6.2 (OL+GB parallel metadata race) done. 25 tasks across Phases 0–6, 113 tests passing. `lookup_isbn(isbn13)` in `src/book_alerter/metadata.py` races OpenLibrary + Google Books via `asyncio.wait(FIRST_COMPLETED)` and returns the first valid `BookMetadata` (title+author, cover optional); cancels + awaits the loser; raises `LookupError` if both fail.
+**Status:** Phase 6 COMPLETE + simplify pass applied. Tasks 6.1 (ISBN normalization) + 6.2 (OL+GB parallel metadata race) done; the simplify pass added `isinstance(dict)` guards to the OpenLibrary extractor and factored the two VCR fixtures into a shared `_vcr_factory`. 25 tasks across Phases 0–6, 113 tests passing. `lookup_isbn(isbn13)` in `src/book_alerter/metadata.py` races OpenLibrary + Google Books via `asyncio.wait(FIRST_COMPLETED)` and returns the first valid `BookMetadata` (title+author, cover optional); cancels + awaits the loser; raises `LookupError` if both fail.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 6.2 committed at `cd30d05`
+**Last update:** 2026-05-14, Phase 6 simplify pass committed at `338cc9f`
 
 ## Where we are
 
@@ -15,17 +15,17 @@ Phases 0–4 complete:
 ## Verify on return
 
 ```bash
-cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 93 passed
-git log --oneline d953741..HEAD
-# expected: 44+ commits ending at the most recent Phase 5 commit
+cd /home/ff235/dev/book_alerter && uv run pytest -q
+# expected: 113 passed
+git log --oneline d953741..HEAD | wc -l
+# expected: 58
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Run Phase 6 simplify pass (3-agent review), then dispatch **Phase 7 Task 7.1 (Books CRUD API)**, plan line 2504.
+Dispatch **Phase 7 Task 7.1 (Books CRUD API)**, plan line 2504. Creates `src/book_alerter/api/books.py` + `src/book_alerter/api/deps.py` + `tests/integration/api/test_books_api.py`. Endpoints: `GET /api/books` (with `BookStats` attached), `POST /api/books`, `GET/PATCH/DELETE /api/books/{id}`.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -43,6 +43,8 @@ _None._ All blockers from Phase 1 resolved.
 - **`tests/conftest.py` provides `transient_book(isbn, *, title, author, target_price_minor, percentile_threshold)`** + **`transient_stats(*, observation_count, current_best_total_minor, p50_total_minor, sorted_totals)`** for unpersisted construction. `tests/integration/conftest.py` provides `sqlite_engine` + `engine_with_view` (sqlite_engine with `book_stats` view installed) + `make_book` (persisted) + `wob_vcr(record_mode)` + `metadata_vcr(record_mode)` (VCR factories) + `WOB_CARRIED_ISBN` / `WOB_MAYBE_NOT_CARRIED_ISBN` / `WOB_CASSETTE_DIR` / `METADATA_CASSETTE_DIR` constants. Reach for these before writing local helpers.
 - **HTTP API cassette convention**: per-source cassettes live under `tests/integration/cassettes/<source>/` (e.g. `cassettes/metadata/` for OL+GB). The WoB cassettes still live under `tests/integration/sources/cassettes/` for historical reasons — new HTTP integrations should follow the `cassettes/<name>/` layout. Use `record_mode="none"` for CI replay and include `("method","scheme","host","port","path","query")` in `match_on` when query strings carry the request semantics (e.g. ISBN lookups).
 - **For new HTTP integrations**, mirror `notifications/ntfy.py` and `sources/wob.py`: per-call `httpx.AsyncClient`, short timeout (5–10s), no retries (rely on race/orchestration). For OL+GB-style fan-outs, use a single shared `AsyncClient` inside the orchestrator and let helpers take it as an argument — see `metadata.lookup_isbn`.
+- **New VCR cassettes**: use the shared `_vcr_factory(cassette_dir, default_record_mode, *, match_query)` helper in `tests/integration/conftest.py` rather than copy-pasting the `vcr.VCR(...)` setup. Expose as a `@pytest.fixture` named `<source>_vcr` and add a `<NAME>_CASSETTE_DIR` constant alongside the existing WoB/metadata pair.
+- **Untrusted JSON extraction (e.g. third-party APIs)** must `isinstance(..., dict)`-guard before calling `.get(...)` on values that the *schema* documents as objects but real responses sometimes deliver as strings/None. See `_fetch_openlibrary` in `metadata.py` for the pattern — bare-string `cover` and non-dict `authors[0]` are documented historical OL quirks; the guards let the provider degrade to `None` (race waits for the other) rather than `AttributeError`.
 - **`Notifier` ABC has `bypasses_quiet_hours: bool = False`** (Phase 5 simplify). New push channels leave it False; the in-app channel sets it True. The dispatcher uses this flag rather than checking `n.name == "inapp"` — keep new channels consistent with this pattern.
 - **`Notifier.send` returns `NotificationResult` (TypedDict)** from `book_alerter.notifications.base`: `{"status": Literal["sent","error"], "error_message"?: str}`. Don't return plain `dict` — narrow the type so the dispatcher's `r["status"]` access is type-checked.
 - **Don't `git add -A`** during simplify/follow-up commits — `.claudesignore` is auto-generated by ccage and intentionally untracked. Add explicit paths or stage selectively.
