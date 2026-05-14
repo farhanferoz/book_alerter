@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 5 IN PROGRESS — Task 5.1 (NtfyNotifier) shipped. 22 tasks across Phases 0–5.1, 77 tests passing. End-to-end alerting works including ntfy push when `notifications.channels.ntfy.enabled`. Next: Task 5.2 — quiet hours gate.
+**Status:** Phase 5 COMPLETE. 23 tasks across Phases 0–5, 93 tests passing. End-to-end alerting works including ntfy push (with RFC 2047 Title encoding for non-ASCII titles) and quiet-hours gate that suppresses non-inapp channels during the user's window. Next: Phase 6 — metadata service (ISBN normalization, OpenLibrary + Google Books).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 5.1 committed at `2f0f6a4`
+**Last update:** 2026-05-14, ntfy Title RFC 2047 fix committed at `914afc1`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 77 passed
+# expected: 93 passed
 git log --oneline d953741..HEAD
-# expected: 40+ commits ending at the most recent Task 5.1 commit
+# expected: 44+ commits ending at the most recent Phase 5 commit
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 5, Task 5.2: Quiet hours** (plan line 2412). Wraps `_deliver` to skip non-inapp channels during the user's quiet window; tested with `freezegun`. MVP deviation from spec is documented in the plan: pushes are SKIPPED inside quiet hours (not queued); the in-app `Alert` row is still written; next eval after quiet hours re-fires only if the buy condition still holds and the dedup window has passed.
+Decide whether to run the Phase 5 simplify pass (3 parallel review agents over `eb1df54..HEAD` since Phase 4 baseline, or scoped to Phase 5 commits `2f0f6a4..HEAD`) or dispatch **Phase 6, Task 6.1: ISBN normalization** (plan line 2444). Phase 6 adds `to_isbn13()` via `isbnlib`, then `lookup_isbn()` racing OpenLibrary + Google Books for metadata (VCR-cassette integration tests).
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
