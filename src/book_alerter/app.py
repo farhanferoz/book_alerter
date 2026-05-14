@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from sqlmodel import Session
 
 from book_alerter.api import alerts, books, health, sources
+from book_alerter.api import config as config_routes
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(books.router)
     app.include_router(alerts.router)
     app.include_router(sources.router)
+    app.include_router(config_routes.router)
     return app
 
 
