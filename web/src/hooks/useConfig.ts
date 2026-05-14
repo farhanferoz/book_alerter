@@ -30,12 +30,51 @@ export type RecommendationConfigShape = {
   alert_dedup_window_hours: number;
 };
 
+// Hand-typed mirror of `NotificationsConfig` (Phase 11.4). Keys match the
+// Pydantic models in `src/book_alerter/config.py` 1:1.
+export type AlertKind = "target_hit" | "percentile_cross" | "new_low";
+
+export const ALERT_KINDS: readonly AlertKind[] = [
+  "target_hit",
+  "percentile_cross",
+  "new_low",
+];
+
+export type QuietHoursShape = {
+  start: string;
+  end: string;
+  tz: string;
+};
+
+export type InAppChannelShape = {
+  enabled: boolean;
+};
+
+export type NtfyChannelShape = {
+  enabled: boolean;
+  server: string;
+  topic: string;
+  priority: string;
+  tags: string[];
+};
+
+export type NotificationChannelsShape = {
+  inapp: InAppChannelShape;
+  ntfy: NtfyChannelShape;
+};
+
+export type NotificationsConfigShape = {
+  alert_kinds_enabled: AlertKind[];
+  quiet_hours: QuietHoursShape | null;
+  channels: NotificationChannelsShape;
+};
+
 export type ConfigShape = {
   config_version: number;
   recommendation: RecommendationConfigShape;
-  // Notifications + sources are passed-through verbatim in PUT bodies; the
-  // recommendation tab never edits them but must preserve them on save.
-  notifications: Record<string, unknown>;
+  notifications: NotificationsConfigShape;
+  // Sources are passed-through verbatim in PUT bodies (edited via PATCH
+  // /api/sources on the Sources tab).
   sources: Record<string, unknown>;
   // Allow extra top-level keys (forward-compat with new config sections).
   [key: string]: unknown;
@@ -79,8 +118,12 @@ export function useUpdateConfig() {
     onSuccess: (data) => {
       if (data.applied) {
         void qc.invalidateQueries({ queryKey: ["config"] });
-        // Recommendation tweaks shift the client-side signal computation.
+        // Recommendation tweaks shift the client-side signal computation;
+        // alert-kind / quiet-hours / channel changes affect future dispatch
+        // (the alerts feed itself doesn't refresh, but invalidating here is
+        // cheap and keeps the next paint coherent if a dispatch fires).
         void qc.invalidateQueries({ queryKey: ["books"] });
+        void qc.invalidateQueries({ queryKey: ["alerts"] });
       }
     },
   });
