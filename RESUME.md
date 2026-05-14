@@ -2,26 +2,34 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 0 COMPLETE. 7 tasks done, 7 tests passing, simplify pass applied. Next phase: Phase 1 — Data model (5 tables + book_stats view).
+**Status:** Phase 1 COMPLETE. 11 tasks done across Phases 0–1, 14 tests passing, 5 tables + `book_stats` view migrated. Next phase: Phase 2 — Source plugin layer + WoB inline scraper.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-09, end of autonomous session
+**Last update:** 2026-05-14, end of autonomous session
 
 ## Where we are
 
-Phase 0 done. Foundation runs end-to-end: `uv run uvicorn book_alerter.app:app` boots, `GET /api/health` returns `{"status":"ok","config_version":<n>}`, structlog JSON logging configured, SQLite engine + session_scope, Alembic ready for migrations. Code reviewed via the simplify skill — two minor fixes applied (guard `get_engine` against empty url; tidy comment).
+Phases 0–1 complete. Foundation + data model live:
+- `uv run uvicorn book_alerter.app:app` boots; `GET /api/health` returns `{"status":"ok","config_version":<n>}`; structlog JSON logging configured.
+- SQLite engine + `session_scope` available; Alembic chain has 4 migrations applied cleanly from scratch:
+  `b0b34b4456fa (book) → 30c98243f802 (priceobservation) → 242d0f24dcef (sourcerun/alert/notificationdelivery/booksignalstate) → 0004_book_stats_view`.
+- `book_stats` read-only view exposes per-book current best price + all-time min/max + obs count; percentiles deferred to Python (Phase 4).
+- Tooling: `migrations/env.py` now has a `render_item` hook that auto-injects `import sqlmodel` into autogen migrations.
 
 ## Verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 7 passed
+# expected: 14 passed
 git log --oneline d953741..HEAD
-# expected: 11 commits ending at 40d183d
+# expected: 17 commits ending at cfcb955
+# (or 16 if you exclude the simplify-pass commit — see CHANGELOG)
+uv run alembic current
+# expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 1, Task 1.1: Book table + Alembic migration**. The plan covers Tasks 1.1 → 1.4 (Book; PriceObservation w/ self-FK; SourceRun + Alert + NotificationDelivery + BookSignalState; book_stats view). After Phase 1 the foundation will have all DB tables and the read-only stats view.
+Dispatch implementer for **Phase 2, Task 2.1: Source ABC + ObservationCandidate** (plan line 1229). Phase 2 covers Tasks 2.1 → 2.4: the `Source` ABC and `ObservationCandidate` pydantic model; `SubprocessSource` + `InlineSource` bases; the WoB inline scraper with a vcrpy cassette; and a source registry that instantiates configured sources. After Phase 2, end-to-end fetch from World of Books UK will land observations in the DB via a hermetic test.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -29,7 +37,12 @@ Dispatch implementer for **Phase 1, Task 1.1: Book table + Alembic migration**. 
 
 ## Open decisions / unresolved
 
-_None._ All blockers from this session resolved.
+_None._ All blockers from Phase 1 resolved.
+
+## Process notes for next session
+
+- **After every migration task, run `uv run alembic upgrade head`** so the dev DB at `data/book_alerter.db` stays at head. Otherwise the next `alembic revision --autogenerate` fails with "Target database is not up to date." (Discovered during Tasks 1.3 → 1.4 — see CHANGELOG.)
+- **`Literal[...]` SQLModel fields** must be declared with `sa_column=Column(String, nullable=False)` because SQLModel 0.0.22's type inference calls `issubclass(Literal, Enum)` → `TypeError`. See `Book.format`, `Book.status`, `PriceObservation.condition`, `SourceRun.status`, `Alert.kind`, `NotificationDelivery.status` for the established pattern.
 
 ## Incidents this session (for reference, not action)
 
