@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 4 COMPLETE + simplify pass applied. 21 tasks across Phases 0–4, 71 tests passing. End-to-end alerting works: scheduler → observations → stats → signal → alert detection → in-app Alert + NotificationDelivery. Next phase: Phase 5 — ntfy notifier + quiet hours.
+**Status:** Phase 5 IN PROGRESS — Task 5.1 (NtfyNotifier) shipped. 22 tasks across Phases 0–5.1, 77 tests passing. End-to-end alerting works including ntfy push when `notifications.channels.ntfy.enabled`. Next: Task 5.2 — quiet hours gate.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, simplify pass committed at `177e9ee`
+**Last update:** 2026-05-14, Task 5.1 committed at `2f0f6a4`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 71 passed
+# expected: 77 passed
 git log --oneline d953741..HEAD
-# expected: 38+ commits ending at the most recent docs/simplify commit
+# expected: 40+ commits ending at the most recent Task 5.1 commit
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 5, Task 5.1: NtfyNotifier** (plan line 2358). Phase 5 covers Tasks 5.1 → 5.2: `NtfyNotifier` POSTs to `https://ntfy.sh/<topic>` with formatted message + priority + tags (test with `httpx.MockTransport`, not live HTTP); quiet hours gate suppresses notifications inside the user's quiet window. After Phase 5 the user actually receives push notifications on their phone via ntfy.
+Dispatch implementer for **Phase 5, Task 5.2: Quiet hours** (plan line 2412). Wraps `_deliver` to skip non-inapp channels during the user's quiet window; tested with `freezegun`. MVP deviation from spec is documented in the plan: pushes are SKIPPED inside quiet hours (not queued); the in-app `Alert` row is still written; next eval after quiet hours re-fires only if the buy condition still holds and the dedup window has passed.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
