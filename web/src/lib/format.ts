@@ -1,0 +1,57 @@
+// Small formatting helpers for money (minor units) and relative time.
+//
+// Backend stores money as integer minor units (pence) — see CHANGELOG /
+// design spec. We never round-trip through floats; we divide once at the
+// edge, in the formatter, with `Intl.NumberFormat`'s built-in grouping.
+//
+// Relative time uses `Intl.RelativeTimeFormat` with a fixed unit ladder.
+// No date library — date-fns / Day.js would add weight for one helper.
+
+const GBP_FORMATTER = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
+
+const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("en", {
+  numeric: "auto",
+});
+
+export function formatMoneyMinor(
+  minor: number | null | undefined,
+  currency: string = "GBP",
+): string {
+  if (minor == null) return "—";
+  if (currency !== "GBP") {
+    // Fallback for non-GBP currencies (none at MVP, but the model carries it).
+    return new Intl.NumberFormat("en-GB", {
+      style: "currency",
+      currency,
+    }).format(minor / 100);
+  }
+  return GBP_FORMATTER.format(minor / 100);
+}
+
+const RELATIVE_LADDER: ReadonlyArray<[Intl.RelativeTimeFormatUnit, number]> = [
+  ["year", 60 * 60 * 24 * 365],
+  ["month", 60 * 60 * 24 * 30],
+  ["day", 60 * 60 * 24],
+  ["hour", 60 * 60],
+  ["minute", 60],
+  ["second", 1],
+];
+
+export function formatRelativeTime(
+  iso: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!iso) return "—";
+  const then = new Date(iso);
+  const diffSeconds = (then.getTime() - now.getTime()) / 1000;
+  for (const [unit, secondsPerUnit] of RELATIVE_LADDER) {
+    if (Math.abs(diffSeconds) >= secondsPerUnit || unit === "second") {
+      const value = Math.round(diffSeconds / secondsPerUnit);
+      return RELATIVE_FORMATTER.format(value, unit);
+    }
+  }
+  return RELATIVE_FORMATTER.format(0, "second");
+}
