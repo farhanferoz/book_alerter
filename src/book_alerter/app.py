@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from sqlmodel import Session
 
-from book_alerter.api import health
+from book_alerter.api import books, health
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="Book Alerter", version="0.0.1", lifespan=lifespan)
     app.include_router(health.router)
+    app.include_router(books.router)
     return app
 
 
