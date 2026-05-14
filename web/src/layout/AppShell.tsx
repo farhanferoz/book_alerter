@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
+import { AlertsSidebar } from "@/components/alerts/AlertsSidebar";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/layout/ThemeToggle";
 import { apiGet, ApiError } from "@/api/client";
@@ -121,12 +122,11 @@ export function AppShell() {
         {sidebarOpen && (
           <aside
             aria-label="Alerts sidebar"
-            className="w-72 shrink-0 border-l border-border bg-sidebar text-sidebar-foreground p-4"
+            className="w-80 shrink-0 border-l border-border bg-sidebar text-sidebar-foreground p-4 overflow-hidden flex"
           >
-            <h2 className="text-sm font-semibold mb-2">Alerts sidebar</h2>
-            <p className="text-xs text-muted-foreground">
-              Recent alerts will appear here (Phase 11).
-            </p>
+            <div className="flex-1 min-w-0">
+              <AlertsSidebar />
+            </div>
           </aside>
         )}
       </div>
