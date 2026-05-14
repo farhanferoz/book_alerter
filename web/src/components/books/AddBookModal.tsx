@@ -1,34 +1,27 @@
-// Add-book modal — Phase 10.2 (ISBN tab only).
+// Add-book modal — Phase 11.1 (ISBN + Search tabs).
 //
-// The spec calls for two tabs (paste-ISBN + search) — Phase 11.1 ships the
-// search tab. For now we render the ISBN form directly so the diff stays
-// small; the second tab can slot in here via shadcn `tabs` when 11.1 lands.
-// See the "TAB STRIP HERE" comment below for the insertion point.
+// Two flows, both end in `POST /api/books` with the same `BookCreate` body:
 //
-// Flow:
-//   1. User types an ISBN. We strip whitespace/hyphens and validate against
-//      a permissive regex (9 digits + check char OR 13 digits). Backend
-//      does the authoritative `to_isbn13` parse on create.
-//   2. On blur — once the local format check passes — we fire
-//      `/api/metadata/lookup?isbn=...` via TanStack Query. While pending we
-//      show a skeleton; on 404 we surface "not found" but still allow the
-//      user to confirm (the backend create handler does NOT require metadata
-//      — it stores whatever fields we send). On 422 (bad ISBN per backend)
-//      we surface the backend's detail message.
-//   3. Confirm POSTs `/api/books`. On 409 (duplicate ISBN) we show an inline
-//      "Already tracked" message — the backend currently returns the
-//      detail string only (no book id), so we don't link out yet.
-//   4. On success: invalidate `["books"]`, close.
+//   1. ISBN tab (Phase 10.2 — unchanged behaviour): paste ISBN → blur fires
+//      `/api/metadata/lookup` → preview card → confirm.
+//   2. Search tab (Phase 11.1): debounced free-text query → `/api/metadata/search`
+//      → click a hit to create.
 //
-// State design: the form is split into its own `<AddBookForm>` component so
-// it mounts/unmounts with the dialog — that gives us automatic reset on
-// close, no `useEffect` chasing the `open` prop. Title/author use a
-// "user-edited" sentinel pattern (`null` = take from metadata, otherwise
-// take from user) instead of an effect that copies the lookup data into
-// state — that pattern trips `react-hooks/set-state-in-effect` and is also
-// genuinely harder to reason about.
+// The two panel components live in this file; the create-book mutation is
+// hoisted into a tiny `useCreateBook` hook so both panels share invalidation +
+// error semantics. State design is the same as Phase 10.2 — the form panels
+// mount/unmount with the dialog so state resets on close automatically (no
+// effect-driven reset). The Tabs primitive is uncontrolled — switching tabs
+// preserves each panel's local state for the lifetime of one open session,
+// which is what users expect (typed text doesn't vanish when you peek at the
+// other tab).
+//
+// 409 behaviour: backend returns the detail string only (no book id), so we
+// show "Already tracked." inline. Wiring a link to the existing row needs a
+// backend change (return id on conflict, or look it up via `/api/books`); both
+// are out of scope for 11.1.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiGet, apiPost, ApiError } from "@/api/client";
@@ -45,8 +38,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type BookMetadata = components["schemas"]["BookMetadata"];
+type BookMetadataWithIsbn = components["schemas"]["BookMetadataWithIsbn"];
 type BookOut = components["schemas"]["BookOut"];
 type BookCreate = components["schemas"]["BookCreate"];
 
@@ -71,6 +66,33 @@ function isSyntacticallyValid(raw: string): boolean {
   return ISBN_RE.test(normalizeIsbn(raw));
 }
 
+// Tiny inline debounce hook — one call site (the search panel), so the cost
+// of adding a dep (`use-debounce` etc.) outweighs the 8-line hook.
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Shared create-book mutation. Both panels invalidate `["books"]` and close
+// the dialog on success. The 409 / 422 surfacing is left to the caller via
+// the returned `error` (with `ApiError.status`) — the messages differ per
+// panel only slightly today, but extracting them would obscure intent.
+function useCreateBook(onSuccess: () => void) {
+  const qc = useQueryClient();
+  return useMutation<BookOut, ApiError, BookCreate>({
+    mutationFn: async (body) =>
+      (await apiPost("/api/books", body)) as BookOut,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["books"] });
+      onSuccess();
+    },
+  });
+}
+
 export function AddBookModal({ open, onOpenChange }: AddBookModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -78,24 +100,33 @@ export function AddBookModal({ open, onOpenChange }: AddBookModalProps) {
         <DialogHeader>
           <DialogTitle>Add a book</DialogTitle>
           <DialogDescription>
-            Paste an ISBN-10 or ISBN-13. We&apos;ll fetch the cover and title
-            from OpenLibrary / Google Books.
+            Paste an ISBN or search by title / author. We&apos;ll fetch cover
+            art and metadata from OpenLibrary / Google Books.
           </DialogDescription>
         </DialogHeader>
 
-        {/* TAB STRIP HERE — Phase 11.1 inserts <Tabs> wrapping the form below
-            plus a second TabPanel for the search flow. */}
-
-        {/* Mount the form only when open so state resets automatically on
+        {/* Mount the tabs only when open so each panel's state resets on
             close — no effect-driven reset required. */}
-        {open && <AddBookForm onDone={() => onOpenChange(false)} />}
+        {open && (
+          <Tabs defaultValue="isbn" className="gap-4">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="isbn">ISBN</TabsTrigger>
+              <TabsTrigger value="search">Search</TabsTrigger>
+            </TabsList>
+            <TabsContent value="isbn">
+              <AddBookByIsbn onDone={() => onOpenChange(false)} />
+            </TabsContent>
+            <TabsContent value="search">
+              <AddBookBySearch onDone={() => onOpenChange(false)} />
+            </TabsContent>
+          </Tabs>
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
-function AddBookForm({ onDone }: { onDone: () => void }) {
-  const qc = useQueryClient();
+function AddBookByIsbn({ onDone }: { onDone: () => void }) {
   const [isbn, setIsbn] = useState("");
   // `null` means "use the metadata value when available" — diverges to a
   // string the moment the user types in the field. Sentinel pattern avoids
@@ -125,14 +156,7 @@ function AddBookForm({ onDone }: { onDone: () => void }) {
   const authorValue = authorEdit ?? lookup.data?.author ?? "";
   const coverUrl = lookup.data?.cover_url ?? null;
 
-  const create = useMutation<BookOut, ApiError, BookCreate>({
-    mutationFn: async (body) =>
-      (await apiPost("/api/books", body)) as BookOut,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["books"] });
-      onDone();
-    },
-  });
+  const create = useCreateBook(onDone);
 
   const onBlurIsbn = () => {
     if (valid) setLookupKey(normalized);
@@ -272,5 +296,171 @@ function AddBookForm({ onDone }: { onDone: () => void }) {
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+// Backend `q` is `Query(..., min_length=1)`; we use ≥ 2 client-side to avoid
+// noisy one-char queries (Google Books returns garbage for those anyway). The
+// `enabled` gate is the source of truth — react-query won't dispatch until the
+// debounced value crosses the threshold.
+const MIN_QUERY_LEN = 2;
+const DEBOUNCE_MS = 300;
+const SEARCH_LIMIT = 10;
+
+function AddBookBySearch({ onDone }: { onDone: () => void }) {
+  const [query, setQuery] = useState("");
+  const debounced = useDebouncedValue(query.trim(), DEBOUNCE_MS);
+  const [pendingIsbn, setPendingIsbn] = useState<string | null>(null);
+
+  const search = useQuery<BookMetadataWithIsbn[], ApiError>({
+    queryKey: ["metadata-search", debounced],
+    queryFn: async () => {
+      const url = `/api/metadata/search?q=${encodeURIComponent(
+        debounced,
+      )}&limit=${SEARCH_LIMIT}`;
+      return (await apiGet(
+        url as "/api/metadata/search",
+      )) as BookMetadataWithIsbn[];
+    },
+    enabled: debounced.length >= MIN_QUERY_LEN,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const create = useCreateBook(onDone);
+
+  const onPickHit = (hit: BookMetadataWithIsbn) => {
+    if (create.isPending) return;
+    setPendingIsbn(hit.isbn13);
+    create.mutate({
+      isbn: hit.isbn13,
+      title: hit.title,
+      author: hit.author,
+      cover_url: hit.cover_url ?? null,
+      format: "any",
+    });
+  };
+
+  const createErrorMessage = (): string | null => {
+    if (!create.error) return null;
+    if (create.error.status === 409) return "Already tracked.";
+    if (create.error.status === 422) {
+      return "Invalid book details (backend rejected).";
+    }
+    return `Save failed (${create.error.status}).`;
+  };
+
+  // `search_books` server-side already drops items missing isbn/title/author,
+  // so we trust the shape and only deal with the empty-array case here.
+  const results = search.data ?? [];
+  const shouldShowResults = debounced.length >= MIN_QUERY_LEN;
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="add-book-search">Search</Label>
+        <Input
+          id="add-book-search"
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by title or author"
+        />
+        <p className="text-xs text-muted-foreground">
+          Free-text search via Google Books. We only show results with a usable
+          ISBN.
+        </p>
+      </div>
+
+      {shouldShowResults && search.isPending && (
+        <ul className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li
+              key={i}
+              className="flex gap-3 rounded-md border border-border p-3"
+            >
+              <Skeleton className="h-16 w-12 rounded" tone="muted" />
+              <div className="flex flex-1 flex-col gap-2">
+                <Skeleton className="h-4 w-3/4 rounded" tone="muted" />
+                <Skeleton className="h-3 w-1/2 rounded" tone="muted" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {shouldShowResults && search.error && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Search failed ({search.error.status}). Try again or use the ISBN tab.
+        </p>
+      )}
+
+      {shouldShowResults &&
+        !search.isPending &&
+        !search.error &&
+        results.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            No matches. Try a different query or use the ISBN tab.
+          </p>
+        )}
+
+      {shouldShowResults && !search.isPending && results.length > 0 && (
+        <ul className="max-h-80 space-y-2 overflow-y-auto">
+          {results.map((hit) => {
+            const isPickPending =
+              create.isPending && pendingIsbn === hit.isbn13;
+            return (
+              <li key={hit.isbn13}>
+                <button
+                  type="button"
+                  onClick={() => onPickHit(hit)}
+                  disabled={create.isPending}
+                  className="flex w-full gap-3 rounded-md border border-border p-3 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {hit.cover_url ? (
+                    <img
+                      src={hit.cover_url}
+                      alt=""
+                      className="h-16 w-12 rounded object-cover"
+                    />
+                  ) : (
+                    <div className="h-16 w-12 rounded bg-muted/40" />
+                  )}
+                  <div className="flex flex-1 flex-col gap-1 text-sm">
+                    <span className="font-medium leading-tight">
+                      {hit.title}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {hit.author}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      ISBN {hit.isbn13}
+                    </span>
+                  </div>
+                  <span className="self-center text-xs font-medium text-muted-foreground">
+                    {isPickPending ? "Adding…" : "Track"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {createErrorMessage() && (
+        <p className="text-xs text-destructive">{createErrorMessage()}</p>
+      )}
+
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onDone}
+          disabled={create.isPending}
+        >
+          Cancel
+        </Button>
+      </DialogFooter>
+    </div>
   );
 }
