@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 live. Task 7.5 adds the config router (`src/book_alerter/api/config.py`, prefix `/api/config`): `GET /api/config` (current config via `model_dump(mode="json")`), `GET /api/config/schema` (`Config.model_json_schema()` for the future Monaco editor; Phase 11.5 consumer), `PUT /api/config` (body `{config, dry_run}`; **always** returns `{diff, applied, errors}`; validates via `Config.model_validate`; **422** on failure in either mode; `dry_run=true` computes diff with no disk write / state mutation; `dry_run=false` rotates backup → atomic YAML write → swap `app.state.config`). **Backup rotation**: single rotating `<path>.bak` via `shutil.copy2` (preserves mtime); skipped on first-write. **Diff depth**: top-level keys only — `{added, removed, changed: {key: {before, after}}}` computed on `model_dump(mode="json")`; deeper diff rejected as MVP overkill (UI renders block-level changes itself). 166 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 + 7.6 live. Task 7.6 adds the metadata router (`src/book_alerter/api/metadata.py`, prefix `/api/metadata`): `GET /api/metadata/lookup?isbn=...` normalizes via `to_isbn13` (422 on invalid) then races OL+GB through `lookup_isbn` (**404** when both empty). `GET /api/metadata/search?q=...&limit=...` is a Google Books free-text wrapper (`limit` capped at 40 via `Query(ge=1, le=40)`; 422 out-of-range; empty `q` → 422) returning `list[BookMetadataWithIsbn]` for the add-book UI's click-to-add candidates. New `search_books(query, limit=10)` in `book_alerter.metadata` prefers native `ISBN_13`, falls back to promoting `ISBN_10` via `to_isbn13`, filters items lacking title/author/ISBN (no ISBN → can't add, row useless). `isinstance(...)` guards on every level of the untrusted JSON. New `BookMetadataWithIsbn` model (isbn13 + title + author + optional cover_url) is the search wire shape; `BookMetadata` is unchanged. 175 tests passing.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.5 committed at `d70aa4d`
+**Last update:** 2026-05-14, Task 7.6 committed at `2ea43d7`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 166 passed
+# expected: 175 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 73
+# expected: 76
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.6 (Metadata endpoints — `POST /api/metadata/lookup` calling `metadata.lookup_isbn` to expose the OL+GB race for the book-creation UI)**, plan line 2544.
+Dispatch **Phase 7 Task 7.7 (Refetch + notifications test — `POST /api/books/{id}/refetch` calls `scheduler.trigger_now` for each source; `POST /api/notifications/{channel}/test` synthesises an Alert and sends it through the named channel)**, plan line 2549.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -60,6 +60,8 @@ _None._ All blockers from Phase 1 resolved.
 - **Config-mutating PATCH pattern (Task 7.4)**: `PATCH /api/sources/{name}` and the upcoming Task 7.5 `PATCH /api/config` follow the same shape. (1) Filter the patch body with `payload.model_dump(exclude_unset=True)` then drop None-valued entries — None means "don't change" (matches `BookPatch` semantics). (2) Build the new sub-model via `current.model_copy(update=patch_data)`. (3) Replace it inside a fresh top-level `Config` via `cfg.model_copy(update={"sources": {**cfg.sources, name: updated}})`. (4) Re-validate end-to-end with `Config.model_validate(new_cfg.model_dump())` (defensive; catches edge cases `model_copy` would skip). (5) Persist via the existing `Config.save(cfg_path)` (atomic tmp-replace). (6) Swap `request.app.state.config = new_cfg`. Empty body is a 200 no-op — **skip the save entirely** when `patch_data` is empty so the YAML file isn't created with defaults that don't match the live config. The config path is read off `request.app.state.config_path` (set by lifespan + test fixture) via `ConfigPathDep` from `api/deps.py`.
 - **Scheduler stub for trigger tests (Task 7.4)**: the `api_client` fixture in `tests/integration/api/conftest.py` attaches `_StubScheduler` to `app.state.scheduler` — a minimal async stub exposing `trigger_now(name) -> int`, `calls: list[str]` for dispatch assertions, and `return_zero_for: set[str]` for backoff-gate simulation. Production uses a real `Scheduler` instance attached during lifespan; tests rely on the stub. Single-fixture wiring works because tests just mutate `client.app.state.scheduler.return_zero_for.add("wob")` when they need the backoff path.
 - **`app.state.config_path` (Task 7.4)**: set by both `lifespan` (after `cfg = Config.load(cfg_path)`) and the `api_client` test fixture (before the app starts). PATCH-style endpoints that persist config back to disk pull it via `ConfigPathDep`. If you build a new test app outside of `api_client`, remember to set this attribute — the dep will `AttributeError` otherwise.
+- **Monkeypatch at the import site, not the source module (Task 7.6)**: when an API handler does `from book_alerter.metadata import lookup_isbn` (or any star-style import), the handler binds the name in its own module namespace at import time. Tests must `monkeypatch.setattr("book_alerter.api.metadata.lookup_isbn", fake)` — patching `"book_alerter.metadata.lookup_isbn"` leaves the handler's already-resolved reference pointing at the original function and the fake never fires. Same rule applies to `search_books` and any other dependency imported by name. If you instead `import book_alerter.metadata as m` and call `m.lookup_isbn(...)`, patching the source module works — but the established pattern in this codebase is direct-name imports, so default to import-site patching. See `tests/integration/api/test_metadata_api.py` for the canonical example.
+- **HTTP integration tests without cassettes (Task 7.6)**: when the code-under-test builds its own `httpx.AsyncClient` internally (e.g. `search_books`), inject `httpx.MockTransport` by monkeypatching `httpx.AsyncClient` in the target module's namespace to wrap a fake client that injects the transport. Cleaner than recording a real cassette for a small controlled payload; matches the `test_ntfy_notifier.py` pattern. The handler retains its 5s timeout etc. — only the transport is swapped.
 - **Config PUT pattern (Task 7.5)**: `PUT /api/config` always returns `{diff, applied, errors}` and validates in both dry-run and apply modes — 422 fires identically in either. The wire shape is opinionated: do **NOT** add 200-with-errors as a "validation failed" channel. **Backup rotation** uses `shutil.copy2(config_path, config_path.with_suffix(suffix + ".bak"))` before `Config.save` — single rotating backup, overwrites any prior `.bak`, **skipped on first-write** (`config_path.exists()` guard). Don't ring-rotate (`.bak.1`, `.bak.2`); the user can keep their own snapshots if they need history. **Diff is top-level only** by deliberate choice — computed via `model_dump(mode="json")` on both sides so nested Pydantic models become plain dicts and `dict.__eq__` does deep equality. Recursive diff was rejected for MVP; UI renders the block-level changes. Env-var substitution is NOT re-run on PUT — `_substitute_env` only fires in `Config.load` from YAML on disk; the PUT body is the already-materialized config dict.
 
 ## Incidents this session (for reference, not action)
