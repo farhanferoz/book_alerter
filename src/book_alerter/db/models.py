@@ -50,3 +50,51 @@ class PriceObservation(SQLModel, table=True):
         Index("ix_obs_book_observed", "book_id", "observed_at"),
         Index("ix_obs_book_source_observed", "book_id", "source", "observed_at"),
     )
+
+
+class SourceRun(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    source: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: Literal["running", "success", "error", "partial"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    books_attempted: int = 0
+    books_succeeded: int = 0
+    error_message: str | None = None
+    error_traceback: str | None = None
+
+
+class Alert(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    book_id: int = Field(foreign_key="book.id", index=True)
+    kind: Literal["new_low", "target_hit", "percentile_cross"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    price_minor: int
+    currency: str
+    source: str
+    condition: str
+    message: str
+    fired_at: datetime = Field(index=True)
+    dismissed_at: datetime | None = None
+    delivered_via: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+
+
+class NotificationDelivery(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    alert_id: int = Field(foreign_key="alert.id", index=True)
+    channel: str
+    sent_at: datetime
+    status: Literal["sent", "error"] = Field(sa_column=Column(String, nullable=False))
+    error_message: str | None = None
+
+
+class BookSignalState(SQLModel, table=True):
+    """Persists the last-evaluated signal + all-time-min per book so the alert
+    pipeline can detect transitions without expensive recomputation."""
+    book_id: int = Field(primary_key=True, foreign_key="book.id")
+    last_signal: str | None = None
+    last_all_time_min_total_minor: int | None = None
+    last_evaluated_at: datetime | None = None
