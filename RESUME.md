@@ -2,32 +2,30 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 3 COMPLETE + simplify pass. 17 tasks across Phases 0–3, 33 tests passing. Scheduler produces persisted observations end-to-end (cassette → fetch → DB). Alert pipeline is exception-isolated. Next phase: Phase 4 — stats, signal, alerts.
+**Status:** Phase 4 COMPLETE. 21 tasks across Phases 0–4, 70 tests passing. End-to-end alerting works: scheduler → observations → stats → signal → alert detection → in-app Alert + NotificationDelivery. Next phase: Phase 5 — ntfy notifier + quiet hours.
 **Branch:** `master` (no worktree)
 **Last update:** 2026-05-14, end of autonomous session
 
 ## Where we are
 
-Phases 0–3 complete:
-- **Foundation (0)**: app boots; `/api/health` returns `{status, config_version}`; structlog JSON logging; SQLite engine + `session_scope`.
-- **Data model (1)**: 5 tables + `book_stats` view migrated. Migration chain at `0004_book_stats_view (head)`.
-- **Sources (2)**: `Source` ABC, `ObservationCandidate`, `SourceError` in `sources/base.py`. `SubprocessSource` + `InlineSource`. `WobInlineSource` parses Shopify `var meta` JSON. `build_sources(cfg) -> dict[str, Source]` registry.
-- **Scheduler (3)**: `Scheduler` in `src/book_alerter/scheduler.py` wraps APScheduler `AsyncIOScheduler`. Per-source cron jobs; `Semaphore(concurrency)` + per-book jitter; writes `SourceRun` audit rows + persists `PriceObservation`; exponential backoff capped at 24 h. `app.py` lifespan starts/stops it. `alert_pipeline` is a no-op placeholder (Phase 4 wires the real one). E2E smoke: cassette → fetch → 4 PriceObservation rows land in DB.
+Phases 0–4 complete:
+- **Foundation (0)** through **Scheduler (3)** as before.
+- **Stats + alerts (4)**: `BookStats` + `compute_book_stats` in `src/book_alerter/stats.py` (uses the `book_stats` view + percentile_at via linear interp on sorted_totals). `compute_signal` returns BUY / WATCH / WAIT / TARGET_HIT / INSUFFICIENT_DATA. `detect_alert_kinds` in `src/book_alerter/alerts.py` fires `target_hit` / `percentile_cross` / `new_low` on transitions. `AlertPipeline.run(book_ids)` in `src/book_alerter/notifications/dispatcher.py` does the full pipeline (read prior `BookSignalState` → detect → global/per-book/mute/dedup filters → write Alert + NotificationDelivery → persist new BookSignalState). `InAppNotifier` is the only notifier so far. `app.py` lifespan wires `pipeline.run` into `Scheduler`'s `alert_pipeline`.
 
 ## Verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 33 passed
+# expected: 70 passed
 git log --oneline d953741..HEAD
-# expected: 30+ commits ending at the most recent docs commit
+# expected: 35+ commits ending at the most recent docs commit
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 4, Task 4.1: `compute_book_stats` helper** (plan line 1911). Phase 4 covers Tasks 4.1 → 4.4: stats helper (percentile p25/p50/p75 in Python, since SQLite lacks `percentile_cont`); `compute_signal` (target_hit / new_low / percentile_cross / INSUFFICIENT_DATA); alert detection on transitions; full alert pipeline that writes `Alert` rows, dedups, delivers in-app. After Phase 4 the scheduler's no-op `alert_pipeline` gets replaced with the real thing.
+Dispatch implementer for **Phase 5, Task 5.1: NtfyNotifier** (plan line 2358). Phase 5 covers Tasks 5.1 → 5.2: `NtfyNotifier` POSTs to `https://ntfy.sh/<topic>` with formatted message + priority + tags (test with `httpx.MockTransport`, not live HTTP); quiet hours gate suppresses notifications inside the user's quiet window. After Phase 5 the user actually receives push notifications on their phone via ntfy.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -43,6 +41,7 @@ _None._ All blockers from Phase 1 resolved.
 - **`Literal[...]` SQLModel fields** must be declared with `sa_column=Column(String, nullable=False)` because SQLModel 0.0.22's type inference calls `issubclass(Literal, Enum)` → `TypeError`. See `Book.format`, `Book.status`, `PriceObservation.condition`, `SourceRun.status`, `Alert.kind`, `NotificationDelivery.status` for the established pattern.
 - **`Condition` Literal lives in `book_alerter.db.models`** and is re-exported by `book_alerter.sources.base`. New sources should import it from `sources.base` (semantic origin) but the canonical definition is in `db.models`.
 - **`tests/conftest.py` provides `transient_book(isbn="...")`** for unpersisted `Book` construction. `tests/integration/conftest.py` provides `sqlite_engine` + `make_book` (persisted) + `wob_vcr(record_mode)` (VCR factory) + `WOB_CARRIED_ISBN` / `WOB_MAYBE_NOT_CARRIED_ISBN` / `WOB_CASSETTE_DIR` constants. Reach for these before writing local helpers.
+- **`book_stats` view DDL** is currently duplicated between `migrations/versions/0004_book_stats_view.py` and `tests/integration/test_stats.py` (the test installs it via `exec_driver_sql` on a fresh sqlite_engine since `SQLModel.metadata.create_all` doesn't know about SQL views). Lift to `src/book_alerter/db/views.py` in a future simplify pass if/when a third caller needs it.
 
 ## Incidents this session (for reference, not action)
 
