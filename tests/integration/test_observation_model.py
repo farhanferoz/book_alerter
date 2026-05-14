@@ -1,19 +1,13 @@
 from datetime import UTC, datetime
 
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import Session, select
 
 from book_alerter.db import models
 
 
-def test_observation_with_duplicate_link(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path}/t.db")
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        book = models.Book(
-            isbn13="9780000000000", title="t", author="a",
-            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
-        )
-        s.add(book); s.commit(); s.refresh(book)
+def test_observation_with_duplicate_link(sqlite_engine, make_book):
+    with Session(sqlite_engine) as s:
+        book = make_book(s)
 
         primary = models.PriceObservation(
             book_id=book.id, source="bookfinder", condition="new",

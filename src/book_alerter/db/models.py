@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import Column, Index, JSON, String
 from sqlmodel import Field, SQLModel
@@ -43,7 +43,7 @@ class PriceObservation(SQLModel, table=True):
     total_minor: int
     url: str
     observed_at: datetime = Field(index=True)
-    raw: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    raw: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     is_duplicate_of: int | None = Field(default=None, foreign_key="priceobservation.id")
 
     __table_args__ = (

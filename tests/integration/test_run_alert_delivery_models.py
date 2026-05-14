@@ -1,28 +1,12 @@
 from datetime import UTC, datetime
 
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import Session, select
 
 from book_alerter.db import models
 
 
-def _make_engine(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path}/t.db")
-    SQLModel.metadata.create_all(engine)
-    return engine
-
-
-def _make_book(s: Session) -> models.Book:
-    book = models.Book(
-        isbn13="9780000000000", title="t", author="a",
-        created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
-    )
-    s.add(book); s.commit(); s.refresh(book)
-    return book
-
-
-def test_source_run_round_trip(tmp_path):
-    engine = _make_engine(tmp_path)
-    with Session(engine) as s:
+def test_source_run_round_trip(sqlite_engine):
+    with Session(sqlite_engine) as s:
         run = models.SourceRun(
             source="bookfinder",
             started_at=datetime.now(UTC),
@@ -35,10 +19,9 @@ def test_source_run_round_trip(tmp_path):
         assert loaded.books_attempted == 0
 
 
-def test_alert_round_trip(tmp_path):
-    engine = _make_engine(tmp_path)
-    with Session(engine) as s:
-        book = _make_book(s)
+def test_alert_round_trip(sqlite_engine, make_book):
+    with Session(sqlite_engine) as s:
+        book = make_book(s)
         alert = models.Alert(
             book_id=book.id,
             kind="new_low",
@@ -57,10 +40,9 @@ def test_alert_round_trip(tmp_path):
         assert loaded.delivered_via == ["pushover"]
 
 
-def test_notification_delivery_round_trip(tmp_path):
-    engine = _make_engine(tmp_path)
-    with Session(engine) as s:
-        book = _make_book(s)
+def test_notification_delivery_round_trip(sqlite_engine, make_book):
+    with Session(sqlite_engine) as s:
+        book = make_book(s)
         alert = models.Alert(
             book_id=book.id, kind="target_hit", price_minor=500, currency="GBP",
             source="bookfinder", condition="new", message="hit",
@@ -80,10 +62,9 @@ def test_notification_delivery_round_trip(tmp_path):
         assert loaded.status == "sent"
 
 
-def test_book_signal_state_round_trip(tmp_path):
-    engine = _make_engine(tmp_path)
-    with Session(engine) as s:
-        book = _make_book(s)
+def test_book_signal_state_round_trip(sqlite_engine, make_book):
+    with Session(sqlite_engine) as s:
+        book = make_book(s)
         state = models.BookSignalState(
             book_id=book.id,
             last_signal="new_low",
