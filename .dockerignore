@@ -29,11 +29,9 @@ web/.vite/
 
 # Runtime data — SQLite DB, logs, backups, scenario artefacts.
 data/
-tests/scenarios/.test.db
-tests/scenarios/.scenario_config.yaml
-tests/scenarios/screenshots/
 
-# Tests & docs aren't needed in the image.
+# Tests & docs aren't needed in the image (the broad `tests/` exclude covers
+# the scenario artefacts that `.gitignore` lists individually).
 tests/
 docs/
 RESUME.md
