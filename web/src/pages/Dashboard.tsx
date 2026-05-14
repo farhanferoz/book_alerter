@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { AddBookModal } from "@/components/books/AddBookModal";
 import { BookFilters, DEFAULT_FILTERS, type BookFiltersValue } from "@/components/books/BookFilters";
 import { DataTable } from "@/components/books/BookTable";
 import { bookColumns } from "@/components/books/columns";
@@ -113,6 +114,7 @@ function ErrorCard({ error }: { error: unknown }) {
 
 export function Dashboard() {
   const [filters, setFilters] = useState<BookFiltersValue>(DEFAULT_FILTERS);
+  const [addBookOpen, setAddBookOpen] = useState(false);
   const includeArchived = filters.status === "archived" || filters.status === "all";
   const { data, isLoading, isError, error } = useBooks({
     include_archived: includeArchived,
@@ -123,12 +125,7 @@ export function Dashboard() {
     [data, filters],
   );
 
-  // 10.2 will wire this to the add-book modal. Until then it's a no-op
-  // placeholder so the empty-state CTA renders something on click.
-  const onAddBook = () => {
-    // Phase 10.2 — open add-book modal.
-    console.info("Add book clicked (modal lands in Phase 10.2).");
-  };
+  const onAddBook = () => setAddBookOpen(true);
 
   return (
     <section className="space-y-4">
@@ -157,6 +154,8 @@ export function Dashboard() {
           emptyMessage="No books match the current filters."
         />
       )}
+
+      <AddBookModal open={addBookOpen} onOpenChange={setAddBookOpen} />
     </section>
   );
 }
