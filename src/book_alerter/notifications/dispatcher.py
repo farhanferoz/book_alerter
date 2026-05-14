@@ -128,6 +128,12 @@ class AlertPipeline:
     def _filter_dedup(
         self, book: Book, kinds: list[AlertKind], session: Session,
     ) -> list[AlertKind]:
+        # Dedup window anchors on real wall clock (Alert.fired_at), not on
+        # observed_at — "same alert kind fired N hours ago" rather than "same
+        # alert from observations N hours apart." This matches user intent
+        # (don't re-page on the same buy condition) and means back-to-back
+        # pipeline runs in tests share the same dedup state regardless of
+        # synthetic observed_at gaps; use freezegun to span the window.
         cutoff = datetime.now(UTC) - timedelta(
             hours=self.cfg.recommendation.alert_dedup_window_hours
         )
