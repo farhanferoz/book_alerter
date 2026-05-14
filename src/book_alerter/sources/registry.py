@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from book_alerter.config import Config
+from book_alerter.sources.amazon import AmazonUKInlineSource
 from book_alerter.sources.base import Source
 from book_alerter.sources.bookfinder import BookfinderInlineSource
 from book_alerter.sources.wob import WobInlineSource
@@ -8,6 +9,7 @@ from book_alerter.sources.wob import WobInlineSource
 _REGISTRY: dict[str, type[Source]] = {
     "wob": WobInlineSource,
     "bookfinder": BookfinderInlineSource,
+    "amazon": AmazonUKInlineSource,
 }
 
 

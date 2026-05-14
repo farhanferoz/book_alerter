@@ -1,0 +1,110 @@
+<!--
+  Synthetic Amazon UK offer-listing (AOD) fixture for ISBN 9780747532699.
+
+  Hand-crafted because Amazon's anti-bot blocked the live capture
+  (verified 2026-05-14). Structure mirrors the modern AOD
+  (Add-On-Demand) layout: rows under #aod-offer-list each containing
+  #aod-offer-price, #aod-offer-shipping, #aod-offer-heading,
+  #aod-offer-soldBy. This is the same shape served by the
+  gp/offer-listing/<ISBN>?condition=all endpoint when reached by a real
+  browser.
+
+  Fixture intentionally contains four rows covering the conditions our
+  parser must distinguish: New, Used - Very Good, Used - Good, Used -
+  Acceptable. The lowest-priced row is the Used - Good (£3.99) to keep
+  ordering interesting.
+-->
+<!DOCTYPE html>
+<html lang="en-gb">
+<head>
+  <meta charset="utf-8">
+  <title>Amazon.co.uk: Buying Choices for Harry Potter and the Philosopher's Stone</title>
+</head>
+<body>
+  <div id="aod-container">
+    <div id="aod-filter-list">
+      <span>All conditions</span>
+    </div>
+    <div id="aod-offer-list">
+
+      <div id="aod-offer" class="a-section aod-information-block">
+        <div id="aod-offer-price">
+          <span class="a-price" data-a-size="l" data-a-color="price">
+            <span class="a-offscreen">&pound;7.99</span>
+            <span aria-hidden="true">
+              <span class="a-price-symbol">&pound;</span>
+              <span class="a-price-whole">7<span class="a-price-decimal">.</span></span>
+              <span class="a-price-fraction">99</span>
+            </span>
+          </span>
+        </div>
+        <div id="aod-offer-shipping">
+          <span class="a-color-base">FREE delivery</span>
+        </div>
+        <div id="aod-offer-heading">
+          <h5>New</h5>
+        </div>
+        <div id="aod-offer-soldBy">
+          <a href="/sp?seller=A3P5ROKL5A1OLE">Amazon</a>
+        </div>
+        <a class="a-button-text" href="/gp/offer-listing/9780747532699/ref=dp_olp_new?ie=UTF8&amp;condition=new">Add to basket</a>
+      </div>
+
+      <div id="aod-offer" class="a-section aod-information-block">
+        <div id="aod-offer-price">
+          <span class="a-price" data-a-size="l" data-a-color="price">
+            <span class="a-offscreen">&pound;4.50</span>
+          </span>
+        </div>
+        <div id="aod-offer-shipping">
+          <span class="a-color-base">&pound;2.80 delivery</span>
+        </div>
+        <div id="aod-offer-heading">
+          <h5>Used - Like New</h5>
+        </div>
+        <div id="aod-offer-soldBy">
+          <a href="/sp?seller=A1234567890LN">BetterWorldBooksUK</a>
+        </div>
+        <a class="a-button-text" href="/gp/offer-listing/9780747532699/ref=dp_olp_used?ie=UTF8&amp;condition=used">Add to basket</a>
+      </div>
+
+      <div id="aod-offer" class="a-section aod-information-block">
+        <div id="aod-offer-price">
+          <span class="a-price" data-a-size="l" data-a-color="price">
+            <span class="a-offscreen">&pound;3.99</span>
+          </span>
+        </div>
+        <div id="aod-offer-shipping">
+          <span class="a-color-base">&pound;2.80 delivery</span>
+        </div>
+        <div id="aod-offer-heading">
+          <h5>Used - Good</h5>
+        </div>
+        <div id="aod-offer-soldBy">
+          <a href="/sp?seller=A0987654321GD">WorldOfBooks Ltd</a>
+        </div>
+        <a class="a-button-text" href="/gp/offer-listing/9780747532699/ref=dp_olp_used?ie=UTF8&amp;condition=used">Add to basket</a>
+      </div>
+
+      <div id="aod-offer" class="a-section aod-information-block">
+        <div id="aod-offer-price">
+          <span class="a-price" data-a-size="l" data-a-color="price">
+            <span class="a-offscreen">&pound;2.50</span>
+          </span>
+        </div>
+        <div id="aod-offer-shipping">
+          <span class="a-color-base">&pound;2.80 delivery</span>
+        </div>
+        <div id="aod-offer-heading">
+          <h5>Used - Acceptable</h5>
+        </div>
+        <div id="aod-offer-soldBy">
+          <a href="/sp?seller=AABCDEFGHIJ12">MusicMagpie</a>
+        </div>
+        <a class="a-button-text" href="/gp/offer-listing/9780747532699/ref=dp_olp_used?ie=UTF8&amp;condition=used">Add to basket</a>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

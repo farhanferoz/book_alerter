@@ -2,12 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 8.2 SHIPPED + architecture revision applied + simplify pass applied (all uncommitted, one combined commit pending) — `BookfinderInlineSource` at `src/book_alerter/sources/bookfinder.py` (~210 LOC). Backed by headless Chromium via Playwright because bookfinder.com is fronted by AWS WAF's `mp_verify` challenge variant which no static-cookie or pure-Go-solver path clears (verified: stdlib HTTP, Surf Chrome-133 TLS, curl_cffi Chrome-120/124/131 impersonation, AND decrypted live cookie from Brave all return 202+WAF). Same day: removed `SubprocessSource` ABC + all printing-press affordances since every current and planned source is now an `InlineSource`; spec/plan got "Architecture revision (2026-05-14)" banners at the top, body left intact as historical context. 192 tests passing (190 prior + 8 new bookfinder − 6 removed subprocess; also clean under `-W error::DeprecationWarning`). 1 opt-in live test (`BOOKFINDER_LIVE=1`) verified — Playwright clears the WAF. Phase 7 remains COMPLETE + simplify pass applied.
-**Branch:** `master` (no worktree); uncommitted changes:
-  - **new**: `src/book_alerter/sources/bookfinder.py`, `tests/unit/sources/{__init__.py,test_bookfinder_parser.py}`, `tests/integration/sources/test_bookfinder.py`, `tests/fixtures/bookfinder/9780747532699-gb-all.html` (115 KB)
-  - **deleted**: `src/book_alerter/sources/subprocess_source.py`, `tests/unit/test_subprocess_source.py`
-  - **modified**: `src/book_alerter/sources/registry.py` (registry collapse), `src/book_alerter/config.py` (dropped `type`/`binary` from `SourceConfig`), `src/book_alerter/api/sources.py` (dropped same from `SourceConfigOut`), `tests/unit/test_source_registry.py` (rewritten), `tests/integration/test_scheduler.py` (stripped `type="inline"` kwargs), `pyproject.toml` + workspace `uv.lock` (playwright added), `docs/CHANGELOG.md`, `docs/superpowers/specs/2026-05-09-book-alerter-design.md` (banner), `docs/superpowers/plans/2026-05-09-book-alerter-implementation.md` (banner), `RESUME.md`
-**Last update:** 2026-05-14, Phase 8.2 ready to commit.
+**Status:** Phase 8.3 SHIPPED — `AmazonUKInlineSource` at `src/book_alerter/sources/amazon.py` (~290 LOC, mirrors bookfinder). Backed by headless Chromium via Playwright. **dp-first, offer-listing-fallback** strategy: try `/dp/<ISBN>` for the buy-box, fall back to `/gp/offer-listing/<ISBN>?condition=all` if no usable price. UK only at MVP (`region != "UK"` raises `ValueError`). Bot-protection detection on rendered HTML raises `SourceError` (markers: `Type the characters you see`, `Robot Check`, `To discuss automated access to Amazon`, `validateCaptcha`). **Fixtures are SYNTHETIC** — Amazon's anti-bot defeated headless Chromium on every probe attempt 2026-05-14 (both bare and stealth-headers variants returned the 2,130-byte interstitial); fixtures hand-crafted to mirror Amazon's documented public DOM contract. Live test `AMAZON_LIVE=1` retained as a canary for if/when the protection eases. **206 tests passing** (192 prior + 14 new amazon: 8 parser unit + 6 source integration); also clean under `-W error::DeprecationWarning`. Phase 8.2 (`BookfinderInlineSource`) + architecture revision + 8.2 simplify pass committed previously.
+**Branch:** `master` (no worktree).
+**Last update:** 2026-05-14, Phase 8.3 shipped.
 
 ## Where we are
 
@@ -19,7 +16,7 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 198 passed (+ 1 skipped: live bookfinder test gated by BOOKFINDER_LIVE=1)
+# expected: 206 passed, 2 skipped (live bookfinder + live amazon gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 uv run playwright install chromium  # first-time setup on a new machine
@@ -27,7 +24,7 @@ uv run playwright install chromium  # first-time setup on a new machine
 
 ## Next action
 
-Dispatch **Phase 8 Task 8.3** (Amazon UK source — plan line 2625-2654). The Phase 8.2 Playwright pattern is the likely template: headless Chromium + `data-csa-c-*`-style selectors + region-driven URL. Amazon's bot protection is generally even more aggressive than AWS WAF; expect to need the same `_render()` indirection point for testability, and to hand-tune the wait-selector + WAF/Captcha detection logic separately. **Do NOT attempt printing-press for Amazon UK** — its `browser_clearance_http` runtime is the same mismatch that killed Phase 8.1, and Amazon's anti-bot will be at least as adversarial as bookfinder's. **Phase 8.1 is permanently dropped**.
+Dispatch **Phase 9.1** (Vite + React + TS scaffold — plan line 2658+). Front-end work starts here; the multi-source ingestion phase (Phase 8) is complete with WoB (httpx) + Bookfinder (Playwright/WAF) + Amazon UK (Playwright/anti-bot) all shipped as `InlineSource`s. Before 9.1, the **post-8.3 simplify pass** is queued: (a) condition-mapping unification across the 3 sources is now genuinely warranted; (b) hoisting Chromium launch into a per-scheduler-run shared browser is the next efficiency lever. Both flagged in the Task 8.3 CHANGELOG entry. **Phase 8.1 (printing-press CLI generation) remains permanently dropped.**
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 

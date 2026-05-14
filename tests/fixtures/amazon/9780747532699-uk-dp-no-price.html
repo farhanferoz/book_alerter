@@ -1,0 +1,28 @@
+<!--
+  Synthetic Amazon UK dp-page fixture WITHOUT a buy-box price.
+
+  Used to exercise the dp -> offer-listing fallback path in
+  AmazonUKInlineSource.fetch(): when the dp page has no usable buy-box
+  (out of stock, marketplace-only, etc.), the source falls back to the
+  /gp/offer-listing/ page and parses that instead.
+-->
+<!DOCTYPE html>
+<html lang="en-gb">
+<head>
+  <meta charset="utf-8">
+  <title>Harry Potter and the Philosopher's Stone: Amazon.co.uk: Books</title>
+</head>
+<body>
+  <div id="dp-container">
+    <div id="titleSection">
+      <h1 id="title">
+        <span id="productTitle">Harry Potter and the Philosopher's Stone</span>
+      </h1>
+    </div>
+    <div id="availability">
+      <span class="a-color-price">Currently unavailable.</span>
+    </div>
+    <!-- Note: no #corePriceDisplay_desktop_feature_div, no .a-price block -->
+  </div>
+</body>
+</html>

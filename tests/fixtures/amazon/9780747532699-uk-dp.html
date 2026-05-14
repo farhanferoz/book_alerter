@@ -1,0 +1,63 @@
+<!--
+  Synthetic Amazon UK dp-page fixture for ISBN 9780747532699
+  (Harry Potter and the Philosopher's Stone).
+
+  Hand-crafted because Amazon's anti-bot blocked the live capture
+  (verified 2026-05-14: both /dp/<ISBN> and /gp/offer-listing/<ISBN>
+  returned the 'To discuss automated access to Amazon' interstitial
+  even with headless Chromium + stealth flags + homepage warm-up).
+
+  Structure mirrors the real Amazon UK dp page as documented across
+  public scraper guides + cached snapshots: buy-box price under
+  #corePriceDisplay_desktop_feature_div, wrapped in .a-price, with the
+  screen-reader-friendly full price string in .a-offscreen. Title +
+  byline + ASIN-bearing link are included so the parser's
+  fallback-URL handling can be exercised.
+-->
+<!DOCTYPE html>
+<html lang="en-gb">
+<head>
+  <meta charset="utf-8">
+  <title>Harry Potter and the Philosopher's Stone: Amazon.co.uk: Books</title>
+</head>
+<body>
+  <div id="dp-container">
+    <div id="titleSection">
+      <h1 id="title">
+        <span id="productTitle">Harry Potter and the Philosopher's Stone</span>
+      </h1>
+      <div id="bylineInfo">
+        <span class="author">J.K. Rowling</span>
+      </div>
+    </div>
+
+    <div id="corePriceDisplay_desktop_feature_div" class="celwidget" data-feature-name="corePriceDisplay_desktop">
+      <div class="a-section a-spacing-none aok-align-center">
+        <span class="a-price aok-align-center" data-a-size="xl" data-a-color="base">
+          <span class="a-offscreen">&pound;7.99</span>
+          <span aria-hidden="true">
+            <span class="a-price-symbol">&pound;</span>
+            <span class="a-price-whole">7<span class="a-price-decimal">.</span></span>
+            <span class="a-price-fraction">99</span>
+          </span>
+        </span>
+      </div>
+      <div class="a-section a-spacing-small">
+        <span class="a-size-base">RRP: <span class="a-text-strike">&pound;8.99</span></span>
+      </div>
+    </div>
+
+    <div id="merchant-info">
+      <span>Sold and dispatched by <a href="/sp?seller=A3P5ROKL5A1OLE">Amazon</a></span>
+    </div>
+
+    <div id="availability">
+      <span class="a-size-medium a-color-success">In stock</span>
+    </div>
+
+    <div id="buybox">
+      <a id="buy-now-button" href="/dp/9780747532699">Buy Now</a>
+    </div>
+  </div>
+</body>
+</html>
