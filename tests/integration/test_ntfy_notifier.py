@@ -26,26 +26,15 @@ def _make_alert(**overrides) -> models.Alert:
     return models.Alert(**defaults)
 
 
-def _make_book(**overrides) -> models.Book:
-    now = datetime.now(UTC)
-    defaults = dict(
-        isbn13="9780000000000",
-        title="The Great Book",
-        author="A. Author",
-        created_at=now,
-        updated_at=now,
-    )
-    defaults.update(overrides)
-    return models.Book(**defaults)
-
-
 def _client_factory_from_transport(transport: httpx.MockTransport):
     def _factory() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, timeout=10)
     return _factory
 
 
-async def test_happy_path_posts_to_ntfy_with_correct_url_headers_and_body():
+async def test_happy_path_posts_to_ntfy_with_correct_url_headers_and_body(
+    transient_book,
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -67,7 +56,7 @@ async def test_happy_path_posts_to_ntfy_with_correct_url_headers_and_body():
     )
 
     alert = _make_alert(message="Target hit: GBP 9.00")
-    book = _make_book(title="The Great Book")
+    book = transient_book(title="The Great Book")
 
     result = await notifier.send(alert, book)
 
@@ -81,7 +70,7 @@ async def test_happy_path_posts_to_ntfy_with_correct_url_headers_and_body():
     assert captured["content"] == b"Target hit: GBP 9.00"
 
 
-async def test_happy_path_strips_trailing_slash_from_server():
+async def test_happy_path_strips_trailing_slash_from_server(transient_book):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -94,12 +83,12 @@ async def test_happy_path_strips_trailing_slash_from_server():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book())
+    result = await notifier.send(_make_alert(), transient_book())
     assert result == {"status": "sent"}
     assert captured["url"] == "https://ntfy.sh/t"
 
 
-async def test_5xx_returns_error_status_with_message():
+async def test_5xx_returns_error_status_with_message(transient_book):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="service unavailable")
 
@@ -108,14 +97,14 @@ async def test_5xx_returns_error_status_with_message():
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
 
-    result = await notifier.send(_make_alert(), _make_book())
+    result = await notifier.send(_make_alert(), transient_book())
 
     assert result["status"] == "error"
     assert result["error_message"]
     assert isinstance(result["error_message"], str)
 
 
-async def test_disabled_config_does_not_make_http_call():
+async def test_disabled_config_does_not_make_http_call(transient_book):
     def handler(request: httpx.Request) -> httpx.Response:
         pytest.fail("NtfyNotifier must not make an HTTP call when disabled")
 
@@ -123,12 +112,12 @@ async def test_disabled_config_does_not_make_http_call():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book())
+    result = await notifier.send(_make_alert(), transient_book())
     assert result["status"] == "error"
     assert result["error_message"]
 
 
-async def test_empty_topic_does_not_make_http_call():
+async def test_empty_topic_does_not_make_http_call(transient_book):
     def handler(request: httpx.Request) -> httpx.Response:
         pytest.fail("NtfyNotifier must not make an HTTP call when topic is empty")
 
@@ -136,12 +125,12 @@ async def test_empty_topic_does_not_make_http_call():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book())
+    result = await notifier.send(_make_alert(), transient_book())
     assert result["status"] == "error"
     assert result["error_message"]
 
 
-async def test_non_ascii_book_title_uses_rfc2047_encoded_word():
+async def test_non_ascii_book_title_uses_rfc2047_encoded_word(transient_book):
     """ntfy.sh decodes RFC 2047 encoded-word Title headers (=?utf-8?b?...?=),
     so non-ASCII titles round-trip cleanly instead of being mangled to '?'."""
     from email.header import decode_header, make_header
@@ -156,7 +145,7 @@ async def test_non_ascii_book_title_uses_rfc2047_encoded_word():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book(title="Café Naïveté"))
+    result = await notifier.send(_make_alert(), transient_book(title="Café Naïveté"))
     assert result == {"status": "sent"}
     raw_title = captured["headers"]["title"]
     # Header value is pure ASCII on the wire (httpx requirement).
@@ -167,7 +156,7 @@ async def test_non_ascii_book_title_uses_rfc2047_encoded_word():
     assert "target_hit" in decoded
 
 
-async def test_ascii_title_passes_through_unencoded():
+async def test_ascii_title_passes_through_unencoded(transient_book):
     """When the title is pure ASCII, the Header is sent verbatim (no RFC 2047
     overhead). Existing assertions that grep the header text rely on this."""
     captured: dict = {}
@@ -180,12 +169,12 @@ async def test_ascii_title_passes_through_unencoded():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book(title="The Great Book"))
+    result = await notifier.send(_make_alert(), transient_book(title="The Great Book"))
     assert result == {"status": "sent"}
     assert captured["headers"]["title"] == "target_hit - The Great Book"
 
 
-async def test_tags_joined_with_commas_when_multiple():
+async def test_tags_joined_with_commas_when_multiple(transient_book):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -198,6 +187,6 @@ async def test_tags_joined_with_commas_when_multiple():
     notifier = NtfyNotifier(
         cfg, client_factory=_client_factory_from_transport(httpx.MockTransport(handler))
     )
-    result = await notifier.send(_make_alert(), _make_book())
+    result = await notifier.send(_make_alert(), transient_book())
     assert result == {"status": "sent"}
     assert captured["headers"]["tags"] == "book,money,uk,alert"

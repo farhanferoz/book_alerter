@@ -1,6 +1,7 @@
 """Alert pipeline. Given a list of affected book_ids, recompute stats, detect
-alert kinds, apply global/per-book/mute/dedup filters, persist Alert +
-NotificationDelivery rows, and update BookSignalState for the next eval.
+alert kinds, apply global/per-book/mute/dedup/quiet-hours filters, persist
+Alert + NotificationDelivery rows, and update BookSignalState for the next
+eval.
 """
 from __future__ import annotations
 
@@ -163,17 +164,18 @@ class AlertPipeline:
     async def _deliver(
         self, alert: Alert, book: Book, session: Session,
     ) -> None:
-        # Quiet-hours gate: during the configured window, suppress non-inapp
-        # channels entirely. The in-app Alert row (already written above) and
-        # its NotificationDelivery row still land — the user can see it in the
-        # feed; we just don't push to ntfy / future push channels. Re-firing
-        # after the window relies on the buy condition still holding + the
-        # dedup window having passed (plan-documented MVP simplification).
+        # Quiet-hours gate: skip notifiers that don't opt into bypass while
+        # we're inside the configured window. The Alert row (already written
+        # above) and the in-app NotificationDelivery still land — the user can
+        # see it in the feed; we just don't page them. Re-firing after the
+        # window relies on the buy condition still holding + the dedup window
+        # having passed (plan-documented MVP simplification).
         qh = self.cfg.notifications.quiet_hours
-        now_local = datetime.now(ZoneInfo(qh.tz)) if qh is not None else None
-        in_quiet = _in_quiet_hours(now_local, qh) if now_local is not None else False
+        in_quiet = qh is not None and _in_quiet_hours(
+            datetime.now(ZoneInfo(qh.tz)), qh,
+        )
         active_notifiers = [
-            n for n in self.notifiers if not in_quiet or n.name == "inapp"
+            n for n in self.notifiers if n.bypasses_quiet_hours or not in_quiet
         ]
 
         results = await asyncio.gather(
@@ -181,7 +183,7 @@ class AlertPipeline:
             return_exceptions=True,
         )
         delivered: list[str] = []
-        for n, r in zip(active_notifiers, results):
+        for n, r in zip(active_notifiers, results, strict=True):
             if isinstance(r, Exception):
                 session.add(NotificationDelivery(
                     alert_id=alert.id,

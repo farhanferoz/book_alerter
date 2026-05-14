@@ -13,12 +13,15 @@ def transient_book():
     def _make(
         isbn: str = "9780000000000",
         *,
+        title: str = "t",
+        author: str = "a",
         target_price_minor: int | None = None,
         percentile_threshold: int | None = None,
     ) -> models.Book:
         now = datetime.now(UTC)
         return models.Book(
-            isbn13=isbn, title="t", author="a", created_at=now, updated_at=now,
+            isbn13=isbn, title=title, author=author,
+            created_at=now, updated_at=now,
             target_price_minor=target_price_minor,
             percentile_threshold=percentile_threshold,
         )
