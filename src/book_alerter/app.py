@@ -11,8 +11,10 @@ from book_alerter.api import health
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
+from book_alerter.notifications.base import Notifier
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
+from book_alerter.notifications.ntfy import NtfyNotifier
 from book_alerter.scheduler import Scheduler
 from book_alerter.sources.registry import build_sources
 
@@ -30,10 +32,13 @@ async def lifespan(app: FastAPI):
     engine = get_engine()
     sources = build_sources(cfg)
 
+    notifiers: list[Notifier] = [InAppNotifier()]
+    if cfg.notifications.channels.ntfy.enabled:
+        notifiers.append(NtfyNotifier(cfg.notifications.channels.ntfy))
     pipeline = AlertPipeline(
         cfg=cfg,
         session_factory=lambda: Session(engine),
-        notifiers=[InAppNotifier()],
+        notifiers=notifiers,
     )
     scheduler = Scheduler(
         config=cfg,
