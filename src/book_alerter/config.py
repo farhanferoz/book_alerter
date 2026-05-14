@@ -77,11 +77,24 @@ class SourceConfig(BaseModel):
     max_consecutive_errors: int = 5
 
 
+class BackupConfig(BaseModel):
+    """Weekly SQLite backup job.
+
+    Default: Sunday 03:00 UTC, retain 7 most recent backups in `data/backups/`.
+    """
+
+    enabled: bool = True
+    schedule: str = "0 3 * * 0"  # Sundays at 03:00 UTC
+    directory: str = "data/backups"
+    retain: int = Field(default=7, ge=1)
+
+
 class Config(BaseModel):
     config_version: int = 1
     recommendation: RecommendationConfig = Field(default_factory=RecommendationConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     sources: dict[str, SourceConfig] = Field(default_factory=dict)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
 
     @classmethod
     def load(cls, path: Path) -> "Config":

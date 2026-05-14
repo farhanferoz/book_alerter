@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
         sources=sources,
         session_factory=lambda: Session(engine),
         alert_pipeline=pipeline.run,
+        db_path=engine.url.database,
     )
     scheduler.start()
     app.state.scheduler = scheduler

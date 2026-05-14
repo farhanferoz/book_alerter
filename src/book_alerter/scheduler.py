@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sqlite3
 import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,6 +21,59 @@ from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 log = get_logger(__name__)
 
 
+def run_weekly_backup(
+    db_path: str | Path,
+    backup_dir: str | Path,
+    retain: int = 7,
+) -> Path:
+    """Run `VACUUM INTO` to a timestamped file in `backup_dir`; prune old files.
+
+    Returns the path to the new backup file. Uses a raw `sqlite3.connect`
+    because `VACUUM INTO` cannot run inside an open transaction, and SQLModel
+    sessions are always transactional.
+    """
+    db_path = Path(db_path)
+    backup_dir = Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    # ISO timestamp with `:` swapped for `-` so the filename is portable across
+    # filesystems. Lexicographic sort == chronological sort.
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+    target = backup_dir / f"book_alerter_{ts}.db"
+
+    # `sqlite3.connect` opens in autocommit-equivalent mode when we pass
+    # `isolation_level=None`. VACUUM INTO refuses to run inside a transaction,
+    # and the default driver implicitly opens one on the first statement.
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        # Parameter binding doesn't work for filenames in VACUUM INTO; the
+        # path comes from config, not user input. Escape any single quotes
+        # defensively.
+        escaped = str(target).replace("'", "''")
+        conn.execute(f"VACUUM INTO '{escaped}'")
+    finally:
+        conn.close()
+
+    size = target.stat().st_size if target.exists() else 0
+    log.info("backup.created", path=str(target), bytes=size)
+
+    # Retention: keep the newest `retain` files; delete the rest. ISO names
+    # sort lexicographically == chronologically.
+    try:
+        files = sorted(backup_dir.glob("book_alerter_*.db"))
+        old = files[:-retain] if retain > 0 else files
+        for f in old:
+            try:
+                f.unlink()
+                log.info("backup.pruned", path=str(f))
+            except OSError as e:
+                log.warning("backup.prune_failed", path=str(f), error=str(e))
+    except OSError as e:
+        log.warning("backup.retention_scan_failed", dir=str(backup_dir), error=str(e))
+
+    return target
+
+
 class Scheduler:
     """Wraps APScheduler; registers one job per enabled source."""
 
@@ -28,11 +83,13 @@ class Scheduler:
         sources: dict[str, Source],
         session_factory: Callable[[], Session],
         alert_pipeline: Callable[[list[int]], Awaitable[None]],
+        db_path: str | Path | None = None,
     ) -> None:
         self._cfg = config
         self._sources = sources
         self._session_factory = session_factory
         self._alert_pipeline = alert_pipeline
+        self._db_path = Path(db_path) if db_path is not None else None
         self._sched = AsyncIOScheduler(timezone="UTC")
         self._consecutive_errors: dict[str, int] = {}
         # When a source enters backoff, we set _backoff_until[name] to a future
@@ -58,8 +115,37 @@ class Scheduler:
                 coalesce=True,
                 replace_existing=True,
             )
+
+        # Weekly SQLite backup. Only register if enabled AND we have a path —
+        # tests that don't care about backups can omit `db_path` and still use
+        # the rest of the scheduler.
+        bcfg = self._cfg.backup
+        if bcfg.enabled and self._db_path is not None:
+            self._sched.add_job(
+                self._run_backup,
+                trigger=CronTrigger.from_crontab(bcfg.schedule, timezone="UTC"),
+                id="weekly_backup",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+
         self._sched.start()
         log.info("scheduler.started", n_jobs=len(self._sched.get_jobs()))
+
+    def _run_backup(self) -> None:
+        """APScheduler entrypoint for the weekly backup job."""
+        if self._db_path is None:
+            return
+        bcfg = self._cfg.backup
+        try:
+            run_weekly_backup(self._db_path, bcfg.directory, retain=bcfg.retain)
+        except Exception as e:
+            log.error(
+                "backup.failed",
+                error=str(e),
+                tb=traceback.format_exc(),
+            )
 
     def list_jobs(self) -> list[Any]:
         return self._sched.get_jobs()
