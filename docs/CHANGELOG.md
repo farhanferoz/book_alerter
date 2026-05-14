@@ -71,3 +71,9 @@ b0b34b4456fa (book)
 - **Task 2.4** — `572cb45` `build_sources(cfg) -> dict[str, Source]` registry in `src/book_alerter/sources/registry.py`. Inline sources resolved through `_INLINE_REGISTRY = {"wob": WobInlineSource}`; subprocess sources instantiated with `binary` + `timeout_seconds` from `SourceConfig`. Disabled sources skipped. Raises on unknown inline name or subprocess without binary. 5 unit tests cover all branches. 27/27 tests passing.
 
 **Phase 2 complete.** Source plugin layer end-to-end: `build_sources(cfg)` produces ready-to-fetch sources; the WoB inline implementation actually pulls live offers (replayed from cassette). Next: Phase 3 — APScheduler integration.
+
+- **Simplify pass** — `c6a33d7` Eight findings from 3-agent review applied:
+  - **Reuse**: `Condition` Literal moved to `db/models.py` (single source of truth; `sources/base.py` re-exports for callers). `transient_book` fixture added in new `tests/conftest.py`; 3 test files now share it (replaces 2 local helpers + 2 inline `Book(...)` literals).
+  - **Robustness**: `SubprocessSource.fetch` now wraps JSON / pydantic parse errors in `SourceError` (uniform exception surface; new test added — 28 total). `proc.kill()` followed by `await proc.wait()` so killed subprocesses don't linger as zombies. WoB `SourceError` messages now include the URL for debuggability. WoB popular-ISBN test tightened to forbid `condition == "unknown"` — catches a silent WoB rename that would coerce real offers to "unknown" (the old `condition in {... "unknown"}` allowed silent corruption).
+  - **Cleanup**: dropped redundant `name: str` re-annotation in `WobInlineSource` (already on `Source`); dropped two noise comments.
+  - **Deferred**: `InlineSource` marker removal (plan-prescribed; part of source-type taxonomy even if not yet runtime-checked); `MappingProxyType` for `_INLINE_REGISTRY` (over-engineering); shared httpx client / streaming subprocess output (Phase 3 concerns).

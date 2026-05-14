@@ -2,7 +2,7 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 2 COMPLETE. 15 tasks done across Phases 0–2, 27 tests passing. Source plugin layer end-to-end: live WoB UK scraper extracts real offers (4 + 2) from cassette replay. Next phase: Phase 3 — APScheduler integration.
+**Status:** Phase 2 COMPLETE + simplify pass. 15 tasks across Phases 0–2, 28 tests passing. Source plugin layer end-to-end: live WoB UK scraper extracts real offers (4 + 2) from cassette replay. Next phase: Phase 3 — APScheduler integration.
 **Branch:** `master` (no worktree)
 **Last update:** 2026-05-14, end of autonomous session
 
@@ -18,9 +18,9 @@ Phases 0–2 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 27 passed
+# expected: 28 passed
 git log --oneline d953741..HEAD
-# expected: 23 commits ending at 572cb45 (Task 2.4 source registry)
+# expected: 25+ commits ending at the most recent simplify/docs commit
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
@@ -41,6 +41,8 @@ _None._ All blockers from Phase 1 resolved.
 
 - **After every migration task, run `uv run alembic upgrade head`** so the dev DB at `data/book_alerter.db` stays at head. Otherwise the next `alembic revision --autogenerate` fails with "Target database is not up to date." (Discovered during Tasks 1.3 → 1.4 — see CHANGELOG.)
 - **`Literal[...]` SQLModel fields** must be declared with `sa_column=Column(String, nullable=False)` because SQLModel 0.0.22's type inference calls `issubclass(Literal, Enum)` → `TypeError`. See `Book.format`, `Book.status`, `PriceObservation.condition`, `SourceRun.status`, `Alert.kind`, `NotificationDelivery.status` for the established pattern.
+- **`Condition` Literal lives in `book_alerter.db.models`** and is re-exported by `book_alerter.sources.base`. New sources should import it from `sources.base` (semantic origin) but the canonical definition is in `db.models`.
+- **`tests/conftest.py` provides `transient_book(isbn="...")`** for unpersisted `Book` construction. `tests/integration/conftest.py` provides `sqlite_engine` + `make_book` (persisted). Reach for these before writing local helpers.
 
 ## Incidents this session (for reference, not action)
 
