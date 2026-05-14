@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 live. Task 7.2 adds `GET /api/books/{id}/observations` (cursor-paginated price history; `limit` 1–500 default 100, `before` ISO 8601 strict-`<`, `source` filter, duplicate-exclusion unconditional, `next_before` cursor) and `GET /api/books/{id}/stats` (wraps `compute_book_stats`, returns existing `BookStatsOut`); both 404 on unknown book. 136 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 live. Task 7.3 adds the alerts router (`src/book_alerter/api/alerts.py`, prefix `/api/alerts`): `GET /api/alerts` (cursor-paginated, newest-first by `fired_at`, `limit` 1–500 default 50, `before` strict-`<`, optional `kind` ∈ {new_low, target_hit, percentile_cross}, optional `dismissed` bool), `POST /api/alerts/{id}/dismiss` (idempotent — preserves original `dismissed_at`; 404 on unknown), `POST /api/alerts/dismiss-all` (single `UPDATE ... WHERE dismissed_at IS NULL`, returns `{dismissed_count}`). 147 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.2 committed at `cb951fa`
+**Last update:** 2026-05-14, Task 7.3 committed at `e51df79`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 136 passed
+# expected: 147 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 61
+# expected: 67
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.3 (Alerts endpoints — `GET /api/alerts`, `POST /api/alerts/{id}/dismiss`, `POST /api/alerts/dismiss-all`)**, plan line 2528.
+Dispatch **Phase 7 Task 7.4 (Sources endpoints — manual `POST /api/sources/run` trigger + `GET /api/sources/runs` history)**, plan line 2532.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -55,6 +55,8 @@ _None._ All blockers from Phase 1 resolved.
 - **FastAPI dependency style (Task 7.1)**: use `SessionDep = Annotated[Session, Depends(get_session)]` (module-level) and write handlers as `def foo(... , session: SessionDep, ...)`. Avoids ruff's `B008` (`Depends(...)` in default argument) while keeping FastAPI's auto-DI working. Non-defaulted `SessionDep` must precede defaulted query params in the signature — reorder if needed.
 - **Pydantic mirrors for dataclass serialization**: when a handler needs to return a `@dataclass` from `stats.py` (or elsewhere), define a small Pydantic `BaseModel` mirror with a `.from_dataclass()` classmethod and use that in `response_model`. Cleaner OpenAPI schema than `arbitrary_types_allowed=True`, and lets you exclude internal fields (e.g. `sorted_totals` from `BookStats`).
 - **`make_observation` fixture (Task 7.2)** in `tests/integration/api/conftest.py` inserts `PriceObservation` rows directly via a SQLModel session, auto-computing `total_minor = price_minor + (shipping_minor or 0)` and accepting `is_duplicate_of` for duplicate-row scenarios. Reuse for Task 7.3+ alerts/runs fixtures rather than going through the full source pipeline. Note: capture `obs.id` immediately after `make_observation` returns — the row detaches from its session when the `with Session(...)` block exits.
+- **`make_alert` fixture (Task 7.3)** in `tests/integration/api/conftest.py` inserts `Alert` rows directly via a SQLModel session (defaults: `kind="target_hit"`, `price_minor=500`, `currency="GBP"`, `source="wob"`, `condition="used_g"`, `message="test alert"`, `dismissed_at=None`, `delivered_via=[]`). Same detached-instance gotcha as `make_observation` — capture `alert.id` inside the `with Session(...)` block. Reuse for Task 7.7 (alert-related) fixtures.
+- **Idempotent dismiss pattern (Task 7.3)**: `POST /api/alerts/{id}/dismiss` checks `alert.dismissed_at is None` before writing — re-dismissing returns 200 with the original timestamp preserved. `POST /api/alerts/dismiss-all` uses a single `update(Alert).where(Alert.dismissed_at.is_(None)).values(dismissed_at=now)` via `session.exec(...)` and returns `result.rowcount` — never iterates row-by-row. Manual dismiss only (spec line 40); no auto-dismiss anywhere.
 
 ## Incidents this session (for reference, not action)
 
