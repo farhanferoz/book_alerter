@@ -2,32 +2,32 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 2 COMPLETE + simplify pass. 15 tasks across Phases 0–2, 28 tests passing. Source plugin layer end-to-end: live WoB UK scraper extracts real offers (4 + 2) from cassette replay. Next phase: Phase 3 — APScheduler integration.
+**Status:** Phase 3 COMPLETE. 17 tasks across Phases 0–3, 32 tests passing. Scheduler produces persisted observations end-to-end (cassette → fetch → DB). Next phase: Phase 4 — stats, signal, alerts.
 **Branch:** `master` (no worktree)
 **Last update:** 2026-05-14, end of autonomous session
 
 ## Where we are
 
-Phases 0–2 complete:
+Phases 0–3 complete:
 - **Foundation (0)**: app boots; `/api/health` returns `{status, config_version}`; structlog JSON logging; SQLite engine + `session_scope`.
 - **Data model (1)**: 5 tables + `book_stats` view migrated. Migration chain at `0004_book_stats_view (head)`.
-- **Sources (2)**: `Source` ABC, `ObservationCandidate`, `SourceError` in `sources/base.py`. `SubprocessSource` (asyncio CLI wrapper) + `InlineSource` (marker). `WobInlineSource` parses Shopify `var meta` JSON (plan's CSS selectors didn't match real page — pivoted, documented in CHANGELOG). `build_sources(cfg) -> dict[str, Source]` registry in `sources/registry.py`.
-- VCR cassettes for WoB are committed in `tests/integration/sources/cassettes/` (~1.7 MB total; replay offline).
+- **Sources (2)**: `Source` ABC, `ObservationCandidate`, `SourceError` in `sources/base.py`. `SubprocessSource` + `InlineSource`. `WobInlineSource` parses Shopify `var meta` JSON. `build_sources(cfg) -> dict[str, Source]` registry.
+- **Scheduler (3)**: `Scheduler` in `src/book_alerter/scheduler.py` wraps APScheduler `AsyncIOScheduler`. Per-source cron jobs; `Semaphore(concurrency)` + per-book jitter; writes `SourceRun` audit rows + persists `PriceObservation`; exponential backoff capped at 24 h. `app.py` lifespan starts/stops it. `alert_pipeline` is a no-op placeholder (Phase 4 wires the real one). E2E smoke: cassette → fetch → 4 PriceObservation rows land in DB.
 
 ## Verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 28 passed
+# expected: 32 passed
 git log --oneline d953741..HEAD
-# expected: 25+ commits ending at the most recent simplify/docs commit
+# expected: 28+ commits ending at the most recent docs commit
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 3, Task 3.1: Scheduler module — register, start, shutdown** (plan line 1646). Phase 3 covers Tasks 3.1 → 3.2: APScheduler integrated into FastAPI lifespan; per-source jobs from config with jitter, per-book delays, per-source-failure isolation, exponential backoff; end-to-end smoke that fires the WoB inline job + cassette and observes a row land in the DB. After Phase 3 the scheduler is the first thing that produces persisted observations from a real source.
+Dispatch implementer for **Phase 4, Task 4.1: `compute_book_stats` helper** (plan line 1911). Phase 4 covers Tasks 4.1 → 4.4: stats helper (percentile p25/p50/p75 in Python, since SQLite lacks `percentile_cont`); `compute_signal` (target_hit / new_low / percentile_cross / INSUFFICIENT_DATA); alert detection on transitions; full alert pipeline that writes `Alert` rows, dedups, delivers in-app. After Phase 4 the scheduler's no-op `alert_pipeline` gets replaced with the real thing.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
