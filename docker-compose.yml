@@ -1,0 +1,52 @@
+# Compose definition for the book_alerter NAS deployment.
+#
+# Deployment posture: the host runs Tailscale; access control happens at the
+# Tailscale ACL layer, NOT at the Docker port-publish layer. Binding to
+# 127.0.0.1 would block Tailscale peers, so we publish on 0.0.0.0:8000 and
+# rely on the firewall + Tailscale ACLs to gate ingress. If you deploy outside
+# Tailscale, set APP_BASIC_AUTH_USER + APP_BASIC_AUTH_PASS in .env (see
+# .env.example) to enable the optional HTTP Basic guard, and/or change the
+# port mapping below to "127.0.0.1:8000:8000".
+#
+# One-step bring-up: `docker compose up -d`. State (SQLite DB + config.yaml +
+# backups) lives in ./data on the host so container recreation is lossless.
+
+services:
+  book_alerter:
+    build: .
+    image: book_alerter:dev
+    container_name: book_alerter
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    # Load any overrides from .env (copy .env.example to get started). Marked
+    # required: false so `docker compose up` works on a fresh clone before the
+    # user has created a .env.
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    # `init: true` reaps zombie processes — Playwright sources fork Chromium
+    # subprocesses on every run, and without an init their exited workers
+    # accumulate as defunct entries under PID 1 until the container restarts.
+    init: true
+    # Chromium needs more than the default 64 MB of /dev/shm to render any
+    # non-trivial page; 1 GB is the common Playwright recommendation.
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Cap log growth so the NAS doesn't fill up after months of uptime.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
