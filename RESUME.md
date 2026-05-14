@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 live. Task 7.3 adds the alerts router (`src/book_alerter/api/alerts.py`, prefix `/api/alerts`): `GET /api/alerts` (cursor-paginated, newest-first by `fired_at`, `limit` 1–500 default 50, `before` strict-`<`, optional `kind` ∈ {new_low, target_hit, percentile_cross}, optional `dismissed` bool), `POST /api/alerts/{id}/dismiss` (idempotent — preserves original `dismissed_at`; 404 on unknown), `POST /api/alerts/dismiss-all` (single `UPDATE ... WHERE dismissed_at IS NULL`, returns `{dismissed_count}`). 147 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 live. Task 7.4 adds the sources router (`src/book_alerter/api/sources.py`, prefix `/api/sources`): `GET /api/sources` (alphabetically-sorted per-source `{name, config, last_run}`; `error_traceback` excluded from wire), `POST /api/sources/{name}/run` (awaits `scheduler.trigger_now(name)`; returns `{run_id}`; 404 unknown source; 409 when scheduler returns 0 → backoff gate active), `PATCH /api/sources/{name}` (partial update of `enabled` / `schedule` / `concurrency` via `model_copy(update=...)`; atomic YAML save via `Config.save`; replaces `app.state.config`; 404/422). Also adds `app.state.config_path` (set by lifespan + `api_client` fixture) and `get_config_path` dep + `ConfigPathDep` alias in `api/deps.py` (plus matching Annotated aliases for the other shared deps). 157 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.3 committed at `e51df79`
+**Last update:** 2026-05-14, Task 7.4 committed at `01fa09f`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 147 passed
+# expected: 157 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 67
+# expected: 70
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.4 (Sources endpoints — manual `POST /api/sources/run` trigger + `GET /api/sources/runs` history)**, plan line 2532.
+Dispatch **Phase 7 Task 7.5 (Config endpoints — `GET /api/config` + `PATCH /api/config` for top-level recommendation / notifications / quiet_hours fields)**, plan line 2538.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -57,6 +57,9 @@ _None._ All blockers from Phase 1 resolved.
 - **`make_observation` fixture (Task 7.2)** in `tests/integration/api/conftest.py` inserts `PriceObservation` rows directly via a SQLModel session, auto-computing `total_minor = price_minor + (shipping_minor or 0)` and accepting `is_duplicate_of` for duplicate-row scenarios. Reuse for Task 7.3+ alerts/runs fixtures rather than going through the full source pipeline. Note: capture `obs.id` immediately after `make_observation` returns — the row detaches from its session when the `with Session(...)` block exits.
 - **`make_alert` fixture (Task 7.3)** in `tests/integration/api/conftest.py` inserts `Alert` rows directly via a SQLModel session (defaults: `kind="target_hit"`, `price_minor=500`, `currency="GBP"`, `source="wob"`, `condition="used_g"`, `message="test alert"`, `dismissed_at=None`, `delivered_via=[]`). Same detached-instance gotcha as `make_observation` — capture `alert.id` inside the `with Session(...)` block. Reuse for Task 7.7 (alert-related) fixtures.
 - **Idempotent dismiss pattern (Task 7.3)**: `POST /api/alerts/{id}/dismiss` checks `alert.dismissed_at is None` before writing — re-dismissing returns 200 with the original timestamp preserved. `POST /api/alerts/dismiss-all` uses a single `update(Alert).where(Alert.dismissed_at.is_(None)).values(dismissed_at=now)` via `session.exec(...)` and returns `result.rowcount` — never iterates row-by-row. Manual dismiss only (spec line 40); no auto-dismiss anywhere.
+- **Config-mutating PATCH pattern (Task 7.4)**: `PATCH /api/sources/{name}` and the upcoming Task 7.5 `PATCH /api/config` follow the same shape. (1) Filter the patch body with `payload.model_dump(exclude_unset=True)` then drop None-valued entries — None means "don't change" (matches `BookPatch` semantics). (2) Build the new sub-model via `current.model_copy(update=patch_data)`. (3) Replace it inside a fresh top-level `Config` via `cfg.model_copy(update={"sources": {**cfg.sources, name: updated}})`. (4) Re-validate end-to-end with `Config.model_validate(new_cfg.model_dump())` (defensive; catches edge cases `model_copy` would skip). (5) Persist via the existing `Config.save(cfg_path)` (atomic tmp-replace). (6) Swap `request.app.state.config = new_cfg`. Empty body is a 200 no-op — **skip the save entirely** when `patch_data` is empty so the YAML file isn't created with defaults that don't match the live config. The config path is read off `request.app.state.config_path` (set by lifespan + test fixture) via `ConfigPathDep` from `api/deps.py`.
+- **Scheduler stub for trigger tests (Task 7.4)**: the `api_client` fixture in `tests/integration/api/conftest.py` attaches `_StubScheduler` to `app.state.scheduler` — a minimal async stub exposing `trigger_now(name) -> int`, `calls: list[str]` for dispatch assertions, and `return_zero_for: set[str]` for backoff-gate simulation. Production uses a real `Scheduler` instance attached during lifespan; tests rely on the stub. Single-fixture wiring works because tests just mutate `client.app.state.scheduler.return_zero_for.add("wob")` when they need the backoff path.
+- **`app.state.config_path` (Task 7.4)**: set by both `lifespan` (after `cfg = Config.load(cfg_path)`) and the `api_client` test fixture (before the app starts). PATCH-style endpoints that persist config back to disk pull it via `ConfigPathDep`. If you build a new test app outside of `api_client`, remember to set this attribute — the dep will `AttributeError` otherwise.
 
 ## Incidents this session (for reference, not action)
 
