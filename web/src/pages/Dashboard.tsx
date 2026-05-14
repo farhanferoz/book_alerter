@@ -12,9 +12,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AddBookModal } from "@/components/books/AddBookModal";
 import { BookFilters, DEFAULT_FILTERS, type BookFiltersValue } from "@/components/books/BookFilters";
 import { DataTable } from "@/components/books/BookTable";
-import { bookColumns } from "@/components/books/columns";
+import { buildBookColumns } from "@/components/books/columns";
 import { approximateSignal, type Signal } from "@/components/books/signal";
 import { useBooks, type Book } from "@/hooks/useBooks";
+import {
+  useConfig,
+  RECOMMENDATION_DEFAULTS,
+  type RecommendationConfigShape,
+} from "@/hooks/useConfig";
 import { formatErrorMessage } from "@/lib/utils";
 
 const SIGNAL_ORDER: Record<Signal, number> = {
@@ -25,10 +30,14 @@ const SIGNAL_ORDER: Record<Signal, number> = {
   INSUFFICIENT_DATA: 4,
 };
 
-function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
+function applyFilters(
+  books: Book[],
+  filters: BookFiltersValue,
+  config: RecommendationConfigShape,
+): Book[] {
   let result = books;
   if (filters.signal !== "ALL") {
-    result = result.filter((b) => approximateSignal(b) === filters.signal);
+    result = result.filter((b) => approximateSignal(b, config) === filters.signal);
   }
   if (filters.status !== "all") {
     result = result.filter((b) => b.status === filters.status);
@@ -37,7 +46,9 @@ function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
   switch (filters.sort) {
     case "signal":
       sorted.sort(
-        (a, b) => SIGNAL_ORDER[approximateSignal(a)] - SIGNAL_ORDER[approximateSignal(b)],
+        (a, b) =>
+          SIGNAL_ORDER[approximateSignal(a, config)] -
+          SIGNAL_ORDER[approximateSignal(b, config)],
       );
       break;
     case "best_price":
@@ -110,10 +121,19 @@ export function Dashboard() {
   const { data, isLoading, isError, error } = useBooks({
     include_archived: includeArchived,
   });
+  // Config drives the signal-approximation threshold. Falls through to spec
+  // defaults while loading or on error so the dashboard never crashes when
+  // /api/config is briefly unavailable (Phase 11.3 lift).
+  const cfg = useConfig();
+  const recommendation = cfg.data?.recommendation ?? RECOMMENDATION_DEFAULTS;
 
+  const columns = useMemo(
+    () => buildBookColumns(recommendation),
+    [recommendation],
+  );
   const filtered = useMemo(
-    () => (data ? applyFilters(data, filters) : []),
-    [data, filters],
+    () => (data ? applyFilters(data, filters, recommendation) : []),
+    [data, filters, recommendation],
   );
 
   const onAddBook = () => setAddBookOpen(true);
@@ -140,7 +160,7 @@ export function Dashboard() {
         <EmptyState onAddBook={onAddBook} />
       ) : (
         <DataTable
-          columns={bookColumns}
+          columns={columns}
           data={filtered}
           emptyMessage="No books match the current filters."
         />

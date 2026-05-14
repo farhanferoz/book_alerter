@@ -10,6 +10,7 @@
 import type { Book } from "@/hooks/useBook";
 import { formatMoneyMinor } from "@/lib/format";
 import { SignalPill, approximateSignal } from "@/components/books/signal";
+import { useConfig, RECOMMENDATION_DEFAULTS } from "@/hooks/useConfig";
 
 // Coarse percentile bucket from p25/p50/p75. Returns a human-readable string.
 // The backend's `percentile_at()` does proper linear interpolation against
@@ -44,7 +45,11 @@ function targetDistance(book: Book): string | null {
 }
 
 export function SignalCard({ book }: { book: Book }) {
-  const signal = approximateSignal(book);
+  // Config drives `min_observations_for_signal`; fall through to spec
+  // defaults while /api/config is unavailable (Phase 11.3 lift).
+  const cfg = useConfig();
+  const recommendation = cfg.data?.recommendation ?? RECOMMENDATION_DEFAULTS;
+  const signal = approximateSignal(book, recommendation);
   const bucket = bucketPercentile(book);
   const distance = targetDistance(book);
   const s = book.stats;
@@ -60,8 +65,8 @@ export function SignalCard({ book }: { book: Book }) {
 
       {signal === "INSUFFICIENT_DATA" ? (
         <p className="mt-2 text-sm text-muted-foreground">
-          Need at least 14 observations to compute a signal. Currently{" "}
-          {s.observation_count}.
+          Need at least {recommendation.min_observations_for_signal} observations
+          to compute a signal. Currently {s.observation_count}.
         </p>
       ) : (
         <div className="mt-2 space-y-1.5 text-sm">

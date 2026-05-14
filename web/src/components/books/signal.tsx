@@ -8,20 +8,22 @@
 // using the materialised p25/p50/p75 fields.
 //
 // Approximation rules (mirrors backend semantics where data allows):
-//   - observation_count < 14 (hard-coded default): INSUFFICIENT_DATA
+//   - observation_count < config.min_observations_for_signal: INSUFFICIENT_DATA
 //   - current_best_total_minor is None: INSUFFICIENT_DATA
 //   - target set + current <= target: TARGET_HIT
 //   - current <= p25_total_minor: BUY
 //   - current <= p50_total_minor: WATCH
 //   - else: WAIT
 //
-// Hard-coded `min_observations_for_signal=14` matches the spec default; the
-// dashboard already filters via the column even if the backend was tuned.
-// When `GET /api/config` is wired in (Phase 11.3), swap this for the real
-// values. The Signal column is presentation only — alert dispatch uses the
-// server-side computation.
+// Phase 11.3 lifts the `min_observations_for_signal` constant out of this
+// module — callers pass the live `RecommendationConfig` slice from
+// `useConfig()`. When config is loading/errored, callers should fall through
+// to `RECOMMENDATION_DEFAULTS` (or pass it explicitly) so the dashboard
+// degrades to spec defaults rather than crashing. The Signal column is
+// presentation only — alert dispatch uses the server-side computation.
 
 import type { Book } from "@/hooks/useBooks";
+import type { RecommendationConfigShape } from "@/hooks/useConfig";
 
 export type Signal =
   | "BUY"
@@ -30,11 +32,14 @@ export type Signal =
   | "TARGET_HIT"
   | "INSUFFICIENT_DATA";
 
-const MIN_OBSERVATIONS_DEFAULT = 14;
-
-export function approximateSignal(book: Book): Signal {
+export function approximateSignal(
+  book: Book,
+  config: RecommendationConfigShape,
+): Signal {
   const s = book.stats;
-  if (s.observation_count < MIN_OBSERVATIONS_DEFAULT) return "INSUFFICIENT_DATA";
+  if (s.observation_count < config.min_observations_for_signal) {
+    return "INSUFFICIENT_DATA";
+  }
   if (s.current_best_total_minor == null) return "INSUFFICIENT_DATA";
 
   if (

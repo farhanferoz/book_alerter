@@ -16,6 +16,7 @@ import { Link } from "react-router-dom";
 
 import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
+import type { RecommendationConfigShape } from "@/hooks/useConfig";
 import { SignalPill, approximateSignal, type Signal } from "./signal";
 
 function ConditionPill({ condition }: { condition: string | null }) {
@@ -51,7 +52,13 @@ function pctClass(pct: number | null): string {
   return "text-rose-700 dark:text-rose-400";
 }
 
-export const bookColumns: ColumnDef<Book>[] = [
+// Built as a factory so `approximateSignal(b, config)` can close over the
+// live `RecommendationConfig` (Phase 11.3 lift — was a hard-coded constant
+// in `signal.tsx`).
+export function buildBookColumns(
+  config: RecommendationConfigShape,
+): ColumnDef<Book>[] {
+  return [
   {
     id: "cover",
     header: "",
@@ -105,7 +112,7 @@ export const bookColumns: ColumnDef<Book>[] = [
   },
   {
     id: "signal",
-    accessorFn: (b) => approximateSignal(b),
+    accessorFn: (b) => approximateSignal(b, config),
     header: "Signal",
     cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
   },
@@ -148,4 +155,5 @@ export const bookColumns: ColumnDef<Book>[] = [
       </span>
     ),
   },
-];
+  ];
+}
