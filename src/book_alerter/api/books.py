@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from book_alerter.api.deps import get_session
+from book_alerter.api.deps import ConfigDep, SchedulerDep, get_session
 from book_alerter.db import models
 from book_alerter.sources.normalizers import to_isbn13
 from book_alerter.stats import BookStats, compute_book_stats
@@ -349,6 +349,62 @@ def list_observations(
         rows[-1].observed_at.isoformat() if len(rows) == limit and rows else None
     )
     return ObservationsPage(items=items, next_before=next_before)
+
+
+class RefetchTriggered(BaseModel):
+    source: str
+    run_id: int
+
+
+class RefetchSkipped(BaseModel):
+    source: str
+    reason: Literal["disabled", "backoff_active"]
+
+
+class RefetchResult(BaseModel):
+    """Result of `POST /api/books/{id}/refetch`.
+
+    Fans out across every configured source. `triggered` lists sources whose
+    `scheduler.trigger_now` returned a real `run_id`. `skipped` records sources
+    that were intentionally not triggered: `reason="disabled"` for sources with
+    `enabled=False` in config, `reason="backoff_active"` when the scheduler
+    returned `0` (backoff gate). Empty `cfg.sources` yields two empty lists.
+    """
+    triggered: list[RefetchTriggered]
+    skipped: list[RefetchSkipped]
+
+
+@router.post("/{book_id}/refetch", response_model=RefetchResult)
+async def refetch_book(
+    book_id: int,
+    session: SessionDep,
+    cfg: ConfigDep,
+    scheduler: SchedulerDep,
+) -> RefetchResult:
+    """Trigger an immediate scrape across every enabled source for this book.
+
+    The refetch button is "ask all sources about this book again" — it does
+    **not** pre-filter by which sources have observed the book. Disabled
+    sources surface in `skipped` with `reason="disabled"`; sources whose
+    backoff gate is active (scheduler returns 0) surface with
+    `reason="backoff_active"`. 404 if the book id is not found.
+    """
+    if session.get(models.Book, book_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="book not found"
+        )
+    triggered: list[RefetchTriggered] = []
+    skipped: list[RefetchSkipped] = []
+    for name, source_cfg in cfg.sources.items():
+        if not source_cfg.enabled:
+            skipped.append(RefetchSkipped(source=name, reason="disabled"))
+            continue
+        run_id = await scheduler.trigger_now(name)
+        if run_id == 0:
+            skipped.append(RefetchSkipped(source=name, reason="backoff_active"))
+        else:
+            triggered.append(RefetchTriggered(source=name, run_id=run_id))
+    return RefetchResult(triggered=triggered, skipped=skipped)
 
 
 @router.get("/{book_id}/stats", response_model=BookStatsOut)

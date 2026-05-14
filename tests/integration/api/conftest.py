@@ -21,8 +21,10 @@ from sqlmodel import Session
 from book_alerter.api import alerts, books, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
+from book_alerter.api import notifications as notifications_routes
 from book_alerter.config import Config
 from book_alerter.db import models
+from book_alerter.notifications.base import NotificationResult
 
 
 class _StubScheduler:
@@ -46,6 +48,27 @@ class _StubScheduler:
         return self.next_run_id
 
 
+class _StubNotifier:
+    """Minimal `Notifier` stub for Task 7.7 notification-test endpoint tests.
+
+    Mirrors the `_StubScheduler` pattern: attached unconditionally by the
+    `api_client` fixture under name `"stub"` so tests can reach into
+    `api_client.app.state.notifiers["stub"]` to inspect `calls` and mutate
+    `next_result` to drive the `sent` / `error` branches.
+    """
+
+    name = "stub"
+    bypasses_quiet_hours = False
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[models.Alert, models.Book]] = []
+        self.next_result: NotificationResult = {"status": "sent"}
+
+    async def send(self, alert: models.Alert, book: models.Book) -> NotificationResult:
+        self.calls.append((alert, book))
+        return self.next_result
+
+
 @pytest.fixture
 def api_client(engine_with_view, tmp_path: Path):
     cfg_path = tmp_path / "config.yaml"
@@ -55,11 +78,13 @@ def api_client(engine_with_view, tmp_path: Path):
     app.state.config = cfg
     app.state.config_path = cfg_path
     app.state.scheduler = _StubScheduler()
+    app.state.notifiers = {"stub": _StubNotifier()}
     app.include_router(books.router)
     app.include_router(alerts.router)
     app.include_router(sources.router)
     app.include_router(config_routes.router)
     app.include_router(metadata_routes.router)
+    app.include_router(notifications_routes.router)
     with TestClient(app) as client:
         yield client
 

@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 from sqlmodel import Session
 
 from book_alerter.config import Config
+from book_alerter.notifications.base import Notifier
 from book_alerter.scheduler import Scheduler
 
 
@@ -48,7 +49,18 @@ def get_scheduler(request: Request) -> Scheduler:
     return request.app.state.scheduler
 
 
+def get_notifiers(request: Request) -> dict[str, Notifier]:
+    """Return the configured notifiers keyed by `notifier.name`.
+
+    Populated by `app.lifespan` (real app) or the `api_client` test fixture.
+    Used by `POST /api/notifications/{channel}/test` to look up a channel by
+    name without re-instantiating notifiers per request.
+    """
+    return request.app.state.notifiers
+
+
 SessionDep = Annotated[Session, Depends(get_session)]
 ConfigDep = Annotated[Config, Depends(get_config)]
 ConfigPathDep = Annotated[Path, Depends(get_config_path)]
 SchedulerDep = Annotated[Scheduler, Depends(get_scheduler)]
+NotifiersDep = Annotated[dict[str, Notifier], Depends(get_notifiers)]

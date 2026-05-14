@@ -6,7 +6,14 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session
 
+from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
+
+
+def _install_sources(client, **sources: SourceConfig) -> None:
+    """Replace `app.state.config.sources` with the given mapping."""
+    cfg: Config = client.app.state.config
+    client.app.state.config = cfg.model_copy(update={"sources": sources})
 
 
 def test_post_books_happy_path_normalizes_isbn(api_client):
@@ -323,3 +330,71 @@ def test_get_stats_zero_observations(api_client):
 def test_get_stats_unknown_book_returns_404(api_client):
     resp = api_client.get("/api/books/99999/stats")
     assert resp.status_code == 404
+
+
+# --- Task 7.7: POST /api/books/{id}/refetch ---------------------------------
+
+
+def test_refetch_triggers_all_enabled_sources(api_client):
+    bid = _seed_book(api_client)
+    _install_sources(
+        api_client,
+        wob=SourceConfig(),
+        amazon=SourceConfig(),
+    )
+    resp = api_client.post(f"/api/books/{bid}/refetch")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sources_triggered = sorted(t["source"] for t in body["triggered"])
+    assert sources_triggered == ["amazon", "wob"]
+    assert all(t["run_id"] == 42 for t in body["triggered"])
+    assert body["skipped"] == []
+    # Scheduler was called once per enabled source.
+    assert sorted(api_client.app.state.scheduler.calls) == ["amazon", "wob"]
+
+
+def test_refetch_skips_disabled_sources(api_client):
+    bid = _seed_book(api_client)
+    _install_sources(
+        api_client,
+        wob=SourceConfig(),
+        amazon=SourceConfig(enabled=False),
+    )
+    resp = api_client.post(f"/api/books/{bid}/refetch")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["source"] for t in body["triggered"]] == ["wob"]
+    assert body["skipped"] == [{"source": "amazon", "reason": "disabled"}]
+    # Disabled sources do NOT hit the scheduler.
+    assert api_client.app.state.scheduler.calls == ["wob"]
+
+
+def test_refetch_surfaces_backoff_as_skipped(api_client):
+    bid = _seed_book(api_client)
+    _install_sources(
+        api_client,
+        wob=SourceConfig(),
+        amazon=SourceConfig(),
+    )
+    api_client.app.state.scheduler.return_zero_for = {"wob"}
+    resp = api_client.post(f"/api/books/{bid}/refetch")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["source"] for t in body["triggered"]] == ["amazon"]
+    assert body["skipped"] == [{"source": "wob", "reason": "backoff_active"}]
+
+
+def test_refetch_unknown_book_returns_404(api_client):
+    _install_sources(api_client, wob=SourceConfig())
+    resp = api_client.post("/api/books/99999/refetch")
+    assert resp.status_code == 404
+
+
+def test_refetch_no_sources_configured_returns_empty(api_client):
+    bid = _seed_book(api_client)
+    # `_install_sources()` without kwargs leaves `cfg.sources` empty.
+    _install_sources(api_client)
+    resp = api_client.post(f"/api/books/{bid}/refetch")
+    assert resp.status_code == 200
+    assert resp.json() == {"triggered": [], "skipped": []}
+    assert api_client.app.state.scheduler.calls == []

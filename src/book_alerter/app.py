@@ -10,6 +10,7 @@ from sqlmodel import Session
 from book_alerter.api import alerts, books, health, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
+from book_alerter.api import notifications as notifications_routes
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     app.state.scheduler = scheduler
     app.state.engine = engine
+    app.state.notifiers = {n.name: n for n in notifiers}
 
     try:
         yield
@@ -69,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(sources.router)
     app.include_router(config_routes.router)
     app.include_router(metadata_routes.router)
+    app.include_router(notifications_routes.router)
     return app
 
 
