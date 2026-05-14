@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from sqlmodel import Session
 
-from book_alerter.api import alerts, books, health
+from book_alerter.api import alerts, books, health, sources
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
 from book_alerter.logging_setup import configure_logging, get_logger
@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     cfg_path = Path(os.environ.get("BOOK_ALERTER_CONFIG_PATH", "data/config.yaml"))
     cfg = Config.load(cfg_path)
     app.state.config = cfg
+    app.state.config_path = cfg_path
     log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
 
     engine = get_engine()
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(books.router)
     app.include_router(alerts.router)
+    app.include_router(sources.router)
     return app
 
 
