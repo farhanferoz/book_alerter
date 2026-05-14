@@ -2,7 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 11 COMPLETE + end-to-end scenario pass done (`12ada46`). 6/6 scenarios PASS (`bash tests/scenarios/run_all.sh`); pytest baseline preserved at 210 passed / 2 skipped. No bugs surfaced. Three documented MVP simplifications (real-clock dedup vs simulated-`observed_at`; quiet-hours suppress-not-defer; muted books skip BookSignalState → `new_low` cannot fire on mute-lift) — all design-intent per code comments, no fixes needed. **Next action: review the verdict report (in `12ada46`'s commit message + the CHANGELOG entry — the standalone `tests/scenarios/REPORT.md` file was blocked by harness guardrails during the scenario subagent's run; the report body is reproduced in the final agent message) + triage findings.** Phase 11 simplify pass details preserved below.
+**Status:** Phase 12.1 COMPLETE (`_uncommitted_` — see commit on `master`). Multi-stage `Dockerfile` (FE build via `node:20-slim` → runtime on `mcr.microsoft.com/playwright/python:v1.59.0-noble`) + `.dockerignore` + `docker-entrypoint.sh` (runs `alembic upgrade head` then `uvicorn`) shipped. `src/book_alerter/app.py` extended to serve the Vite SPA from `/app/web/dist` when present (StaticFiles mount on `/assets` + GET/HEAD catch-all returning `index.html` for SPA-router deep links); guarded behind `BOOK_ALERTER_WEB_DIST.is_dir()` so the dev workflow is unchanged. **Build**: 18 s cold, ~1.05 GB single-platform image (Playwright base + Chromium). **Smoke**: container boots healthy in ~5 s; `/api/health` → 200, `GET/HEAD /` → 200, `HEAD /books/123` → 200 with the SPA shell. **Tests**: 215 passed / 2 skipped (was 210; +5 for `tests/integration/api/test_static_ui.py`). **FE build**: `npm run build` clean (2617 modules, unchanged from Phase 11 baseline). **Next action: Phase 12.2 — `docker-compose.yml` + `.env.example` (plan line ~2860).** Prior status preserved below.
+
+**Prior end-to-end scenario status (for reference):** Phase 11 COMPLETE + end-to-end scenario pass done (`12ada46`). 6/6 scenarios PASS (`bash tests/scenarios/run_all.sh`); pytest baseline preserved at 210 passed / 2 skipped. No bugs surfaced. Three documented MVP simplifications (real-clock dedup vs simulated-`observed_at`; quiet-hours suppress-not-defer; muted books skip BookSignalState → `new_low` cannot fire on mute-lift) — all design-intent per code comments, no fixes needed. Phase 11 simplify pass details preserved below.
 
 **Prior Phase 11 simplify status (for reference):** Phase 11 COMPLETE (5 tasks + backend prep + simplify pass). Simplify pass lifted three shared helpers from the 11.3/11.4/11.5 save-flow scaffolding: (a) `web/src/lib/config-diff.ts` — single `diffToRows(diff, {expand?})` walker replacing three near-identical local copies (Recommendation passes `expand: {"recommendation"}`, Notifications passes `expand: {"notifications"}` and now uses the same recursive walker the 11.4 `walkNotifDiff` inlined, Advanced passes nothing for the full-block JSON shape); same module exports `formatPutError(err): string[]` (canonical 422 `detail.errors` shape) plus `formatPutErrorMessage(err): string | null` (joined "Validation failed: …" form for the inline error). (b) `web/src/hooks/useSavedFlash.ts` — `{savedAt, flash}` hook replacing three open-coded "set time string, clear 3 s later with same-value guard" copies. (c) Stale-copy fix: Sources tab empty state no longer says "(or the Advanced tab once Phase 11.5 lands)" → now "(or via the Advanced tab)". Rest of the simplify candidate list reviewed and rejected with reasons logged in CHANGELOG (notably: `useConfigSaveFlow` hook reviewed and declined — the three pages have genuinely divergent gating + diff-shape + open-on-Validate-vs-open-on-Save patterns; collapsing them would obscure not simplify). **No backend edits, no new top-level deps.** Build: **2617 modules** (+2 for the new shared modules), main bundle **505.12 kB / 153.71 kB gzip** (Δ vs Phase 11.5 baseline 505.93 / 153.72: **-0.81 / -0.01**), Advanced route-chunk **58.49 / 19.51** (Δ vs 11.5 59.14 / 19.72: **-0.65 / -0.21**), BookDetail route-chunk unchanged at 366.31 / 107.41. `npx tsc --noEmit` clean. `npx eslint .` **0 errors / 0 warnings** baseline preserved. Smoke test via Vite proxy: `/api/health` ok, all four `/settings/*` routes return 200. Python suite **210 passed, 2 skipped** (unchanged — no Python edits). Net `git diff --stat HEAD~1` 5 files modified + 2 added, **-167 / +145** (net **-22 LOC**). Prior status preserved below.
 
@@ -44,16 +46,25 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 210 passed, 2 skipped (live bookfinder + live amazon gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
+# expected: 215 passed, 2 skipped (live bookfinder + live amazon gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 uv run playwright install chromium  # first-time setup on a new machine
-cd web && npm run build              # expected: tsc -b + vite build pass; ~16 modules, ~150ms
+cd web && npm run build              # expected: tsc -b + vite build pass; ~2617 modules
+
+# Docker (Phase 12.1):
+cd /home/ff235/dev/book_alerter && docker build -t book_alerter:dev .
+docker run -d --name ba_test -p 8001:8000 book_alerter:dev
+sleep 6
+curl -sf http://127.0.0.1:8000/api/health   # 200 {"status":"ok",...}
+curl -sfI http://127.0.0.1:8000/            # 200 (SPA index.html)
+curl -sfI http://127.0.0.1:8000/books/123   # 200 (SPA fallback)
+docker stop ba_test && docker rm ba_test
 ```
 
 ## Next action
 
-**End-to-end scenario test pass** (task #12). Beyond unit tests: seed real books, simulate observations over time, walk signal transitions (`INSUFFICIENT_DATA → WAIT → WATCH → BUY → TARGET_HIT`), verify alert dispatch + dedup + quiet hours + per-book mute, exercise the UI surface (Dashboard, BookDetail, Add-book modal, Alerts feed/page, all four Settings tabs) against real data rather than fixtures. The simplify pass for Phase 11 is now complete (a + b applied — shared `diffToRows` + `useSavedFlash`; c + d remain as deferred follow-ups, see below).
+**Phase 12.2 — `docker-compose.yml` + `.env.example` (plan line ~2860).** Pair the new Dockerfile with a compose definition mounting `./data` as a bind volume, publishing `127.0.0.1:8000` only (Tailscale-only deploy posture), with an `env_file: .env`. `.env.example` should mirror the spec's list (`TZ`, `NTFY_TOPIC`, `TELEGRAM_*`, `PUSHOVER_*`, `SENTRY_DSN`, `APP_BASIC_AUTH_*`). Smoke test via `docker compose up -d && curl -f http://127.0.0.1:8000/api/health`.
 
 **Deferred from Phase 11 simplify (not addressed in this pass)**:
 - **Monaco theme not live-updated**: theme is read once at mount; toggling dark mode while the Advanced editor is open won't re-theme until next visit. A `MutationObserver` on `<html>.class` would handle it. Defer until a user reports it.

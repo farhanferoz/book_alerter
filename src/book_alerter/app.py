@@ -4,7 +4,9 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
 from book_alerter.api import alerts, books, health, sources
@@ -78,6 +80,42 @@ def create_app() -> FastAPI:
         notifications_routes.router,
     ):
         app.include_router(router, dependencies=auth_deps)
+
+    # Serve the built frontend (Vite SPA) when the dist directory is present.
+    # In dev (`uv run uvicorn`) the dist won't exist and this block is skipped —
+    # Vite's own dev server serves the SPA on a different port and proxies API
+    # calls. In the Docker image the FE build is copied to /app/web/dist by
+    # stage 1.
+    #
+    # Registered LAST so all `/api/*` and other backend routes match first.
+    # Two pieces are needed for SPA hosting:
+    #   1. A static mount that serves the build's assets (JS/CSS/fonts/...).
+    #   2. A catch-all GET that returns `index.html` for any unmatched path —
+    #      this is the SPA client-side router (e.g. `/books/123`) fallback,
+    #      so a deep-link reload doesn't 404.
+    web_dist = Path(os.environ.get("BOOK_ALERTER_WEB_DIST", "web/dist"))
+    if web_dist.is_dir():
+        index_html = web_dist / "index.html"
+        assets_dir = web_dist / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.api_route(
+            "/{full_path:path}",
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+        )
+        async def _spa_fallback(full_path: str) -> FileResponse:
+            # Try a literal file in the dist root first (favicon.svg,
+            # icons.svg, robots.txt, ...). Anything else: serve index.html
+            # so the React Router can take over.
+            candidate = web_dist / full_path
+            if full_path and candidate.is_file():
+                return FileResponse(candidate)
+            if index_html.is_file():
+                return FileResponse(index_html)
+            raise HTTPException(status_code=404)
+
     return app
 
 

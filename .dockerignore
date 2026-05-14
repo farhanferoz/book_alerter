@@ -1,0 +1,67 @@
+# Version control / repo metadata
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.uv/
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+.hypothesis/
+
+# Node / Vite — the FE build stage runs `npm ci` fresh; never copy host
+# node_modules in. Keep `web/` source itself though (excluded entries below
+# are pruned from inside it).
+**/node_modules/
+
+# Don't ship a pre-built dist from the host — stage 1 rebuilds it.
+web/dist/
+web/.vite/
+
+# Runtime data — SQLite DB, logs, backups, scenario artefacts.
+data/
+tests/scenarios/.test.db
+tests/scenarios/.scenario_config.yaml
+tests/scenarios/screenshots/
+
+# Tests & docs aren't needed in the image.
+tests/
+docs/
+RESUME.md
+*.md
+
+# Editor / tooling
+.vscode/
+.idea/
+.cursor/
+.windsurf/
+*.swp
+.DS_Store
+
+# Env / secrets — env comes via runtime, never baked in.
+.env
+.env.*
+!.env.example
+
+# Claude / ccage harness state
+.claude/
+.claudesignore
+
+# Build outputs / archives
+build/
+dist/
+*.tar.gz
+*.zip
+
+# Docker artefacts themselves — no recursive inclusion of compose state
+Dockerfile.*
+docker-compose.override.yml
