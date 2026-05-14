@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 5 COMPLETE + simplify pass applied. 23 tasks across Phases 0–5, 93 tests passing. End-to-end alerting works including ntfy push (with RFC 2047 Title encoding for non-ASCII titles) and quiet-hours gate that uses a `Notifier.bypasses_quiet_hours` flag rather than a stringly-typed channel name. Next: Phase 6 — metadata service (ISBN normalization, OpenLibrary + Google Books).
+**Status:** Phase 6 IN PROGRESS — Task 6.1 (ISBN normalization) done. 24 tasks across Phases 0–6, 107 tests passing. Phases 0–5 complete; `to_isbn13` now available in `src/book_alerter/sources/normalizers.py`. Next: Task 6.2 — OpenLibrary + Google Books metadata race.
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Phase 5 simplify pass committed at `baee0bc`
+**Last update:** 2026-05-14, Task 6.1 committed at `5add68a`
 
 ## Where we are
 
@@ -25,7 +25,7 @@ uv run alembic current
 
 ## Next action
 
-Dispatch **Phase 6, Task 6.1: ISBN normalization** (plan line 2444). Adds `to_isbn13()` via `isbnlib` in `src/book_alerter/sources/normalizers.py` with unit tests against the spec's five ISBN test fixtures. Then Task 6.2 races OpenLibrary + Google Books for metadata (VCR-cassette integration tests).
+Dispatch **Phase 6, Task 6.2: OpenLibrary + Google Books metadata race** (plan line 2475). Builds a metadata service that races both providers concurrently and returns the first valid response (title/author/cover). VCR-cassette integration tests using real responses for at least one of the five spec fixtures. Should consume `to_isbn13` from `book_alerter.sources.normalizers` (added in Task 6.1).
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
