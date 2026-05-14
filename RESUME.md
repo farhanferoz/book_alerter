@@ -2,9 +2,9 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 live. Task 7.4 adds the sources router (`src/book_alerter/api/sources.py`, prefix `/api/sources`): `GET /api/sources` (alphabetically-sorted per-source `{name, config, last_run}`; `error_traceback` excluded from wire), `POST /api/sources/{name}/run` (awaits `scheduler.trigger_now(name)`; returns `{run_id}`; 404 unknown source; 409 when scheduler returns 0 → backoff gate active), `PATCH /api/sources/{name}` (partial update of `enabled` / `schedule` / `concurrency` via `model_copy(update=...)`; atomic YAML save via `Config.save`; replaces `app.state.config`; 404/422). Also adds `app.state.config_path` (set by lifespan + `api_client` fixture) and `get_config_path` dep + `ConfigPathDep` alias in `api/deps.py` (plus matching Annotated aliases for the other shared deps). 157 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
+**Status:** Phase 7 IN PROGRESS. Tasks 7.1 + 7.2 + 7.3 + 7.4 + 7.5 live. Task 7.5 adds the config router (`src/book_alerter/api/config.py`, prefix `/api/config`): `GET /api/config` (current config via `model_dump(mode="json")`), `GET /api/config/schema` (`Config.model_json_schema()` for the future Monaco editor; Phase 11.5 consumer), `PUT /api/config` (body `{config, dry_run}`; **always** returns `{diff, applied, errors}`; validates via `Config.model_validate`; **422** on failure in either mode; `dry_run=true` computes diff with no disk write / state mutation; `dry_run=false` rotates backup → atomic YAML write → swap `app.state.config`). **Backup rotation**: single rotating `<path>.bak` via `shutil.copy2` (preserves mtime); skipped on first-write. **Diff depth**: top-level keys only — `{added, removed, changed: {key: {before, after}}}` computed on `model_dump(mode="json")`; deeper diff rejected as MVP overkill (UI renders block-level changes itself). 166 tests passing. Phase 6 complete prior (Tasks 6.1 + 6.2 + simplify pass).
 **Branch:** `master` (no worktree)
-**Last update:** 2026-05-14, Task 7.4 committed at `01fa09f`
+**Last update:** 2026-05-14, Task 7.5 committed at `d70aa4d`
 
 ## Where we are
 
@@ -16,16 +16,16 @@ Phases 0–4 complete:
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -q
-# expected: 157 passed
+# expected: 166 passed
 git log --oneline d953741..HEAD | wc -l
-# expected: 70
+# expected: 73
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch **Phase 7 Task 7.5 (Config endpoints — `GET /api/config` + `PATCH /api/config` for top-level recommendation / notifications / quiet_hours fields)**, plan line 2538.
+Dispatch **Phase 7 Task 7.6 (Metadata endpoints — `POST /api/metadata/lookup` calling `metadata.lookup_isbn` to expose the OL+GB race for the book-creation UI)**, plan line 2544.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
@@ -60,6 +60,7 @@ _None._ All blockers from Phase 1 resolved.
 - **Config-mutating PATCH pattern (Task 7.4)**: `PATCH /api/sources/{name}` and the upcoming Task 7.5 `PATCH /api/config` follow the same shape. (1) Filter the patch body with `payload.model_dump(exclude_unset=True)` then drop None-valued entries — None means "don't change" (matches `BookPatch` semantics). (2) Build the new sub-model via `current.model_copy(update=patch_data)`. (3) Replace it inside a fresh top-level `Config` via `cfg.model_copy(update={"sources": {**cfg.sources, name: updated}})`. (4) Re-validate end-to-end with `Config.model_validate(new_cfg.model_dump())` (defensive; catches edge cases `model_copy` would skip). (5) Persist via the existing `Config.save(cfg_path)` (atomic tmp-replace). (6) Swap `request.app.state.config = new_cfg`. Empty body is a 200 no-op — **skip the save entirely** when `patch_data` is empty so the YAML file isn't created with defaults that don't match the live config. The config path is read off `request.app.state.config_path` (set by lifespan + test fixture) via `ConfigPathDep` from `api/deps.py`.
 - **Scheduler stub for trigger tests (Task 7.4)**: the `api_client` fixture in `tests/integration/api/conftest.py` attaches `_StubScheduler` to `app.state.scheduler` — a minimal async stub exposing `trigger_now(name) -> int`, `calls: list[str]` for dispatch assertions, and `return_zero_for: set[str]` for backoff-gate simulation. Production uses a real `Scheduler` instance attached during lifespan; tests rely on the stub. Single-fixture wiring works because tests just mutate `client.app.state.scheduler.return_zero_for.add("wob")` when they need the backoff path.
 - **`app.state.config_path` (Task 7.4)**: set by both `lifespan` (after `cfg = Config.load(cfg_path)`) and the `api_client` test fixture (before the app starts). PATCH-style endpoints that persist config back to disk pull it via `ConfigPathDep`. If you build a new test app outside of `api_client`, remember to set this attribute — the dep will `AttributeError` otherwise.
+- **Config PUT pattern (Task 7.5)**: `PUT /api/config` always returns `{diff, applied, errors}` and validates in both dry-run and apply modes — 422 fires identically in either. The wire shape is opinionated: do **NOT** add 200-with-errors as a "validation failed" channel. **Backup rotation** uses `shutil.copy2(config_path, config_path.with_suffix(suffix + ".bak"))` before `Config.save` — single rotating backup, overwrites any prior `.bak`, **skipped on first-write** (`config_path.exists()` guard). Don't ring-rotate (`.bak.1`, `.bak.2`); the user can keep their own snapshots if they need history. **Diff is top-level only** by deliberate choice — computed via `model_dump(mode="json")` on both sides so nested Pydantic models become plain dicts and `dict.__eq__` does deep equality. Recursive diff was rejected for MVP; UI renders the block-level changes. Env-var substitution is NOT re-run on PUT — `_substitute_env` only fires in `Config.load` from YAML on disk; the PUT body is the already-materialized config dict.
 
 ## Incidents this session (for reference, not action)
 
