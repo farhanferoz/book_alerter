@@ -2,33 +2,32 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** Phase 1 COMPLETE + simplify pass applied. 11 tasks done across Phases 0–1, 14 tests passing, 5 tables + `book_stats` view migrated, shared test fixtures (`sqlite_engine`, `make_book`) extracted. Next phase: Phase 2 — Source plugin layer + WoB inline scraper.
+**Status:** Phase 2 COMPLETE. 15 tasks done across Phases 0–2, 27 tests passing. Source plugin layer end-to-end: live WoB UK scraper extracts real offers (4 + 2) from cassette replay. Next phase: Phase 3 — APScheduler integration.
 **Branch:** `master` (no worktree)
 **Last update:** 2026-05-14, end of autonomous session
 
 ## Where we are
 
-Phases 0–1 complete. Foundation + data model live:
-- `uv run uvicorn book_alerter.app:app` boots; `GET /api/health` returns `{"status":"ok","config_version":<n>}`; structlog JSON logging configured.
-- SQLite engine + `session_scope` available; Alembic chain has 4 migrations applied cleanly from scratch:
-  `b0b34b4456fa (book) → 30c98243f802 (priceobservation) → 242d0f24dcef (sourcerun/alert/notificationdelivery/booksignalstate) → 0004_book_stats_view`.
-- `book_stats` read-only view exposes per-book current best price + all-time min/max + obs count; percentiles deferred to Python (Phase 4).
-- Tooling: `migrations/env.py` now has a `render_item` hook that auto-injects `import sqlmodel` into autogen migrations.
+Phases 0–2 complete:
+- **Foundation (0)**: app boots; `/api/health` returns `{status, config_version}`; structlog JSON logging; SQLite engine + `session_scope`.
+- **Data model (1)**: 5 tables + `book_stats` view migrated. Migration chain at `0004_book_stats_view (head)`.
+- **Sources (2)**: `Source` ABC, `ObservationCandidate`, `SourceError` in `sources/base.py`. `SubprocessSource` (asyncio CLI wrapper) + `InlineSource` (marker). `WobInlineSource` parses Shopify `var meta` JSON (plan's CSS selectors didn't match real page — pivoted, documented in CHANGELOG). `build_sources(cfg) -> dict[str, Source]` registry in `sources/registry.py`.
+- VCR cassettes for WoB are committed in `tests/integration/sources/cassettes/` (~1.7 MB total; replay offline).
 
 ## Verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter && uv run pytest -v
-# expected: 14 passed
+# expected: 27 passed
 git log --oneline d953741..HEAD
-# expected: 18 commits ending at bfdb144 (simplify pass)
+# expected: 23 commits ending at 572cb45 (Task 2.4 source registry)
 uv run alembic current
 # expected: 0004_book_stats_view (head)
 ```
 
 ## Next action
 
-Dispatch implementer for **Phase 2, Task 2.1: Source ABC + ObservationCandidate** (plan line 1229). Phase 2 covers Tasks 2.1 → 2.4: the `Source` ABC and `ObservationCandidate` pydantic model; `SubprocessSource` + `InlineSource` bases; the WoB inline scraper with a vcrpy cassette; and a source registry that instantiates configured sources. After Phase 2, end-to-end fetch from World of Books UK will land observations in the DB via a hermetic test.
+Dispatch implementer for **Phase 3, Task 3.1: Scheduler module — register, start, shutdown** (plan line 1646). Phase 3 covers Tasks 3.1 → 3.2: APScheduler integrated into FastAPI lifespan; per-source jobs from config with jitter, per-book delays, per-source-failure isolation, exponential backoff; end-to-end smoke that fires the WoB inline job + cassette and observes a row land in the DB. After Phase 3 the scheduler is the first thing that produces persisted observations from a real source.
 
 ## Implementer prompt hardening (must apply to EVERY future task dispatch)
 
