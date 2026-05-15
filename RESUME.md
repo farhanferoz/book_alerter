@@ -91,6 +91,7 @@ Carried follow-ups from prior phases:
 - **`POST /api/books` on duplicate ISBN** returns 409 with `detail` string only — doesn't include the existing book's ID. FE shows "Already tracked" without a link-out. Minor backend tweak (add `book_id` to the detail). (Phase 10.2 deviation.)
 - **N+1 queries**: `compute_book_stats` in `GET /api/books`; `_last_run_for` in `GET /api/sources`. Per-list-row sub-queries; on a small NAS dataset (≤200 books) this is fine but a `JOIN`+aggregation rewrite is the natural follow-up. (Pre-Phase 8 carried.)
 - **Long-lived `httpx.AsyncClient`** could lift into FastAPI lifespan rather than per-call construction. (Pre-Phase 8 carried.)
+- **Notifier registry frozen at startup**: `app.state.notifiers` is built once during the lifespan (see `app.py:42-44, 60`). Flipping a channel from disabled→enabled via `PUT /api/config` persists the change but doesn't instantiate the new notifier, so `POST /api/notifications/{channel}/test` returns 404 until the container is restarted. Fix: rebuild `app.state.notifiers` inside the PUT handler when `notifications.channels` differs from the previous config. (Found 2026-05-15 while wiring ntfy.)
 
 ## Open decisions
 
