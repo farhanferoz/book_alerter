@@ -60,12 +60,22 @@ def _install_fake_render_page(monkeypatch: pytest.MonkeyPatch, by_url: dict[str,
 
 
 def test_dp_url_and_offer_listing_url() -> None:
+    # Amazon UK indexes books by ISBN-10 (the ASIN). /dp/{ISBN-13} silently
+    # serves a 2 KB soft-404 for any 978-prefixed book, so the source must
+    # convert ISBN-13 → ISBN-10 before constructing the URL.
     src = AmazonUKInlineSource(region="UK")
-    assert src.dp_url("9780747532699") == "https://www.amazon.co.uk/dp/9780747532699"
+    assert src.dp_url("9780747532699") == "https://www.amazon.co.uk/dp/0747532699"
     assert (
         src.offer_listing_url("9780747532699")
-        == "https://www.amazon.co.uk/gp/offer-listing/9780747532699?condition=all"
+        == "https://www.amazon.co.uk/gp/offer-listing/0747532699?condition=all"
     )
+
+
+def test_dp_url_falls_back_to_isbn13_for_979_prefix() -> None:
+    # 979-prefixed ISBN-13s (post-2007) have no ISBN-10 form. Fall back to
+    # the ISBN-13 path rather than fail.
+    src = AmazonUKInlineSource(region="UK")
+    assert src.dp_url("9791234567896") == "https://www.amazon.co.uk/dp/9791234567896"
 
 
 def test_non_uk_region_rejected() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+import isbnlib
 from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
@@ -47,12 +48,38 @@ from book_alerter.sources.inline_source import InlineSource
 # up reading.
 _PRICE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d{1,2})?)")
 
+# Amazon UK indexes books by ISBN-10 (which IS the ASIN for books). The /dp
+# and /gp/offer-listing URLs only resolve to a real product page when the path
+# segment is the ISBN-10. /dp/{ISBN-13} silently serves a generic ~2 KB "Page
+# Not Found" instead of redirecting — the page still contains Amazon's
+# standard footer copy ("To discuss automated access ..."), which used to
+# trip the bot-marker check below.
+#
+# ISBN-13s starting with 978 map back to a unique ISBN-10. The newer 979
+# prefix (post-2007) has no ISBN-10 form; for those we fall back to the
+# ISBN-13 URL and accept that books in that narrow range may not resolve.
+
+# Markers that indicate a real anti-bot interstitial (NOT the generic
+# footer copy that appears on 404 pages). `validateCaptcha` is the form
+# action on Amazon's actual captcha challenge; "Type the characters you
+# see" is the captcha prompt; `<title>Robot Check</title>` is the dedicated
+# challenge page title.
 _BOT_MARKERS: tuple[str, ...] = (
     "Type the characters you see",
-    "Robot Check",
-    "To discuss automated access to Amazon",
+    "<title>Robot Check</title>",
     "validateCaptcha",
 )
+
+
+def _asin_for_url(isbn13: str) -> str:
+    """Return the Amazon-UK URL path segment for `isbn13`.
+
+    Prefers the ISBN-10 form because that's what Amazon UK indexes books by;
+    falls back to the original ISBN-13 only for the 979-prefixed range that
+    has no ISBN-10 mapping.
+    """
+    isbn10 = isbnlib.to_isbn10(isbn13)
+    return isbn10 if isbn10 else isbn13
 
 
 class AmazonUKInlineSource(InlineSource):
@@ -77,10 +104,10 @@ class AmazonUKInlineSource(InlineSource):
         self.timeout_s = timeout_s
 
     def dp_url(self, isbn13: str) -> str:
-        return f"https://www.amazon.co.uk/dp/{isbn13}"
+        return f"https://www.amazon.co.uk/dp/{_asin_for_url(isbn13)}"
 
     def offer_listing_url(self, isbn13: str) -> str:
-        return f"https://www.amazon.co.uk/gp/offer-listing/{isbn13}?condition=all"
+        return f"https://www.amazon.co.uk/gp/offer-listing/{_asin_for_url(isbn13)}?condition=all"
 
     async def fetch(self, book: Book) -> list[ObservationCandidate]:
         dp = self.dp_url(book.isbn13)
