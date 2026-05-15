@@ -1,0 +1,33 @@
+<!--
+  Synthetic Amazon UK dp-page fixture with a £2.80 paid-delivery block.
+  Used to verify the parser extracts the numeric shipping fee.
+
+  Live verification of this exact text shape is pending — Amazon UK was
+  showing "FREE delivery" for every captured book on 2026-05-15 because
+  they were all Amazon-fulfilled. When a paid-delivery capture lands,
+  re-shape this fixture's delivery span to match the real markup.
+-->
+<!DOCTYPE html>
+<html lang="en-gb">
+<head>
+  <meta charset="utf-8">
+  <title>Test paid-delivery fixture</title>
+</head>
+<body>
+  <div id="dp-container">
+    <div id="corePriceDisplay_desktop_feature_div">
+      <span class="a-price"><span class="a-offscreen">&pound;9.50</span></span>
+    </div>
+
+    <div id="mir-layout-DELIVERY_BLOCK">
+      <div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">
+        <span>&pound;2.80 delivery <span class="a-text-bold">Tuesday, 19 May</span>.</span>
+      </div>
+    </div>
+
+    <div id="merchant-info">
+      <span>Sold by <a href="/sp?seller=TPFBM">SomeThirdPartySeller</a></span>
+    </div>
+  </div>
+</body>
+</html>

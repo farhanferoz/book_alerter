@@ -17,7 +17,7 @@ from book_alerter.sources.base import (
 )
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
-from book_alerter.sources.normalizers import asin_for_amazon_uk
+from book_alerter.sources.normalizers import amazon_uk_dp_url, asin_for_amazon_uk
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
 # that doesn't render JS in a real browser (verified 2026-05-14: headless
@@ -75,14 +75,11 @@ _PRICE_AMOUNT_RE = re.compile(r'"priceAmount"\s*:\s*(\d+(?:\.\d{1,2})?)')
 # action on Amazon's actual captcha challenge; "Type the characters you
 # see" is the captcha prompt; `<title>Robot Check</title>` is the dedicated
 # challenge page title.
-_BOT_MARKERS: tuple[str, ...] = (
+BOT_MARKERS: tuple[str, ...] = (
     "Type the characters you see",
     "<title>Robot Check</title>",
     "validateCaptcha",
 )
-
-
-_asin_for_url = asin_for_amazon_uk  # local alias kept for readability
 
 
 class AmazonUKInlineSource(InlineSource):
@@ -107,10 +104,10 @@ class AmazonUKInlineSource(InlineSource):
         self.timeout_s = timeout_s
 
     def dp_url(self, isbn13: str) -> str:
-        return f"https://www.amazon.co.uk/dp/{_asin_for_url(isbn13)}"
+        return amazon_uk_dp_url(isbn13)
 
     def offer_listing_url(self, isbn13: str) -> str:
-        return f"https://www.amazon.co.uk/gp/offer-listing/{_asin_for_url(isbn13)}?condition=all"
+        return f"https://www.amazon.co.uk/gp/offer-listing/{asin_for_amazon_uk(isbn13)}?condition=all"
 
     async def fetch(self, book: Book) -> list[ObservationCandidate]:
         dp = self.dp_url(book.isbn13)
@@ -175,7 +172,7 @@ class AmazonUKInlineSource(InlineSource):
         except PlaywrightTimeoutError:
             pass
         html = await page.content()
-        for marker in _BOT_MARKERS:
+        for marker in BOT_MARKERS:
             if marker in html:
                 raise SourceError(
                     self.name,
@@ -183,6 +180,51 @@ class AmazonUKInlineSource(InlineSource):
                     "Playwright was unable to clear it",
                 )
         return html
+
+
+_FREE_DELIVERY_RE = re.compile(r"\bFREE\s+delivery\b", re.IGNORECASE)
+# Matches "£2.80 delivery" / "£ 2.80 delivery"; intentionally not symmetric
+# with "delivery £2.80" because no real Amazon UK dp markup uses that order
+# (verified against live captures 2026-05-15). Add the reverse if we ever see it.
+_PAID_DELIVERY_RE = re.compile(
+    r"£\s*(\d+(?:\.\d{1,2})?)\s*delivery", re.IGNORECASE
+)
+# Containers Amazon UK uses to surface the buy-box delivery line. In order of
+# preference: the static MIR slot (always populated when present), then the
+# legacy deliveryBlockMessage, then the dynamic widget that A/B-tests render
+# instead of MIR. We return on the first one that has actual text — empty
+# nodes are skipped because Amazon ships skeleton markup it hydrates later.
+_DELIVERY_BLOCK_SELECTORS: tuple[str, ...] = (
+    "#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE",
+    "#deliveryBlockMessage",
+    "#dynamicDeliveryMessage",
+)
+
+
+def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
+    """Pull the buy-box delivery cost in pence from `tree`, or None.
+
+    Returns 0 when the delivery line says "FREE delivery", an integer pence
+    value when it says "£X.XX delivery", and None when no populated delivery
+    block is present — None means "we didn't observe shipping" rather than
+    "free", so downstream can choose to fall back honestly.
+    """
+    for sel in _DELIVERY_BLOCK_SELECTORS:
+        node = tree.css_first(sel)
+        if node is None:
+            continue
+        text = (node.text() or "").strip()
+        if not text:
+            continue
+        if _FREE_DELIVERY_RE.search(text):
+            return 0
+        m = _PAID_DELIVERY_RE.search(text)
+        if m:
+            try:
+                return round(float(m.group(1)) * 100)
+            except ValueError:
+                continue
+    return None
 
 
 def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
@@ -221,13 +263,14 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
         return []
 
     seller = _extract_dp_seller(tree)
+    shipping_minor = _extract_dp_shipping_minor(tree)
 
     return [
         ObservationCandidate(
             seller=seller,
             condition="new",  # Amazon dp buy-box defaults to new
             price_minor=price_minor,
-            shipping_minor=None,
+            shipping_minor=shipping_minor,
             currency="GBP",
             url=fallback_url,
         )

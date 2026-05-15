@@ -31,6 +31,32 @@ def test_parse_dp_returns_buybox_offer() -> None:
     assert o.seller and o.seller != "?"
 
 
+def test_parse_dp_no_delivery_block_yields_shipping_none() -> None:
+    """The base synthetic fixture has no delivery markup — the parser must
+    return shipping_minor=None rather than fabricating a value."""
+    html = _load("9780747532699-uk-dp.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    assert offers[0].shipping_minor is None
+
+
+def test_parse_dp_free_delivery_block_yields_zero_shipping() -> None:
+    """"FREE delivery Monday, 18 May" → shipping_minor=0. Markup shape
+    captured from a real Amazon UK dp page 2026-05-15."""
+    html = _load("9780747532699-uk-dp-free-delivery.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    assert offers[0].shipping_minor == 0
+
+
+def test_parse_dp_paid_delivery_block_yields_numeric_shipping() -> None:
+    """"£2.80 delivery Tuesday, 19 May" → shipping_minor=280."""
+    html = _load("9780747532699-uk-dp-paid-delivery.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    assert offers[0].shipping_minor == 280
+
+
 def test_parse_dp_returns_empty_when_no_price_block() -> None:
     html = _load("9780747532699-uk-dp-no-price.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")

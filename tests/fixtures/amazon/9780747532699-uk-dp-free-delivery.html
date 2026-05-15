@@ -1,0 +1,45 @@
+<!--
+  Synthetic Amazon UK dp-page fixture for ISBN 9780747532699 with a
+  populated FREE-delivery block. Markup pattern verified against a real
+  live capture (Sparta, 2026-05-15):
+
+    <div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">
+      ... FREE delivery <span class="a-text-bold">Monday, 18 May</span>. ...
+    </div>
+
+  The MIR slot is the primary container we read; deliveryBlockMessage and
+  dynamicDeliveryMessage are siblings Amazon also populates on some pages.
+-->
+<!DOCTYPE html>
+<html lang="en-gb">
+<head>
+  <meta charset="utf-8">
+  <title>Harry Potter and the Philosopher's Stone: Amazon.co.uk: Books</title>
+</head>
+<body>
+  <div id="dp-container">
+    <div id="corePriceDisplay_desktop_feature_div">
+      <span class="a-price">
+        <span class="a-offscreen">&pound;7.99</span>
+      </span>
+    </div>
+
+    <div id="mir-layout-DELIVERY_BLOCK">
+      <div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">
+        <span>
+          <span class="a-text-bold">FREE delivery</span>
+          <span class="a-text-bold">Monday, 18 May</span>.
+          <a href="/gp/help/customer/display.html/?nodeId=492868">Details</a>
+        </span>
+      </div>
+      <div id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE">
+        <span>Or fastest delivery <span class="a-text-bold">Tomorrow, 16 May</span>.</span>
+      </div>
+    </div>
+
+    <div id="merchant-info">
+      <span>Sold and dispatched by <a href="/sp?seller=A3P5ROKL5A1OLE">Amazon</a></span>
+    </div>
+  </div>
+</body>
+</html>
