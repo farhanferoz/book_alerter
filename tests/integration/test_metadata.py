@@ -142,6 +142,54 @@ def test_search_books_extracts_isbn13_and_promotes_isbn10(monkeypatch):
     assert results[1].cover_url is None
 
 
+def test_search_books_returns_empty_on_429_instead_of_raising(monkeypatch):
+    """Google Books returns 429 when the anonymous-IP daily quota is
+    exhausted. `search_books` must swallow that and return `[]` so the FE
+    can show "no results" — surfacing a 500 to the user would be misleading
+    (the query isn't malformed; the upstream is rate-limited)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": {"code": 429, "message": "Quota exceeded"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("book_alerter.metadata.httpx.AsyncClient", fake_client)
+    results = asyncio.run(search_books("anything", limit=5))
+    assert results == []
+
+
+def test_search_books_forwards_google_api_key(monkeypatch):
+    """A non-empty `google_api_key` must be forwarded as `&key=...` so the
+    request bypasses the anonymous-IP quota. Empty key must NOT add the
+    param (Google rejects an empty key value)."""
+    seen_params: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_params.append(dict(request.url.params))
+        return httpx.Response(200, json={"items": []})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("book_alerter.metadata.httpx.AsyncClient", fake_client)
+    asyncio.run(search_books("apollo", limit=3, google_api_key="AIza-test"))
+    asyncio.run(search_books("apollo", limit=3))
+    assert seen_params[0].get("key") == "AIza-test"
+    assert "key" not in seen_params[1]
+
+
 def test_cancellation_hygiene_no_warnings(metadata_vcr):
     """When the winner returns, the loser is cancelled and awaited; no
     'coroutine was never awaited' / 'task was destroyed' warnings."""

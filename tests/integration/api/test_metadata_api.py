@@ -24,7 +24,7 @@ def test_lookup_normalizes_isbn10_before_calling_lookup(api_client, monkeypatch)
     ISBN-13, and the canned `BookMetadata` is serialized back."""
     seen: dict[str, str] = {}
 
-    async def fake_lookup(isbn13: str) -> BookMetadata:
+    async def fake_lookup(isbn13: str, **kwargs) -> BookMetadata:
         seen["isbn13"] = isbn13
         return BookMetadata(title="T", author="A", cover_url="https://x/c.jpg")
 
@@ -42,7 +42,7 @@ def test_lookup_normalizes_isbn10_before_calling_lookup(api_client, monkeypatch)
 def test_lookup_invalid_isbn_returns_422(api_client, monkeypatch):
     """Garbage input → `to_isbn13` raises ValueError → handler returns 422."""
 
-    async def fake_lookup(isbn13: str) -> BookMetadata:  # pragma: no cover
+    async def fake_lookup(isbn13: str, **kwargs) -> BookMetadata:  # pragma: no cover
         raise AssertionError("should not be called when ISBN is invalid")
 
     monkeypatch.setattr(
@@ -55,7 +55,7 @@ def test_lookup_invalid_isbn_returns_422(api_client, monkeypatch):
 def test_lookup_both_providers_empty_returns_404(api_client, monkeypatch):
     """When `lookup_isbn` raises `LookupError`, the handler maps it to 404."""
 
-    async def fake_lookup(isbn13: str) -> BookMetadata:
+    async def fake_lookup(isbn13: str, **kwargs) -> BookMetadata:
         raise LookupError(f"no metadata found for ISBN {isbn13!r}")
 
     monkeypatch.setattr(
@@ -75,7 +75,7 @@ def test_search_returns_list_of_candidates(api_client, monkeypatch):
     the resulting `BookMetadataWithIsbn` list."""
     seen: dict[str, object] = {}
 
-    async def fake_search(query: str, limit: int = 10):
+    async def fake_search(query: str, limit: int = 10, **kwargs):
         seen["query"] = query
         seen["limit"] = limit
         return [
@@ -127,7 +127,7 @@ def test_search_empty_results_returns_empty_list(api_client, monkeypatch):
     """No matches → 200 with `[]` (not 404 — search-no-results is a valid
     answer, distinct from lookup-by-known-ISBN-not-found)."""
 
-    async def fake_search(query: str, limit: int = 10):
+    async def fake_search(query: str, limit: int = 10, **kwargs):
         return []
 
     monkeypatch.setattr(

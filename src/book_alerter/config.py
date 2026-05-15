@@ -89,6 +89,23 @@ class SourceConfig(BaseModel):
     max_consecutive_errors: int = 5
 
 
+class MetadataConfig(BaseModel):
+    """Metadata-lookup providers (used by /api/metadata/{lookup,search}).
+
+    `google_books_api_key` supports `${GOOGLE_BOOKS_API_KEY}` env substitution
+    via the same _substitute_env path config-wide. Empty string = anonymous
+    quota (1000 req/day shared across all unauthenticated callers from the
+    same IP — exhausted fast in practice).
+
+    `amazon_uk_fallback` enables a Playwright-based dp-page scrape when OL +
+    GB both return no data. Slow (~10-20s, one-shot), but covers UK trade
+    titles that are missing from both providers.
+    """
+
+    google_books_api_key: str = ""
+    amazon_uk_fallback: bool = True
+
+
 class BackupConfig(BaseModel):
     """Weekly SQLite backup job.
 
@@ -106,6 +123,7 @@ class Config(BaseModel):
     recommendation: RecommendationConfig = Field(default_factory=RecommendationConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     sources: dict[str, SourceConfig] = Field(default_factory=dict)
+    metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
 
     @classmethod
