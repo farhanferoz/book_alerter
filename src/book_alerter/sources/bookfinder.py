@@ -41,6 +41,7 @@ _CONDITION_RE = re.compile(
     re.IGNORECASE,
 )
 _SHIPPING_LABEL_RE = re.compile(r"shipping:\s*", re.IGNORECASE)
+_FREE_SHIPPING_RE = re.compile(r"free shipping", re.IGNORECASE)
 
 _CURRENCY_FROM_SYMBOL: dict[str, str] = {"£": "GBP", "$": "USD", "€": "EUR", "¥": "JPY"}
 
@@ -178,20 +179,41 @@ def _parse_card(card: Node, fallback_url: str) -> ObservationCandidate | None:
         return None
     currency = _CURRENCY_FROM_SYMBOL.get(price_match.group(1), "USD")
     try:
-        price_minor = round(float(price_match.group(2)) * 100)
+        visible_total_minor = round(float(price_match.group(2)) * 100)
     except ValueError:
         return None
 
+    # Bookfinder's prominent price is the all-in total — every card we've seen
+    # either says "Includes shipping: £X.XX" or "Free shipping". The card div
+    # carries authoritative USD splits in data-csa-c-usd{price,shipping};
+    # convert them into local currency by re-using the visible total's exchange
+    # rate so item-only + shipping equals the user-visible total.
+    usd_price_raw = (attrs.get("data-csa-c-usdprice") or "").strip()
+    usd_ship_raw = (attrs.get("data-csa-c-usdshipping") or "").strip()
+    price_minor = visible_total_minor
     shipping_minor: int | None = None
-    ship_match = _SHIPPING_LABEL_RE.search(text)
-    if ship_match is not None:
-        tail = text[ship_match.end():]
-        ship_price_match = _PRICE_RE.match(tail.lstrip())
-        if ship_price_match is not None:
-            try:
-                shipping_minor = round(float(ship_price_match.group(2)) * 100)
-            except ValueError:
-                shipping_minor = None
+    try:
+        usd_price = float(usd_price_raw) if usd_price_raw else None
+        usd_ship = float(usd_ship_raw) if usd_ship_raw else None
+    except ValueError:
+        usd_price = usd_ship = None
+    if usd_price is not None and usd_price > 0 and usd_ship is not None and usd_ship >= 0:
+        rate = visible_total_minor / ((usd_price + usd_ship) * 100)
+        shipping_minor = round(usd_ship * 100 * rate)
+        price_minor = visible_total_minor - shipping_minor
+    elif _FREE_SHIPPING_RE.search(text):
+        shipping_minor = 0
+    else:
+        ship_match = _SHIPPING_LABEL_RE.search(text)
+        if ship_match is not None:
+            tail = text[ship_match.end():]
+            ship_price_match = _PRICE_RE.match(tail.lstrip())
+            if ship_price_match is not None:
+                try:
+                    shipping_minor = round(float(ship_price_match.group(2)) * 100)
+                    price_minor = visible_total_minor - shipping_minor
+                except ValueError:
+                    shipping_minor = None
 
     clickout = fallback_url
     for anchor in card.css("a[href]"):
