@@ -27,21 +27,19 @@ from book_alerter.sources.registry import build_sources
 log = get_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    configure_logging()
-    cfg_path = Path(os.environ.get("BOOK_ALERTER_CONFIG_PATH", "data/config.yaml"))
-    cfg = Config.load(cfg_path)
-    app.state.config = cfg
-    app.state.config_path = cfg_path
-    log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
-
-    engine = get_engine()
-    sources = build_sources(cfg)
-
+def _build_notifiers(cfg: Config) -> list[Notifier]:
     notifiers: list[Notifier] = [InAppNotifier()]
     if cfg.notifications.channels.ntfy.enabled:
         notifiers.append(NtfyNotifier(cfg.notifications.channels.ntfy))
+    return notifiers
+
+
+def _build_runtime(app: FastAPI, cfg: Config, engine) -> None:
+    """Construct sources, notifiers, pipeline, and scheduler from `cfg` and
+    attach them to `app.state`. Used by both the lifespan startup and the
+    `rebuild_runtime` hot-reload path."""
+    sources = build_sources(cfg)
+    notifiers = _build_notifiers(cfg)
     pipeline = AlertPipeline(
         cfg=cfg,
         session_factory=lambda: Session(engine),
@@ -59,10 +57,44 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.notifiers = {n.name: n for n in notifiers}
 
+
+def rebuild_runtime(app: FastAPI) -> None:
+    """Tear down the live scheduler + notifier registry and rebuild them
+    from `app.state.config`. Called after the config swap on PUT /api/config
+    and PATCH /api/sources so config changes take effect without a restart.
+
+    The previous scheduler is shut down with `wait=False`; any in-flight
+    source run aborts and the next cron tick picks up the new config.
+
+    No-op in test contexts whose `app.state.scheduler` isn't a real
+    `Scheduler` (the api_client fixture attaches a `_StubScheduler`).
+    """
+    engine = getattr(app.state, "engine", None)
+    if engine is None:
+        return
+    prev = getattr(app.state, "scheduler", None)
+    if not isinstance(prev, Scheduler):
+        return
+    prev.shutdown()
+    _build_runtime(app, app.state.config, engine)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging()
+    cfg_path = Path(os.environ.get("BOOK_ALERTER_CONFIG_PATH", "data/config.yaml"))
+    cfg = Config.load(cfg_path)
+    app.state.config = cfg
+    app.state.config_path = cfg_path
+    log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
+
+    engine = get_engine()
+    _build_runtime(app, cfg, engine)
+
     try:
         yield
     finally:
-        scheduler.shutdown()
+        app.state.scheduler.shutdown()
         engine.dispose()
         log.info("shutdown")
 

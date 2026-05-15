@@ -271,6 +271,8 @@ def patch_source(
             ) from exc
         new_cfg.save(cfg_path)
         request.app.state.config = new_cfg
+        from book_alerter.app import rebuild_runtime
+        rebuild_runtime(request.app)
         sc = new_cfg.sources[name]
     else:
         sc = current

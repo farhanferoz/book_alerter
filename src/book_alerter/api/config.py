@@ -148,4 +148,8 @@ def put_config(
 
     new_cfg.save(config_path)
     request.app.state.config = new_cfg
+    # Rebuild the scheduler + notifier registry so newly-enabled sources
+    # and notifiers go live without a container restart.
+    from book_alerter.app import rebuild_runtime
+    rebuild_runtime(request.app)
     return ConfigUpdateResult(diff=diff, applied=True, errors=None)
