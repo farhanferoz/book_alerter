@@ -281,33 +281,29 @@ class Scheduler:
             for c in candidates:
                 total = c.price_minor + (c.shipping_minor or 0)
                 # Match a prior canonical row on the FULL offer identity
-                # (book/source/seller/condition/price/shipping). A
-                # WoB-style source can have multiple variants under the same
-                # (seller, condition) at different prices; we mark this
-                # candidate a duplicate only if SOMETHING canonical exists
-                # at the same exact price+shipping. Take the most recent
-                # such match so future lookups continue to find it.
-                shipping = c.shipping_minor or 0
-                prior = session.exec(
-                    select(PriceObservation)
-                    .where(
-                        PriceObservation.book_id == book.id,
-                        PriceObservation.source == source_name,
-                        PriceObservation.seller == c.seller,
-                        PriceObservation.condition == c.condition,
-                        PriceObservation.price_minor == c.price_minor,
-                        # SQLite stores `shipping_minor=None` and `0`
-                        # distinctly; treat them as equivalent for matching.
-                        (
-                            (PriceObservation.shipping_minor == shipping)
-                            | (
-                                PriceObservation.shipping_minor.is_(None)  # type: ignore[union-attr]
-                                if shipping == 0
-                                else False
-                            )
-                        ),
-                        PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+                # (book/source/seller/condition/price/shipping). NULL shipping
+                # (parser saw no delivery info) and 0 shipping (parser saw
+                # "FREE delivery") are DIFFERENT signals — we deliberately
+                # don't conflate them so that a scrape which finally extracts
+                # a shipping value supersedes an older unknown.
+                prior_q = select(PriceObservation).where(
+                    PriceObservation.book_id == book.id,
+                    PriceObservation.source == source_name,
+                    PriceObservation.seller == c.seller,
+                    PriceObservation.condition == c.condition,
+                    PriceObservation.price_minor == c.price_minor,
+                    PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+                )
+                if c.shipping_minor is None:
+                    prior_q = prior_q.where(
+                        PriceObservation.shipping_minor.is_(None)  # type: ignore[union-attr]
                     )
+                else:
+                    prior_q = prior_q.where(
+                        PriceObservation.shipping_minor == c.shipping_minor
+                    )
+                prior = session.exec(
+                    prior_q
                     .order_by(PriceObservation.observed_at.desc())  # type: ignore[union-attr]
                     .limit(1)
                 ).first()

@@ -26,6 +26,8 @@ Signal = Literal["BUY", "WATCH", "WAIT", "TARGET_HIT", "INSUFFICIENT_DATA"]
 class BookStats:
     book_id: int
     current_best_total_minor: int | None
+    current_best_price_minor: int | None
+    current_best_shipping_minor: int | None
     current_best_source: str | None
     current_best_seller: str | None
     current_best_condition: str | None
@@ -70,8 +72,9 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
     row = session.exec(
         text(
             """
-            SELECT current_best_total_minor, current_best_source, current_best_condition,
-                   current_best_seller, current_best_url,
+            SELECT current_best_total_minor, current_best_price_minor,
+                   current_best_shipping_minor, current_best_source,
+                   current_best_condition, current_best_seller, current_best_url,
                    all_time_min_total_minor, all_time_max_total_minor,
                    observation_count, last_observed_at, days_of_history
             FROM book_stats WHERE book_id = :bid
@@ -83,6 +86,8 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
         return BookStats(
             book_id=book_id,
             current_best_total_minor=None,
+            current_best_price_minor=None,
+            current_best_shipping_minor=None,
             current_best_source=None,
             current_best_seller=None,
             current_best_condition=None,
@@ -112,15 +117,17 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
     return BookStats(
         book_id=book_id,
         current_best_total_minor=row[0],
-        current_best_source=row[1],
-        current_best_condition=row[2],
-        current_best_seller=row[3],
-        current_best_url=row[4],
-        all_time_min_total_minor=row[5],
-        all_time_max_total_minor=row[6],
-        observation_count=row[7] or 0,
-        last_observed_at=row[8],
-        days_of_history=row[9] or 0,
+        current_best_price_minor=row[1],
+        current_best_shipping_minor=row[2],
+        current_best_source=row[3],
+        current_best_condition=row[4],
+        current_best_seller=row[5],
+        current_best_url=row[6],
+        all_time_min_total_minor=row[7],
+        all_time_max_total_minor=row[8],
+        observation_count=row[9] or 0,
+        last_observed_at=row[10],
+        days_of_history=row[11] or 0,
         p25_total_minor=p25,
         p50_total_minor=p50,
         p75_total_minor=p75,

@@ -13,12 +13,16 @@ from book_alerter.stats import BookStats, _percentiles, compute_book_stats
 
 def _add_obs(session: Session, *, book_id: int, total: int, source: str = "wob",
              observed_at: datetime | None = None, is_duplicate_of: int | None = None) -> models.PriceObservation:
+    # shipping_minor=0 (not None) so the row is treated as "buyable" by the
+    # book_stats view's current_best CTE. Tests that need a known shipping
+    # value pass it explicitly via other helpers.
     obs = models.PriceObservation(
         book_id=book_id,
         source=source,
         condition="new",
         price_minor=total,
         currency="GBP",
+        shipping_minor=0,
         total_minor=total,
         url=f"https://{source}/{total}",
         observed_at=observed_at or datetime.now(UTC),
@@ -119,6 +123,8 @@ def test_percentile_at_returns_none_for_empty():
     empty = BookStats(
         book_id=1,
         current_best_total_minor=None,
+        current_best_price_minor=None,
+        current_best_shipping_minor=None,
         current_best_source=None,
         current_best_seller=None,
         current_best_condition=None,
@@ -139,6 +145,8 @@ def test_percentile_at_clamps_out_of_range_pct():
     stats = BookStats(
         book_id=1,
         current_best_total_minor=None,
+        current_best_price_minor=None,
+        current_best_shipping_minor=None,
         current_best_source=None,
         current_best_seller=None,
         current_best_condition=None,
@@ -165,6 +173,8 @@ def test_percentile_monotonicity_property(values):
     stats = BookStats(
         book_id=1,
         current_best_total_minor=None,
+        current_best_price_minor=None,
+        current_best_shipping_minor=None,
         current_best_source=None,
         current_best_seller=None,
         current_best_condition=None,
