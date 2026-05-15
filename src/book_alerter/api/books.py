@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
+from book_alerter import keepa, keepa_chart
 from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.db import models
 from book_alerter.sources.normalizers import to_isbn13
@@ -214,6 +216,7 @@ def list_books(
 def create_book(
     payload: BookCreate,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
 ) -> BookOut:
     try:
         isbn13 = to_isbn13(payload.isbn)
@@ -247,6 +250,22 @@ def create_book(
     session.add(book)
     session.commit()
     session.refresh(book)
+
+    # Fire-and-forget Keepa backfill so the days-of-history gate clears
+    # immediately for books Amazon UK indexes. No-op if Keepa has no data.
+    engine = session.get_bind()
+
+    def _factory():
+        from sqlmodel import Session
+        return Session(engine)
+
+    background_tasks.add_task(
+        _keepa_backfill_blocking,
+        book.id or 0,
+        book.isbn13,
+        _factory,
+        Path("data/keepa-cache"),
+    )
 
     stats = compute_book_stats(book.id or 0, session)
     return BookOut.from_book(book, stats)
@@ -421,3 +440,125 @@ def get_book_stats(
     if session.get(models.Book, book_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
     return BookStatsOut.from_dataclass(compute_book_stats(book_id, session))
+
+
+def _keepa_backfill_blocking(
+    book_id: int,
+    isbn13: str,
+    session_factory,
+    cache_dir: Path,
+) -> int:
+    """Background worker — fetch Keepa PNG, extract, persist, return row count.
+
+    Idempotent: skips if any source='keepa' row already exists for the book.
+    Synchronous SQL inside an async-friendly wrapper so FastAPI's
+    BackgroundTasks can hand it off without blocking the request thread.
+    """
+    with session_factory() as session:
+        existing = session.exec(
+            select(models.PriceObservation)
+            .where(
+                models.PriceObservation.book_id == book_id,
+                models.PriceObservation.source == "keepa",
+            )
+            .limit(1)
+        ).first()
+        if existing is not None:
+            return 0
+
+    # asyncio.run because we're called from a thread pool worker.
+    png = asyncio.run(keepa.fetch_chart_png(isbn13, cache_dir))
+    if png is None:
+        return 0
+
+    extractions = keepa_chart.extract_observations(png)
+    if not extractions:
+        return 0
+
+    from book_alerter.sources.normalizers import asin_for_amazon_uk
+    asin = asin_for_amazon_uk(isbn13)
+    amazon_url = f"https://www.amazon.co.uk/dp/{asin}"
+
+    inserted = 0
+    with session_factory() as session:
+        for ext in extractions:
+            seller, condition = keepa_chart.SERIES_TO_SELLER_CONDITION[ext.series]
+            session.add(
+                models.PriceObservation(
+                    book_id=book_id,
+                    source="keepa",
+                    seller=seller,
+                    condition=condition,
+                    price_minor=ext.price_minor,
+                    currency="GBP",
+                    shipping_minor=0,
+                    total_minor=ext.price_minor,
+                    url=amazon_url,
+                    observed_at=datetime.combine(ext.observed_at, datetime.min.time()).replace(tzinfo=UTC),
+                    raw={"series": ext.series, "from": "keepa_chart_png"},
+                )
+            )
+            inserted += 1
+        session.commit()
+    return inserted
+
+
+@router.post("/{book_id}/keepa-backfill")
+async def keepa_backfill(
+    book_id: int,
+    session: SessionDep,
+) -> dict:
+    """Trigger a one-shot Keepa backfill for `book_id`.
+
+    Fetches the public Keepa PNG, runs the OCR-based numeric extractor, and
+    inserts the extracted (date, series, price) tuples as historical
+    PriceObservation rows. Idempotent: returns inserted=0 if backfill ran
+    previously for this book. Synchronous (waits for the extraction) to
+    return a clear count to the caller; book-creation auto-backfill is
+    fire-and-forget via BackgroundTasks instead.
+    """
+    book = session.get(models.Book, book_id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
+    engine = session.get_bind()
+
+    def _factory():
+        from sqlmodel import Session
+        return Session(engine)
+
+    inserted = await asyncio.to_thread(
+        _keepa_backfill_blocking,
+        book_id,
+        book.isbn13,
+        _factory,
+        Path("data/keepa-cache"),
+    )
+    return {"inserted": inserted, "book_id": book_id}
+
+
+@router.get("/{book_id}/keepa-chart.png")
+async def get_keepa_chart(book_id: int, session: SessionDep) -> Response:
+    """Serve the Keepa Amazon UK price-history PNG for a book.
+
+    Server-side proxy + 24h disk cache so we don't hammer Keepa's edge and so
+    the FE doesn't expose the user's IP to Keepa. Returns 404 if Keepa has
+    no chart for this ISBN (book too niche, just published, etc.).
+    """
+    book = session.get(models.Book, book_id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
+    cache_dir = Path("data/keepa-cache")
+    png = await keepa.fetch_chart_png(book.isbn13, cache_dir)
+    if png is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="keepa has no chart for this ISBN",
+        )
+    # Cache for an hour on the browser side. Keepa's data refreshes
+    # roughly every few hours; matching 60min keeps the FE responsive
+    # without re-fetching constantly.
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )

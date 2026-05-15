@@ -19,6 +19,9 @@ dependencies = [
     "python-multipart>=0.0.20",
     "pyyaml>=6.0",
     "playwright>=1.59.0",
+    "pillow>=11.0",
+    "pytesseract>=0.3.13",
+    "numpy>=2.0",
 ]
 
 [dependency-groups]

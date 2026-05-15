@@ -34,6 +34,13 @@ FROM mcr.microsoft.com/playwright/python:v1.59.0-noble AS runtime
 # `uv` from the upstream image — fast, deterministic Python dep install.
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /usr/local/bin/
 
+# tesseract for the Keepa-PNG numeric extractor (src/book_alerter/keepa_chart.py).
+# `tesseract-ocr-eng` ships the English language data; the rest of the data
+# packages are not needed. ~30 MB total — small compared to the playwright base.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+ && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -66,7 +73,10 @@ RUN uv pip install --system --no-cache-dir \
       "watchfiles>=0.24" \
       "python-multipart>=0.0.20" \
       "pyyaml>=6.0" \
-      "playwright>=1.59.0,<1.60"
+      "playwright>=1.59.0,<1.60" \
+      "pillow>=11.0" \
+      "pytesseract>=0.3.13" \
+      "numpy>=2.0"
 
 # Copy the application source and install the project itself (no deps —
 # they're already pinned above).

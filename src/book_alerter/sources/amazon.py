@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-import isbnlib
 from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
@@ -18,6 +17,7 @@ from book_alerter.sources.base import (
 )
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
+from book_alerter.sources.normalizers import asin_for_amazon_uk
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
 # that doesn't render JS in a real browser (verified 2026-05-14: headless
@@ -82,15 +82,7 @@ _BOT_MARKERS: tuple[str, ...] = (
 )
 
 
-def _asin_for_url(isbn13: str) -> str:
-    """Return the Amazon-UK URL path segment for `isbn13`.
-
-    Prefers the ISBN-10 form because that's what Amazon UK indexes books by;
-    falls back to the original ISBN-13 only for the 979-prefixed range that
-    has no ISBN-10 mapping.
-    """
-    isbn10 = isbnlib.to_isbn10(isbn13)
-    return isbn10 if isbn10 else isbn13
+_asin_for_url = asin_for_amazon_uk  # local alias kept for readability
 
 
 class AmazonUKInlineSource(InlineSource):

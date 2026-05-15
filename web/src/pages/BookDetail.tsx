@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ActionBar } from "@/components/books/detail/ActionBar";
 import { HeaderCard } from "@/components/books/detail/HeaderCard";
 import { HistoryChart } from "@/components/books/detail/HistoryChart";
+import { KeepaChart } from "@/components/books/detail/KeepaChart";
 import { SettingsPanel } from "@/components/books/detail/SettingsPanel";
 import { SignalCard } from "@/components/books/detail/SignalCard";
 import { SnapshotCard } from "@/components/books/detail/SnapshotCard";
@@ -94,6 +95,8 @@ export function BookDetail() {
       </div>
 
       <HistoryChart observations={observations} isLoading={obsQuery.isLoading} />
+
+      <KeepaChart bookId={book.id} />
 
       <SourceBreakdown observations={observations} />
 
