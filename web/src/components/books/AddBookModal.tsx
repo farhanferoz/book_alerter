@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { CoverImage } from "@/components/books/CoverImage";
 
 type BookMetadata = components["schemas"]["BookMetadata"];
 type BookMetadataWithIsbn = components["schemas"]["BookMetadataWithIsbn"];
@@ -233,15 +234,7 @@ function AddBookByIsbn({ onDone }: { onDone: () => void }) {
 
       {lookup.data && !lookup.isPending && (
         <div className="flex gap-3 rounded-md border border-border p-3">
-          {coverUrl ? (
-            <img
-              src={coverUrl}
-              alt=""
-              className="h-16 w-12 rounded object-cover"
-            />
-          ) : (
-            <div className="h-16 w-12 rounded bg-muted/40" />
-          )}
+          <CoverImage src={coverUrl} className="h-16 w-12 rounded" />
           <div className="flex flex-1 flex-col gap-1 text-sm">
             <span className="font-medium leading-tight">{lookup.data.title}</span>
             <span className="text-xs text-muted-foreground">
@@ -417,15 +410,7 @@ function AddBookBySearch({ onDone }: { onDone: () => void }) {
                   disabled={create.isPending}
                   className="flex w-full gap-3 rounded-md border border-border p-3 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {hit.cover_url ? (
-                    <img
-                      src={hit.cover_url}
-                      alt=""
-                      className="h-16 w-12 rounded object-cover"
-                    />
-                  ) : (
-                    <div className="h-16 w-12 rounded bg-muted/40" />
-                  )}
+                  <CoverImage src={hit.cover_url} className="h-16 w-12 rounded" />
                   <div className="flex flex-1 flex-col gap-1 text-sm">
                     <span className="font-medium leading-tight">
                       {hit.title}

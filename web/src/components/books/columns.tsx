@@ -6,10 +6,10 @@
 //   signal pill · % vs median (sparkline-coloured) · days of history ·
 //   last seen · row actions
 //
-// Phase 10.1 ships everything except the inline sparkline (Recharts cell)
-// and per-row action buttons (refetch, mute) — both land in 10.3+ when the
-// surrounding interactions exist. The "% vs median" column is rendered as
-// plain coloured text for now; sparkline conversion is a follow-up.
+// Inline sparkline (Recharts cell) is still pending — the "% vs median"
+// column renders as plain coloured text for now; sparkline conversion is
+// a follow-up. Per-row actions (refetch/archive/delete) are wired via
+// BookRowMenu; mute remains detail-page-only.
 
 import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "react-router-dom";
@@ -17,6 +17,8 @@ import { Link } from "react-router-dom";
 import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
 import type { RecommendationConfigShape } from "@/hooks/useConfig";
+import { BookRowMenu } from "./BookRowMenu";
+import { CoverImage } from "./CoverImage";
 import { SignalPill, approximateSignal, type Signal } from "./signal";
 
 function ConditionPill({ condition }: { condition: string | null }) {
@@ -62,17 +64,12 @@ export function buildBookColumns(
   {
     id: "cover",
     header: "",
-    cell: ({ row }) =>
-      row.original.cover_url ? (
-        <img
-          src={row.original.cover_url}
-          alt=""
-          className="h-10 w-7 rounded-sm object-cover"
-          loading="lazy"
-        />
-      ) : (
-        <div className="h-10 w-7 rounded-sm bg-muted" aria-hidden />
-      ),
+    cell: ({ row }) => (
+      <CoverImage
+        src={row.original.cover_url}
+        className="h-10 w-7 rounded-sm"
+      />
+    ),
     enableSorting: false,
   },
   {
@@ -154,6 +151,16 @@ export function buildBookColumns(
         {formatRelativeTime(row.original.stats.last_observed_at)}
       </span>
     ),
+  },
+  {
+    id: "actions",
+    header: "",
+    cell: ({ row }) => (
+      <div className="flex justify-end">
+        <BookRowMenu book={row.original} />
+      </div>
+    ),
+    enableSorting: false,
   },
   ];
 }

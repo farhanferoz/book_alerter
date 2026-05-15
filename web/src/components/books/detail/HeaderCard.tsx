@@ -6,6 +6,8 @@
 
 import type { Book } from "@/hooks/useBook";
 
+import { CoverImage } from "@/components/books/CoverImage";
+
 const STATUS_LABEL: Record<Book["status"], string> = {
   active: "Active",
   bought: "Bought",
@@ -30,16 +32,7 @@ const FORMAT_LABEL: Record<Book["format"], string> = {
 export function HeaderCard({ book }: { book: Book }) {
   return (
     <div className="flex gap-4 rounded-md border border-border bg-card p-4">
-      {book.cover_url ? (
-        <img
-          src={book.cover_url}
-          alt=""
-          className="h-28 w-20 rounded object-cover"
-          loading="lazy"
-        />
-      ) : (
-        <div className="h-28 w-20 rounded bg-muted" aria-hidden />
-      )}
+      <CoverImage src={book.cover_url} className="h-28 w-20 rounded" />
       <div className="flex flex-1 flex-col gap-2">
         <div className="flex items-center gap-2">
           <span

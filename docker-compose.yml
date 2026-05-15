@@ -16,6 +16,12 @@ services:
     build: .
     image: book_alerter:dev
     container_name: book_alerter
+    # Run as the host's owner of ./data so bind-mounted SQLite writes succeed.
+    # Defaults to 1000:1000 (typical single-user Linux host). On a host where
+    # `id -u` / `id -g` differ (NAS, macOS, multi-user box), export PUID/PGID
+    # in .env to match — otherwise SQLite will fail with "attempt to write a
+    # readonly database" on first INSERT.
+    user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "8000:8000"
     volumes:
