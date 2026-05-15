@@ -21,7 +21,44 @@ from book_alerter.sources.inline_source import InlineSource
 # - sku (empty for the placeholder variant with price 0)
 #
 # This is far more stable than CSS selectors against the rendered HTML.
+#
+# Variant availability is NOT in the `meta` blob — `var meta` happily lists
+# discontinued / out-of-stock SKUs with their last-known price. The user can't
+# actually buy those, so treating them as live offers produces phantom low
+# prices on the dashboard and false BUY signals.  The schema.org JSON-LD
+# block on the same page carries per-SKU `availability` (InStock / OutOfStock);
+# we cross-reference and drop any SKU that isn't InStock.
 _META_RE = re.compile(r"var\s+meta\s*=\s*(\{)", re.DOTALL)
+_LDJSON_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_sku_availability(html: str) -> dict[str, bool]:
+    """Return {sku: in_stock} from the page's schema.org Product offers.
+
+    Missing / unparseable JSON-LD returns {} — callers should treat an
+    unknown SKU as available rather than dropping every variant.
+    """
+    out: dict[str, bool] = {}
+    for raw in _LDJSON_RE.findall(html):
+        try:
+            data = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if not isinstance(item, dict) or item.get("@type") != "Product":
+                continue
+            offers = item.get("offers")
+            offer_list = offers if isinstance(offers, list) else [offers] if isinstance(offers, dict) else []
+            for o in offer_list:
+                sku = o.get("sku") if isinstance(o, dict) else None
+                if not sku:
+                    continue
+                avail = (o.get("availability") or "").lower()
+                out[sku] = "instock" in avail
+    return out
 
 
 def _extract_meta_json(html: str) -> dict | None:
@@ -108,6 +145,7 @@ class WobInlineSource(InlineSource):
             return []
         product = meta.get("product") or {}
         variants = product.get("variants") or []
+        availability = _extract_sku_availability(html)
 
         offers: list[ObservationCandidate] = []
         for v in variants:
@@ -118,6 +156,13 @@ class WobInlineSource(InlineSource):
             # Skip the placeholder/no-supplier variant (typically "- / - / -",
             # empty SKU, price 0). It is not a real offer.
             if not sku or not isinstance(price_minor, int) or price_minor <= 0:
+                continue
+
+            # If we have explicit per-SKU availability from JSON-LD, drop
+            # OutOfStock variants. If the SKU isn't in the availability map
+            # (no JSON-LD, schema changed, etc.), default to keeping the
+            # variant — better to publish a stale price than nothing.
+            if sku in availability and not availability[sku]:
                 continue
 
             condition = _condition_from_title(public_title)
