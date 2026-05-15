@@ -65,6 +65,9 @@ export function SettingsPanel({ book }: { book: Book }) {
   const [threshold, setThreshold] = useState<string>(
     book.percentile_threshold == null ? "" : String(book.percentile_threshold),
   );
+  const [windowDays, setWindowDays] = useState<string>(
+    book.percentile_window_days == null ? "" : String(book.percentile_window_days),
+  );
   const initialDisabled = new Set<AlertKind>(
     (book.alert_kinds_disabled ?? []).filter(
       (k): k is AlertKind =>
@@ -121,9 +124,21 @@ export function SettingsPanel({ book }: { book: Book }) {
       pct = parsed;
     }
 
+    let win: number | null = null;
+    const trimmedWin = windowDays.trim();
+    if (trimmedWin !== "") {
+      const parsed = Number(trimmedWin);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        setError("Window must be ≥ 1 day.");
+        return;
+      }
+      win = Math.round(parsed);
+    }
+
     save.mutate({
       target_price_minor: targetMinor,
       percentile_threshold: pct,
+      percentile_window_days: win,
       alert_kinds_disabled: [...disabledKinds],
       muted_until: localInputToIso(mute),
       notes: notes.trim() === "" ? null : notes.trim(),
@@ -168,10 +183,27 @@ export function SettingsPanel({ book }: { book: Book }) {
             max="100"
             value={threshold}
             onChange={(e) => setThreshold(e.target.value)}
-            placeholder="e.g. 25"
+            placeholder="e.g. 10"
           />
           <p className="text-xs text-muted-foreground">
             Override the global buy-percentile. Empty = use default.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="window-days">Percentile window (days)</Label>
+          <Input
+            id="window-days"
+            type="number"
+            inputMode="numeric"
+            step="1"
+            min="1"
+            value={windowDays}
+            onChange={(e) => setWindowDays(e.target.value)}
+            placeholder="e.g. 90"
+          />
+          <p className="text-xs text-muted-foreground">
+            Override the global percentile window. Empty = use default.
           </p>
         </div>
       </div>

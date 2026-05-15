@@ -48,12 +48,12 @@ export function approximateSignal(
   ) {
     return "TARGET_HIT";
   }
-  if (s.p25_total_minor != null && s.current_best_total_minor <= s.p25_total_minor) {
-    return "BUY";
-  }
-  if (s.p50_total_minor != null && s.current_best_total_minor <= s.p50_total_minor) {
-    return "WATCH";
-  }
+
+  const threshold = book.percentile_threshold ?? config.buy_percentile;
+  const rank = s.current_percentile_rank;
+  if (rank == null) return "INSUFFICIENT_DATA";
+  if (rank <= threshold) return "BUY";
+  if (rank <= config.watch_percentile) return "WATCH";
   return "WAIT";
 }
 

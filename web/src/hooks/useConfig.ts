@@ -32,6 +32,7 @@ export type RecommendationConfigShape = {
   watch_percentile: number;
   target_tolerance_pct: number;
   alert_dedup_window_hours: number;
+  percentile_window_days: number;
 };
 
 // Hand-typed mirror of `NotificationsConfig` (Phase 11.4). Keys match the
@@ -86,10 +87,11 @@ export type ConfigShape = {
 
 export const RECOMMENDATION_DEFAULTS: RecommendationConfigShape = {
   min_observations_for_signal: 14,
-  buy_percentile: 25,
+  buy_percentile: 10,
   watch_percentile: 50,
   target_tolerance_pct: 5,
   alert_dedup_window_hours: 24,
+  percentile_window_days: 90,
 };
 
 export type ConfigUpdateResult = components["schemas"]["ConfigUpdateResult"];

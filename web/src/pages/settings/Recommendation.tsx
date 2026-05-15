@@ -69,6 +69,11 @@ const FIELD_LABELS: Record<FieldKey, { label: string; unit?: string; hint?: stri
     unit: "hours",
     hint: "Suppress duplicate alerts of the same kind within this window.",
   },
+  percentile_window_days: {
+    label: "Percentile window",
+    unit: "days",
+    hint: "Trailing window over which the BUY/WATCH percentile is computed.",
+  },
 };
 
 function draftsEqual(
@@ -80,7 +85,8 @@ function draftsEqual(
     a.buy_percentile === b.buy_percentile &&
     a.watch_percentile === b.watch_percentile &&
     a.target_tolerance_pct === b.target_tolerance_pct &&
-    a.alert_dedup_window_hours === b.alert_dedup_window_hours
+    a.alert_dedup_window_hours === b.alert_dedup_window_hours &&
+    a.percentile_window_days === b.percentile_window_days
   );
 }
 
@@ -125,6 +131,12 @@ function validateDraft(d: RecommendationConfigShape): ValidationErrors {
   ) {
     errors.alert_dedup_window_hours = "Must be ≥ 0.";
   }
+  if (
+    !Number.isFinite(d.percentile_window_days) ||
+    d.percentile_window_days < 1
+  ) {
+    errors.percentile_window_days = "Must be ≥ 1.";
+  }
   return errors;
 }
 
@@ -163,6 +175,7 @@ export function SettingsRecommendation() {
     r.watch_percentile,
     r.target_tolerance_pct,
     r.alert_dedup_window_hours,
+    r.percentile_window_days,
   ].join("|");
 
   return <RecommendationForm key={mountKey} config={cfg.data} />;
@@ -268,6 +281,13 @@ function RecommendationForm({ config }: { config: ConfigShape }) {
           onChange={setField}
           error={validation.alert_dedup_window_hours}
           min={0}
+        />
+        <NumberField
+          fieldKey="percentile_window_days"
+          value={draft.percentile_window_days}
+          onChange={setField}
+          error={validation.percentile_window_days}
+          min={1}
         />
       </div>
 

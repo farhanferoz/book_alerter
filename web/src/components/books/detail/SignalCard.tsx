@@ -12,24 +12,21 @@ import { formatMoneyMinor } from "@/lib/format";
 import { SignalPill, approximateSignal } from "@/components/books/signal";
 import { useConfig, RECOMMENDATION_DEFAULTS } from "@/hooks/useConfig";
 
-// Coarse percentile bucket from p25/p50/p75. Returns a human-readable string.
-// The backend's `percentile_at()` does proper linear interpolation against
-// `sorted_totals`; we approximate with the three exposed quantiles and a
-// "between X and Y" range. INSUFFICIENT_DATA branches are caller-handled.
-function bucketPercentile(book: Book): string | null {
+function percentileSummary(book: Book): string | null {
   const s = book.stats;
-  const current = s.current_best_total_minor;
-  if (current == null) return null;
-  if (s.p25_total_minor != null && current <= s.p25_total_minor) {
-    return "≤ P25 (cheap quartile)";
-  }
-  if (s.p50_total_minor != null && current <= s.p50_total_minor) {
-    return "P25–P50 (below median)";
-  }
-  if (s.p75_total_minor != null && current <= s.p75_total_minor) {
-    return "P50–P75 (above median)";
-  }
-  return "> P75 (top quartile)";
+  const rank = s.current_percentile_rank;
+  if (rank == null) return null;
+  return `At the ${rank}${ordinalSuffix(rank)} percentile of ${s.percentile_window_days}-day history`;
+}
+
+function ordinalSuffix(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return "th";
+  const ones = n % 10;
+  if (ones === 1) return "st";
+  if (ones === 2) return "nd";
+  if (ones === 3) return "rd";
+  return "th";
 }
 
 function targetDistance(book: Book): string | null {
@@ -50,9 +47,13 @@ export function SignalCard({ book }: { book: Book }) {
   const cfg = useConfig();
   const recommendation = cfg.data?.recommendation ?? RECOMMENDATION_DEFAULTS;
   const signal = approximateSignal(book, recommendation);
-  const bucket = bucketPercentile(book);
+  const summary = percentileSummary(book);
   const distance = targetDistance(book);
   const s = book.stats;
+  const shippingNote =
+    s.current_best_shipping_minor == null && s.shipping_estimate_minor != null
+      ? `Shipping for current row unknown; using observed median ${formatMoneyMinor(s.shipping_estimate_minor, book.currency)} for ranking.`
+      : null;
 
   return (
     <div className="rounded-md border border-border bg-card p-4">
@@ -87,11 +88,13 @@ export function SignalCard({ book }: { book: Book }) {
               No target set. Add one in Settings below to enable target alerts.
             </p>
           )}
-          {bucket && (
+          {summary && (
             <p className="text-xs text-muted-foreground">
-              Current price sits {bucket} of {s.observation_count} obs over{" "}
-              {s.days_of_history} days.
+              {summary} ({s.observation_count} obs over {s.days_of_history} days).
             </p>
+          )}
+          {shippingNote && (
+            <p className="text-xs text-muted-foreground/80">{shippingNote}</p>
           )}
         </div>
       )}

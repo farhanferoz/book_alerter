@@ -530,6 +530,8 @@ export interface components {
             target_price_minor?: number | null;
             /** Percentile Threshold */
             percentile_threshold?: number | null;
+            /** Percentile Window Days */
+            percentile_window_days?: number | null;
             /** Notes */
             notes?: string | null;
         };
@@ -584,6 +586,8 @@ export interface components {
             target_price_minor: number | null;
             /** Percentile Threshold */
             percentile_threshold: number | null;
+            /** Percentile Window Days */
+            percentile_window_days: number | null;
             /**
              * Status
              * @enum {string}
@@ -615,6 +619,8 @@ export interface components {
             target_price_minor?: number | null;
             /** Percentile Threshold */
             percentile_threshold?: number | null;
+            /** Percentile Window Days */
+            percentile_window_days?: number | null;
             /** Status */
             status?: ("active" | "archived" | "bought") | null;
             /** Muted Until */
@@ -663,6 +669,14 @@ export interface components {
             days_of_history: number;
             /** Last Observed At */
             last_observed_at: string | null;
+            /** Percentile Window Days */
+            percentile_window_days: number;
+            /** Current Percentile Rank */
+            current_percentile_rank: number | null;
+            /** Current Effective Total Minor */
+            current_effective_total_minor: number | null;
+            /** Shipping Estimate Minor */
+            shipping_estimate_minor: number | null;
         };
         /** ConfigDiff */
         ConfigDiff: {
