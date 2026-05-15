@@ -131,6 +131,15 @@ def compute_book_stats(book_id: int, session: Session) -> BookStats:
 def compute_signal(
     book: models.Book, stats: BookStats, cfg: RecommendationConfig
 ) -> Signal:
+    # Primary gate: calendar-day spread of observations. Without temporal
+    # spread the percentile distribution is just "today's prices sorted" —
+    # comparing the current best against that yields a tautology, not a
+    # recommendation. See RecommendationConfig.min_days_of_history.
+    if stats.days_of_history < cfg.min_days_of_history:
+        return "INSUFFICIENT_DATA"
+    # Secondary (legacy) gate. Default 1 so it's effectively no-op once
+    # the days gate is satisfied; preserved so existing configs that set
+    # a higher value still gate as the user expects.
     if stats.observation_count < cfg.min_observations_for_signal:
         return "INSUFFICIENT_DATA"
     if stats.current_best_total_minor is None:

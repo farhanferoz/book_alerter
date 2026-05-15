@@ -25,7 +25,19 @@ def _substitute_env(value: Any) -> Any:
 
 
 class RecommendationConfig(BaseModel):
-    min_observations_for_signal: int = 14
+    # Minimum calendar days of price history before BUY/WATCH/WAIT signals
+    # can fire. Below this, the engine returns INSUFFICIENT_DATA regardless
+    # of how many same-day observations have been collected. Gates on TIME
+    # rather than COUNT because percentile-based signals are only meaningful
+    # over a distribution of prices SPREAD across time — 24 identical
+    # scrapes today tell us no more than 1 scrape today.
+    min_days_of_history: int = 7
+    # Legacy gate kept for backwards compatibility but no longer the
+    # primary signal-fire condition. Set to 1 (any data at all) so the
+    # days-of-history gate is what actually controls signal emergence.
+    # Older configs that set this to 14 still validate; the days gate
+    # supersedes it.
+    min_observations_for_signal: int = 1
     buy_percentile: int = 25
     watch_percentile: int = 50
     target_tolerance_pct: int = 5

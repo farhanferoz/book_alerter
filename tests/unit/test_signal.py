@@ -6,12 +6,29 @@ from book_alerter.config import RecommendationConfig
 from book_alerter.stats import compute_signal
 
 
-def test_insufficient_data_when_count_below_threshold(
+def test_insufficient_data_when_below_days_gate(
     transient_book, transient_stats,
 ):
-    cfg = RecommendationConfig()  # min_observations_for_signal=14
+    # Primary gate: even with many observations, < min_days_of_history yields
+    # INSUFFICIENT_DATA because percentile distributions over same-day repeats
+    # are meaningless.
+    cfg = RecommendationConfig()  # min_days_of_history=7
     book = transient_book()
-    stats = transient_stats(observation_count=5, current_best_total_minor=100)
+    stats = transient_stats(
+        observation_count=200, current_best_total_minor=100, days_of_history=3
+    )
+    assert compute_signal(book, stats, cfg) == "INSUFFICIENT_DATA"
+
+
+def test_insufficient_data_when_count_below_legacy_threshold(
+    transient_book, transient_stats,
+):
+    # Legacy count gate still works if config sets it explicitly.
+    cfg = RecommendationConfig(min_observations_for_signal=14)
+    book = transient_book()
+    stats = transient_stats(
+        observation_count=5, current_best_total_minor=100, days_of_history=30
+    )
     assert compute_signal(book, stats, cfg) == "INSUFFICIENT_DATA"
 
 

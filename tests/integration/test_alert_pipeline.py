@@ -65,8 +65,13 @@ def _run(pipeline: AlertPipeline, book_ids: list[int]) -> None:
 
 
 def _make_cfg(**notif_overrides) -> Config:
+    # Tests in this module focus on pipeline mechanics (does it write
+    # alerts? does it persist signal state?), not on the days-of-history
+    # gate. Drop the gate so the seeded same-day observations clear it.
+    # Tests of the gate itself live in tests/unit/test_signal.py.
     return Config(
-        recommendation=RecommendationConfig(min_observations_for_signal=14,
+        recommendation=RecommendationConfig(min_days_of_history=0,
+                                            min_observations_for_signal=14,
                                             alert_dedup_window_hours=24),
         notifications=NotificationsConfig(**notif_overrides),
     )

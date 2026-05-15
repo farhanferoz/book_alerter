@@ -31,12 +31,16 @@ def transient_book():
 
 @pytest.fixture
 def transient_stats():
+    # Default days_of_history past the gate (config default is 7) so tests
+    # that don't care about the time gate stay focused on signal logic.
+    # Tests that DO want to exercise the gate pass `days_of_history=0`.
     def _make(
         *,
         observation_count: int,
         current_best_total_minor: int | None,
         p50_total_minor: int | None = None,
         sorted_totals: list[int] | None = None,
+        days_of_history: int = 30,
     ) -> BookStats:
         return BookStats(
             book_id=1,
@@ -51,7 +55,7 @@ def transient_stats():
             all_time_min_total_minor=None,
             all_time_max_total_minor=None,
             observation_count=observation_count,
-            days_of_history=0,
+            days_of_history=days_of_history,
             last_observed_at=None,
             sorted_totals=sorted_totals if sorted_totals is not None else [],
         )

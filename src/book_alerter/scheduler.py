@@ -266,9 +266,52 @@ class Scheduler:
         book: Book,
         candidates: list[ObservationCandidate],
     ) -> None:
+        """Persist a scrape's candidates, marking exact-match repeats as duplicates.
+
+        A new observation is marked `is_duplicate_of=<prior_canonical_id>` when
+        the most recent canonical (non-duplicate) observation for the same
+        (book, source, seller, condition) tuple has identical price + shipping.
+        Duplicates still land in the table (so we keep a heartbeat of "we did
+        check") but the `book_stats` view excludes them, keeping the
+        observation count and percentile distribution honest. See
+        `RecommendationConfig.min_days_of_history` for why this matters.
+        """
+        now = datetime.now(UTC)
         with self._session_factory() as session:
             for c in candidates:
                 total = c.price_minor + (c.shipping_minor or 0)
+                # Match a prior canonical row on the FULL offer identity
+                # (book/source/seller/condition/price/shipping). A
+                # WoB-style source can have multiple variants under the same
+                # (seller, condition) at different prices; we mark this
+                # candidate a duplicate only if SOMETHING canonical exists
+                # at the same exact price+shipping. Take the most recent
+                # such match so future lookups continue to find it.
+                shipping = c.shipping_minor or 0
+                prior = session.exec(
+                    select(PriceObservation)
+                    .where(
+                        PriceObservation.book_id == book.id,
+                        PriceObservation.source == source_name,
+                        PriceObservation.seller == c.seller,
+                        PriceObservation.condition == c.condition,
+                        PriceObservation.price_minor == c.price_minor,
+                        # SQLite stores `shipping_minor=None` and `0`
+                        # distinctly; treat them as equivalent for matching.
+                        (
+                            (PriceObservation.shipping_minor == shipping)
+                            | (
+                                PriceObservation.shipping_minor.is_(None)  # type: ignore[union-attr]
+                                if shipping == 0
+                                else False
+                            )
+                        ),
+                        PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+                    )
+                    .order_by(PriceObservation.observed_at.desc())  # type: ignore[union-attr]
+                    .limit(1)
+                ).first()
+                duplicate_of: int | None = prior.id if prior is not None else None
                 session.add(
                     PriceObservation(
                         book_id=book.id,
@@ -280,8 +323,9 @@ class Scheduler:
                         shipping_minor=c.shipping_minor,
                         total_minor=total,
                         url=c.url,
-                        observed_at=datetime.now(UTC),
+                        observed_at=now,
                         raw=c.model_dump(),
+                        is_duplicate_of=duplicate_of,
                     )
                 )
             session.commit()

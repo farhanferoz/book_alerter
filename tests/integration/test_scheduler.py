@@ -182,3 +182,71 @@ async def test_scheduler_alert_pipeline_failure_does_not_corrupt_audit(
         "alert pipeline RuntimeError must not corrupt a successful SourceRun audit"
     )
     assert run.books_succeeded == 1
+
+
+async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
+    sqlite_engine, make_book, wob_vcr,
+):
+    """Second scrape with identical prices flags rows as is_duplicate_of <prior>.
+
+    The book_stats view excludes duplicates, so observation_count stays honest
+    and percentile distributions aren't polluted by same-day repeats. See
+    Scheduler._persist for the dedup logic and RecommendationConfig.min_days_of_history
+    for why this matters to signal correctness.
+    """
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13=WOB_CARRIED_ISBN)
+
+    cfg = Config(
+        sources={
+            "wob": SourceConfig(
+                enabled=True, region="UK",
+                per_book_delay_seconds=(0, 0), concurrency=1,
+            ),
+        },
+    )
+
+    async def _noop_pipeline(book_ids: list[int]) -> None:
+        return
+
+    scheduler = Scheduler(
+        config=cfg,
+        sources={"wob": WobInlineSource(name="wob", region="UK")},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipeline=_noop_pipeline,
+    )
+
+    cassette = f"wob_{WOB_CARRIED_ISBN}.yaml"
+    # Single VCR context with playback repeats so both passes hit the same
+    # recorded response without exhausting the cassette.
+    with wob_vcr("none").use_cassette(
+        cassette, allow_playback_repeats=True,
+    ):
+        await scheduler.trigger_now("wob")
+        await scheduler.trigger_now("wob")
+
+    with Session(sqlite_engine) as s:
+        canonical = s.exec(
+            select(models.PriceObservation).where(
+                models.PriceObservation.source == "wob",
+                models.PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+            )
+        ).all()
+        dupes = s.exec(
+            select(models.PriceObservation).where(
+                models.PriceObservation.source == "wob",
+                models.PriceObservation.is_duplicate_of.is_not(None),  # type: ignore[union-attr]
+            )
+        ).all()
+
+    # Each pass scrapes the same N variants. After two passes we expect
+    # N canonical rows (from pass 1) and N duplicate rows (from pass 2).
+    assert len(canonical) > 0
+    assert len(dupes) == len(canonical), (
+        f"expected pass-2 to fully duplicate pass-1, got "
+        f"{len(canonical)} canonical, {len(dupes)} duplicates"
+    )
+    # Each duplicate must reference a real canonical row.
+    canonical_ids = {o.id for o in canonical}
+    for d in dupes:
+        assert d.is_duplicate_of in canonical_ids
