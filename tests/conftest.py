@@ -45,6 +45,8 @@ def transient_stats():
         return BookStats(
             book_id=1,
             current_best_total_minor=current_best_total_minor,
+            current_best_price_minor=current_best_total_minor,
+            current_best_shipping_minor=None,
             current_best_source=None,
             current_best_seller=None,
             current_best_condition=None,

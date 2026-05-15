@@ -41,8 +41,9 @@ def test_book_stats_view_current_best(tmp_path):
         for source, total, obs_at in rows:
             s.add(models.PriceObservation(
                 book_id=book.id, source=source, condition="new",
-                price_minor=total, currency="GBP", total_minor=total,
-                url=f"https://{source}", observed_at=obs_at, raw={},
+                price_minor=total, currency="GBP", shipping_minor=0,
+                total_minor=total, url=f"https://{source}",
+                observed_at=obs_at, raw={},
             ))
         s.commit()
 

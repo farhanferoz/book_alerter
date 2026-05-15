@@ -1,33 +1,27 @@
-"""Canonical DDL for SQL views. Imported by Alembic migrations and by
-integration tests (SQLModel.metadata.create_all does not create views)."""
-from __future__ import annotations
+"""book_stats view: current_best only from buyable (live, known-shipping) rows"""
+from alembic import op
+
+from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 
 
-BOOK_STATS_VIEW_SQL = """
+revision = "0006_buyable_current_best"
+down_revision = "0005_book_stats_view_shipping"
+branch_labels = None
+depends_on = None
+
+
+_PREV_VIEW_SQL = """
 CREATE VIEW book_stats AS
 WITH non_dupes AS (
     SELECT * FROM priceobservation WHERE is_duplicate_of IS NULL
-),
--- current_best is restricted to live offers (excludes Keepa, which is a
--- historical archive whose PNG only renders item prices — its rows have
--- NULL shipping and would unfairly beat live totals that include postage).
--- Live rows with NULL shipping still qualify so the user sees the item
--- price plus an em-dash, rather than nothing at all when no source on a
--- given book managed to extract a delivery line.
-buyable AS (
-    SELECT * FROM non_dupes
-    WHERE source != 'keepa'
 ),
 latest_per_source AS (
     SELECT book_id, source, total_minor, price_minor, shipping_minor,
            condition, seller, url, observed_at,
            ROW_NUMBER() OVER (PARTITION BY book_id, source ORDER BY observed_at DESC) AS rn
-    FROM buyable
+    FROM non_dupes
 ),
 current_best AS (
-    -- When two sources tie at the same lowest price, deterministically prefer
-    -- the alphabetically-first source name. Otherwise the view returns
-    -- non-deterministic rows for ties.
     SELECT lp.book_id, lp.total_minor, lp.price_minor, lp.shipping_minor,
            lp.source, lp.condition, lp.seller, lp.url
     FROM latest_per_source lp
@@ -72,4 +66,12 @@ LEFT JOIN current_best cb ON cb.book_id = b.id
 LEFT JOIN agg a          ON a.book_id  = b.id
 """
 
-DROP_BOOK_STATS_VIEW_SQL = "DROP VIEW IF EXISTS book_stats"
+
+def upgrade() -> None:
+    op.execute(DROP_BOOK_STATS_VIEW_SQL)
+    op.execute(BOOK_STATS_VIEW_SQL)
+
+
+def downgrade() -> None:
+    op.execute(DROP_BOOK_STATS_VIEW_SQL)
+    op.execute(_PREV_VIEW_SQL)
