@@ -23,3 +23,7 @@ def asin_for_amazon_uk(isbn13: str) -> str:
     """
     isbn10 = isbnlib.to_isbn10(isbn13)
     return isbn10 if isbn10 else isbn13
+
+
+def amazon_uk_dp_url(isbn13: str) -> str:
+    return f"https://www.amazon.co.uk/dp/{asin_for_amazon_uk(isbn13)}"

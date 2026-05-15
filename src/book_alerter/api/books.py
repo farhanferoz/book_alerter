@@ -24,17 +24,16 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_chart
 from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.db import models
-from book_alerter.sources.normalizers import to_isbn13
+from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
 from book_alerter.stats import BookStats, compute_book_stats
 
 router = APIRouter(prefix="/api/books", tags=["books"])
@@ -70,6 +69,8 @@ class BookStatsOut(BaseModel):
     """
     book_id: int
     current_best_total_minor: int | None
+    current_best_price_minor: int | None
+    current_best_shipping_minor: int | None
     current_best_source: str | None
     current_best_seller: str | None
     current_best_condition: str | None
@@ -88,6 +89,8 @@ class BookStatsOut(BaseModel):
         return cls(
             book_id=s.book_id,
             current_best_total_minor=s.current_best_total_minor,
+            current_best_price_minor=s.current_best_price_minor,
+            current_best_shipping_minor=s.current_best_shipping_minor,
             current_best_source=s.current_best_source,
             current_best_seller=s.current_best_seller,
             current_best_condition=s.current_best_condition,
@@ -250,24 +253,19 @@ def create_book(
     session.add(book)
     session.commit()
     session.refresh(book)
+    assert book.id is not None  # set by session.refresh
 
     # Fire-and-forget Keepa backfill so the days-of-history gate clears
     # immediately for books Amazon UK indexes. No-op if Keepa has no data.
     engine = session.get_bind()
-
-    def _factory():
-        from sqlmodel import Session
-        return Session(engine)
-
     background_tasks.add_task(
         _keepa_backfill_blocking,
-        book.id or 0,
+        book.id,
         book.isbn13,
-        _factory,
-        Path("data/keepa-cache"),
+        lambda: Session(engine),
     )
 
-    stats = compute_book_stats(book.id or 0, session)
+    stats = compute_book_stats(book.id, session)
     return BookOut.from_book(book, stats)
 
 
@@ -446,13 +444,18 @@ def _keepa_backfill_blocking(
     book_id: int,
     isbn13: str,
     session_factory,
-    cache_dir: Path,
 ) -> int:
-    """Background worker — fetch Keepa PNG, extract, persist, return row count.
+    """Fetch Keepa PNG, extract observations, persist. Returns rows inserted.
 
     Idempotent: skips if any source='keepa' row already exists for the book.
-    Synchronous SQL inside an async-friendly wrapper so FastAPI's
-    BackgroundTasks can hand it off without blocking the request thread.
+    Splits sessions around the OCR call so the DB connection isn't pinned
+    across the ~3-5s extraction.
+
+    Shipping is left NULL — Keepa's chart PNG only renders item prices and
+    we will not fabricate a number. Downstream comparisons against current
+    scraped totals (which DO include shipping when the page advertises it)
+    are therefore unfair on the historical side; the UI surfaces NULL as
+    em-dash so the gap is visible rather than papered over.
     """
     with session_factory() as session:
         existing = session.exec(
@@ -466,8 +469,7 @@ def _keepa_backfill_blocking(
         if existing is not None:
             return 0
 
-    # asyncio.run because we're called from a thread pool worker.
-    png = asyncio.run(keepa.fetch_chart_png(isbn13, cache_dir))
+    png = keepa.fetch_chart_png(isbn13)
     if png is None:
         return 0
 
@@ -475,9 +477,7 @@ def _keepa_backfill_blocking(
     if not extractions:
         return 0
 
-    from book_alerter.sources.normalizers import asin_for_amazon_uk
-    asin = asin_for_amazon_uk(isbn13)
-    amazon_url = f"https://www.amazon.co.uk/dp/{asin}"
+    amazon_url = amazon_uk_dp_url(isbn13)
 
     inserted = 0
     with session_factory() as session:
@@ -491,10 +491,10 @@ def _keepa_backfill_blocking(
                     condition=condition,
                     price_minor=ext.price_minor,
                     currency="GBP",
-                    shipping_minor=0,
+                    shipping_minor=None,
                     total_minor=ext.price_minor,
                     url=amazon_url,
-                    observed_at=datetime.combine(ext.observed_at, datetime.min.time()).replace(tzinfo=UTC),
+                    observed_at=keepa_chart.observed_at_to_datetime(ext.observed_at),
                     raw={"series": ext.series, "from": "keepa_chart_png"},
                 )
             )
@@ -508,55 +508,40 @@ async def keepa_backfill(
     book_id: int,
     session: SessionDep,
 ) -> dict:
-    """Trigger a one-shot Keepa backfill for `book_id`.
+    """Trigger a one-shot Keepa backfill. Idempotent.
 
-    Fetches the public Keepa PNG, runs the OCR-based numeric extractor, and
-    inserts the extracted (date, series, price) tuples as historical
-    PriceObservation rows. Idempotent: returns inserted=0 if backfill ran
-    previously for this book. Synchronous (waits for the extraction) to
-    return a clear count to the caller; book-creation auto-backfill is
-    fire-and-forget via BackgroundTasks instead.
+    Returns inserted=0 if a previous backfill already populated this book.
+    Synchronous (awaits the extraction) so the caller gets a real count;
+    the book-creation auto-backfill is fire-and-forget via BackgroundTasks.
     """
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
     engine = session.get_bind()
-
-    def _factory():
-        from sqlmodel import Session
-        return Session(engine)
-
     inserted = await asyncio.to_thread(
         _keepa_backfill_blocking,
         book_id,
         book.isbn13,
-        _factory,
-        Path("data/keepa-cache"),
+        lambda: Session(engine),
     )
     return {"inserted": inserted, "book_id": book_id}
 
 
 @router.get("/{book_id}/keepa-chart.png")
 async def get_keepa_chart(book_id: int, session: SessionDep) -> Response:
-    """Serve the Keepa Amazon UK price-history PNG for a book.
+    """Proxy the Keepa price-history PNG with a 24h server-side cache.
 
-    Server-side proxy + 24h disk cache so we don't hammer Keepa's edge and so
-    the FE doesn't expose the user's IP to Keepa. Returns 404 if Keepa has
-    no chart for this ISBN (book too niche, just published, etc.).
+    Hides the user's IP from Keepa and absorbs repeated FE loads.
     """
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
-    cache_dir = Path("data/keepa-cache")
-    png = await keepa.fetch_chart_png(book.isbn13, cache_dir)
+    png = await asyncio.to_thread(keepa.fetch_chart_png, book.isbn13)
     if png is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="keepa has no chart for this ISBN",
         )
-    # Cache for an hour on the browser side. Keepa's data refreshes
-    # roughly every few hours; matching 60min keeps the FE responsive
-    # without re-fetching constantly.
     return Response(
         content=png,
         media_type="image/png",
