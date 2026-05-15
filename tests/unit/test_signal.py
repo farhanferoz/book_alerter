@@ -85,7 +85,7 @@ def test_buy_when_within_tolerance_above_target(transient_book, transient_stats)
 
 def test_buy_when_no_target_and_current_le_p25(transient_book, transient_stats):
     # sorted_totals=[100,200,300,400,500] → p25=200
-    cfg = RecommendationConfig()  # buy_percentile=25
+    cfg = RecommendationConfig(buy_percentile=25)
     book = transient_book()
     stats = transient_stats(
         observation_count=20,

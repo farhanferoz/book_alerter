@@ -35,7 +35,7 @@ def test_target_hit_does_not_double_fire(transient_book, transient_stats):
 
 
 def test_percentile_cross_fires_on_buy_transition(transient_book, transient_stats):
-    cfg = RecommendationConfig()
+    cfg = RecommendationConfig(buy_percentile=25)
     book = transient_book()  # no target
     # sorted_totals=[100,200,300,400,500] -> p25=200; current=200 -> BUY
     stats = transient_stats(

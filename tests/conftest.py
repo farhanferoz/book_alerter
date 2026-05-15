@@ -41,12 +41,19 @@ def transient_stats():
         p50_total_minor: int | None = None,
         sorted_totals: list[int] | None = None,
         days_of_history: int = 30,
+        current_percentile_rank: int | None = None,
+        current_best_shipping_minor: int | None = 0,
     ) -> BookStats:
+        totals = sorted_totals if sorted_totals is not None else []
+        rank = current_percentile_rank
+        if rank is None and totals and current_best_total_minor is not None:
+            below = sum(1 for t in totals if t <= current_best_total_minor)
+            rank = int(round((below / len(totals)) * 100))
         return BookStats(
             book_id=1,
             current_best_total_minor=current_best_total_minor,
             current_best_price_minor=current_best_total_minor,
-            current_best_shipping_minor=None,
+            current_best_shipping_minor=current_best_shipping_minor,
             current_best_source=None,
             current_best_seller=None,
             current_best_condition=None,
@@ -59,7 +66,11 @@ def transient_stats():
             observation_count=observation_count,
             days_of_history=days_of_history,
             last_observed_at=None,
-            sorted_totals=sorted_totals if sorted_totals is not None else [],
+            percentile_window_days=90,
+            current_percentile_rank=rank,
+            current_effective_total_minor=current_best_total_minor,
+            shipping_estimate_minor=None,
+            sorted_totals=totals,
         )
 
     return _make

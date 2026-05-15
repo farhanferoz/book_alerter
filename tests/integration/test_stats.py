@@ -218,3 +218,137 @@ def test_percentiles_helper_directly():
     assert _percentiles([42]) == (42, 42, 42)
     p25, p50, p75 = _percentiles([100, 200, 300])
     assert (p25, p50, p75) == (150, 200, 250)
+
+
+def _add_obs_with_shipping(
+    session: Session,
+    *,
+    book_id: int,
+    price: int,
+    shipping: int | None,
+    source: str = "wob",
+    observed_at: datetime | None = None,
+) -> models.PriceObservation:
+    """Helper for shipping-aware tests. `shipping=None` mirrors a Keepa
+    historical row; the view treats those as eligible buyable rows but the
+    distribution-builder folds them in via the per-book estimate."""
+    total = price if shipping is None else price + shipping
+    obs = models.PriceObservation(
+        book_id=book_id,
+        source=source,
+        condition="new",
+        price_minor=price,
+        currency="GBP",
+        shipping_minor=shipping,
+        total_minor=total,
+        url=f"https://{source}/{price}",
+        observed_at=observed_at or datetime.now(UTC),
+        raw={},
+    )
+    session.add(obs)
+    session.commit()
+    session.refresh(obs)
+    return obs
+
+
+def test_window_excludes_observations_older_than_cutoff(engine_with_view, make_book):
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000020")
+        _add_obs(s, book_id=book.id, total=100, source="recent",
+                 observed_at=now - timedelta(days=10))
+        _add_obs(s, book_id=book.id, total=999, source="old",
+                 observed_at=now - timedelta(days=120))
+        stats = compute_book_stats(book.id, s, window_days=90)
+
+    assert stats.sorted_totals == [100]
+    assert stats.percentile_window_days == 90
+
+
+def test_window_default_is_90_days(engine_with_view, make_book):
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000021")
+        _add_obs(s, book_id=book.id, total=100, source="recent",
+                 observed_at=now - timedelta(days=30))
+        _add_obs(s, book_id=book.id, total=200, source="old",
+                 observed_at=now - timedelta(days=200))
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.sorted_totals == [100]
+    assert stats.percentile_window_days == 90
+
+
+def test_shipping_estimate_folds_keepa_into_distribution(engine_with_view, make_book):
+    """Two real observations carry shipping (£0 and £2.80); a Keepa-style
+    NULL-shipping row at £15 item price should be folded in at £15 + median
+    shipping (£1.40)."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000022")
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=0,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=book.id, price=1800, shipping=280,
+                               source="amazon")
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
+                               source="keepa")
+        stats = compute_book_stats(book.id, s)
+
+    # median([0, 280]) == 140
+    assert stats.shipping_estimate_minor == 140
+    # Distribution: real totals (2000, 2080) + estimate-folded (1500 + 140)
+    assert stats.sorted_totals == [1640, 2000, 2080]
+
+
+def test_shipping_estimate_none_drops_null_rows(engine_with_view, make_book):
+    """A book whose only observations have NULL shipping (all Keepa) gets
+    `shipping_estimate_minor=None` and the NULL rows are excluded from the
+    distribution — no fabricated default."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000023")
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
+                               source="keepa")
+        _add_obs_with_shipping(s, book_id=book.id, price=1600, shipping=None,
+                               source="keepa")
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.shipping_estimate_minor is None
+    assert stats.sorted_totals == []
+
+
+def test_current_percentile_rank_basic(engine_with_view, make_book):
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000024")
+        for total in (1000, 1500, 2000, 2500, 3000):
+            _add_obs_with_shipping(
+                s, book_id=book.id, price=total, shipping=0,
+                source=f"src_{total}",
+            )
+        stats = compute_book_stats(book.id, s)
+
+    # current_best = cheapest of 5 → rank 1/5 = 20%
+    assert stats.current_best_total_minor == 1000
+    assert stats.current_percentile_rank == 20
+    assert stats.current_effective_total_minor == 1000
+
+
+def test_current_effective_total_uses_estimate_when_current_shipping_null(
+    engine_with_view, make_book,
+):
+    """If the current row has NULL shipping but we have observed shipping
+    elsewhere for the book, the effective total used for percentile rank is
+    price + median observed shipping."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000025")
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=300,
+                               source="wob")
+        # Cheapest row has NULL shipping → wins current_best (view doesn't
+        # filter on shipping NULL), but rank comparison estimates £3 shipping.
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
+                               source="bookfinder")
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.shipping_estimate_minor == 300
+    # current_best is the £15 row (view picks lowest total); effective adds
+    # the £3 estimate → £18
+    assert stats.current_best_total_minor == 1500
+    assert stats.current_effective_total_minor == 1800

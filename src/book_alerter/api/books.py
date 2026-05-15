@@ -39,6 +39,10 @@ from book_alerter.stats import BookStats, compute_book_stats
 router = APIRouter(prefix="/api/books", tags=["books"])
 
 
+def _effective_window_days(book: models.Book, cfg) -> int:
+    return book.percentile_window_days or cfg.recommendation.percentile_window_days
+
+
 # --- DTOs -------------------------------------------------------------------
 
 
@@ -50,12 +54,14 @@ class BookCreate(BaseModel):
     format: Literal["paperback", "hardcover", "any"] = "any"
     target_price_minor: int | None = None
     percentile_threshold: int | None = None
+    percentile_window_days: int | None = None
     notes: str | None = None
 
 
 class BookPatch(BaseModel):
     target_price_minor: int | None = None
     percentile_threshold: int | None = None
+    percentile_window_days: int | None = None
     status: Literal["active", "archived", "bought"] | None = None
     muted_until: datetime | None = None
     notes: str | None = None
@@ -83,6 +89,10 @@ class BookStatsOut(BaseModel):
     observation_count: int
     days_of_history: int
     last_observed_at: datetime | None
+    percentile_window_days: int
+    current_percentile_rank: int | None
+    current_effective_total_minor: int | None
+    shipping_estimate_minor: int | None
 
     @classmethod
     def from_dataclass(cls, s: BookStats) -> BookStatsOut:
@@ -103,6 +113,10 @@ class BookStatsOut(BaseModel):
             observation_count=s.observation_count,
             days_of_history=s.days_of_history,
             last_observed_at=s.last_observed_at,
+            percentile_window_days=s.percentile_window_days,
+            current_percentile_rank=s.current_percentile_rank,
+            current_effective_total_minor=s.current_effective_total_minor,
+            shipping_estimate_minor=s.shipping_estimate_minor,
         )
 
 
@@ -164,6 +178,7 @@ class BookOut(BaseModel):
     currency: str
     target_price_minor: int | None
     percentile_threshold: int | None
+    percentile_window_days: int | None
     status: Literal["active", "archived", "bought"]
     bought_price_minor: int | None
     notes: str | None
@@ -186,6 +201,7 @@ class BookOut(BaseModel):
             currency=book.currency,
             target_price_minor=book.target_price_minor,
             percentile_threshold=book.percentile_threshold,
+            percentile_window_days=book.percentile_window_days,
             status=book.status,
             bought_price_minor=book.bought_price_minor,
             notes=book.notes,
@@ -203,6 +219,7 @@ class BookOut(BaseModel):
 @router.get("", response_model=list[BookOut])
 def list_books(
     session: SessionDep,
+    cfg: ConfigDep,
     include_archived: bool = False,
 ) -> list[BookOut]:
     stmt = select(models.Book)
@@ -210,7 +227,10 @@ def list_books(
         stmt = stmt.where(models.Book.status != "archived")
     books = session.exec(stmt).all()
     return [
-        BookOut.from_book(b, compute_book_stats(b.id or 0, session))
+        BookOut.from_book(
+            b,
+            compute_book_stats(b.id or 0, session, _effective_window_days(b, cfg)),
+        )
         for b in books
     ]
 
@@ -219,6 +239,7 @@ def list_books(
 def create_book(
     payload: BookCreate,
     session: SessionDep,
+    cfg: ConfigDep,
     background_tasks: BackgroundTasks,
 ) -> BookOut:
     try:
@@ -234,7 +255,11 @@ def create_book(
     if existing is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"book with ISBN-13 {isbn13} already exists",
+            detail={
+                "message": f"book with ISBN-13 {isbn13} already exists",
+                "book_id": existing.id,
+                "isbn13": isbn13,
+            },
         )
 
     now = datetime.now(UTC)
@@ -246,6 +271,7 @@ def create_book(
         format=payload.format,
         target_price_minor=payload.target_price_minor,
         percentile_threshold=payload.percentile_threshold,
+        percentile_window_days=payload.percentile_window_days,
         notes=payload.notes,
         created_at=now,
         updated_at=now,
@@ -265,7 +291,7 @@ def create_book(
         lambda: Session(engine),
     )
 
-    stats = compute_book_stats(book.id, session)
+    stats = compute_book_stats(book.id, session, _effective_window_days(book, cfg))
     return BookOut.from_book(book, stats)
 
 
@@ -273,11 +299,12 @@ def create_book(
 def get_book(
     book_id: int,
     session: SessionDep,
+    cfg: ConfigDep,
 ) -> BookOut:
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
-    stats = compute_book_stats(book_id, session)
+    stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
     return BookOut.from_book(book, stats)
 
 
@@ -286,6 +313,7 @@ def patch_book(
     book_id: int,
     payload: BookPatch,
     session: SessionDep,
+    cfg: ConfigDep,
 ) -> BookOut:
     book = session.get(models.Book, book_id)
     if book is None:
@@ -300,7 +328,7 @@ def patch_book(
         session.commit()
         session.refresh(book)
 
-    stats = compute_book_stats(book_id, session)
+    stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
     return BookOut.from_book(book, stats)
 
 
@@ -308,15 +336,16 @@ def patch_book(
 def delete_book(
     book_id: int,
     session: SessionDep,
+    cfg: ConfigDep,
     hard: bool = False,
 ) -> BookOut | dict[str, object]:
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
+    window = _effective_window_days(book, cfg)
 
     if hard:
-        # Snapshot a response before deletion so callers see what was removed.
-        stats = compute_book_stats(book_id, session)
+        stats = compute_book_stats(book_id, session, window)
         out = BookOut.from_book(book, stats)
         session.delete(book)
         session.commit()
@@ -327,7 +356,7 @@ def delete_book(
     session.add(book)
     session.commit()
     session.refresh(book)
-    stats = compute_book_stats(book_id, session)
+    stats = compute_book_stats(book_id, session, window)
     return BookOut.from_book(book, stats)
 
 
@@ -433,11 +462,15 @@ async def refetch_book(
 def get_book_stats(
     book_id: int,
     session: SessionDep,
+    cfg: ConfigDep,
 ) -> BookStatsOut:
     """Return the full `BookStats` for a book (zero-obs case included)."""
-    if session.get(models.Book, book_id) is None:
+    book = session.get(models.Book, book_id)
+    if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
-    return BookStatsOut.from_dataclass(compute_book_stats(book_id, session))
+    return BookStatsOut.from_dataclass(
+        compute_book_stats(book_id, session, _effective_window_days(book, cfg))
+    )
 
 
 def _keepa_backfill_blocking(

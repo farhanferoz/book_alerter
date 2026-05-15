@@ -5,7 +5,8 @@ from book_alerter.config import Config
 
 def test_config_defaults_when_no_file(tmp_path):
     cfg = Config.load(tmp_path / "missing.yaml")
-    assert cfg.recommendation.buy_percentile == 25
+    assert cfg.recommendation.buy_percentile == 10
+    assert cfg.recommendation.percentile_window_days == 90
     assert cfg.recommendation.min_days_of_history == 7
     assert cfg.recommendation.min_observations_for_signal == 1
     assert cfg.notifications.alert_kinds_enabled == ["target_hit", "percentile_cross", "new_low"]

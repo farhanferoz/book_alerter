@@ -23,6 +23,7 @@ class Book(SQLModel, table=True):
     currency: str = "GBP"
     target_price_minor: int | None = None
     percentile_threshold: int | None = None
+    percentile_window_days: int | None = None
     status: Literal["active", "archived", "bought"] = Field(default="active", sa_column=Column(String, nullable=False))
     bought_price_minor: int | None = None
     notes: str | None = None

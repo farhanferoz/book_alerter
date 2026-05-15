@@ -38,10 +38,13 @@ class RecommendationConfig(BaseModel):
     # Older configs that set this to 14 still validate; the days gate
     # supersedes it.
     min_observations_for_signal: int = 1
-    buy_percentile: int = 25
+    buy_percentile: int = 10
     watch_percentile: int = 50
     target_tolerance_pct: int = 5
     alert_dedup_window_hours: int = 24
+    # Window (days) over which percentile-based signals look at price
+    # history. Per-book `Book.percentile_window_days` overrides this.
+    percentile_window_days: int = 90
 
 
 class QuietHours(BaseModel):

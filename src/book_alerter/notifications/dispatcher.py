@@ -68,7 +68,8 @@ class AlertPipeline:
         ):
             return
 
-        stats = compute_book_stats(bid, session)
+        window = book.percentile_window_days or self.cfg.recommendation.percentile_window_days
+        stats = compute_book_stats(bid, session, window)
 
         # Prior state — absent on first eval (no transition fires yet).
         prev = session.exec(
