@@ -32,6 +32,9 @@ import { formatDateTime, formatMoneyMinor } from "@/lib/format";
 
 type Range = "7d" | "30d" | "90d" | "all";
 
+// £1 padding on both axis ends + round to whole-pound ticks.
+const Y_AXIS_PAD_PENCE = 100;
+
 const RANGE_SECONDS: Record<Exclude<Range, "all">, number> = {
   "7d": 7 * 24 * 60 * 60,
   "30d": 30 * 24 * 60 * 60,
@@ -210,6 +213,13 @@ export function HistoryChart({
                 stroke="currentColor"
                 tick={{ fontSize: 11, opacity: 0.7 }}
                 width={64}
+                domain={[
+                  (dataMin: number) =>
+                    Math.max(0, Math.floor((dataMin - Y_AXIS_PAD_PENCE) / Y_AXIS_PAD_PENCE) * Y_AXIS_PAD_PENCE),
+                  (dataMax: number) =>
+                    Math.ceil((dataMax + Y_AXIS_PAD_PENCE) / Y_AXIS_PAD_PENCE) * Y_AXIS_PAD_PENCE,
+                ]}
+                allowDataOverflow={false}
               />
               <Tooltip content={<TooltipContent />} />
               <Legend

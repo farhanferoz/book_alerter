@@ -128,6 +128,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/books/{book_id}/keepa-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keepa Backfill
+         * @description Trigger a one-shot Keepa backfill. Idempotent.
+         *
+         *     Returns inserted=0 if a previous backfill already populated this book.
+         *     Synchronous (awaits the extraction) so the caller gets a real count;
+         *     the book-creation auto-backfill is fire-and-forget via BackgroundTasks.
+         */
+        post: operations["keepa_backfill_api_books__book_id__keepa_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/books/{book_id}/keepa-chart.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Keepa Chart
+         * @description Proxy the Keepa price-history PNG with a 24h server-side cache.
+         *
+         *     Hides the user's IP from Keepa and absorbs repeated FE loads.
+         */
+        get: operations["get_keepa_chart_api_books__book_id__keepa_chart_png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/alerts": {
         parameters: {
             query?: never;
@@ -353,8 +399,8 @@ export interface paths {
          * Get Metadata Lookup
          * @description Normalize the input ISBN and race providers for metadata.
          *
-         *     Returns 422 when the input can't be parsed as an ISBN, 404 when both
-         *     providers return no usable data.
+         *     Returns 422 when the input can't be parsed as an ISBN, 404 when every
+         *     provider (including the optional Amazon UK fallback) comes up empty.
          */
         get: operations["get_metadata_lookup_api_metadata_lookup_get"];
         put?: never;
@@ -374,7 +420,9 @@ export interface paths {
         };
         /**
          * Get Metadata Search
-         * @description Free-text search via Google Books. Empty list when no matches.
+         * @description Free-text search via Google Books. Empty list when no matches OR when
+         *     Google returns 429/5xx (the FE handles empty as "no results"; surfacing
+         *     the underlying error would just be misleading noise).
          */
         get: operations["get_metadata_search_api_metadata_search_get"];
         put?: never;
@@ -587,6 +635,10 @@ export interface components {
             book_id: number;
             /** Current Best Total Minor */
             current_best_total_minor: number | null;
+            /** Current Best Price Minor */
+            current_best_price_minor: number | null;
+            /** Current Best Shipping Minor */
+            current_best_shipping_minor: number | null;
             /** Current Best Source */
             current_best_source: string | null;
             /** Current Best Seller */
@@ -1145,6 +1197,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BookStatsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    keepa_backfill_api_books__book_id__keepa_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                book_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_keepa_chart_api_books__book_id__keepa_chart_png_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                book_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

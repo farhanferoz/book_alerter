@@ -14,7 +14,14 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "react-router-dom";
 
-import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
+import {
+  displaySourceLabel,
+  formatCondition,
+  formatMoneyMinor,
+  formatRelativeTime,
+  formatShippingMinor,
+  isBookfinderSourcedLabel,
+} from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
 import type { RecommendationConfigShape } from "@/hooks/useConfig";
 import { BookRowMenu } from "./BookRowMenu";
@@ -25,16 +32,28 @@ function ConditionPill({ condition }: { condition: string | null }) {
   if (!condition) return null;
   return (
     <span className="ml-1 inline-flex items-center rounded-sm border border-border px-1 py-px text-[10px] uppercase text-muted-foreground">
-      {condition.replace(/_/g, " ")}
+      {formatCondition(condition)}
     </span>
   );
 }
 
-function SourceBadge({ source }: { source: string | null }) {
+function SourceBadge({
+  source,
+  seller,
+}: {
+  source: string | null;
+  seller?: string | null;
+}) {
   if (!source) return null;
+  const label = displaySourceLabel(source, seller);
   return (
     <span className="mr-1 inline-flex items-center rounded-sm bg-muted px-1.5 py-px text-[10px] font-medium uppercase text-muted-foreground">
-      {source}
+      {label}
+      {isBookfinderSourcedLabel(source) && (
+        <span className="ml-1 text-[9px] font-normal normal-case text-muted-foreground/70">
+          via bookfinder
+        </span>
+      )}
     </span>
   );
 }
@@ -100,10 +119,26 @@ export function buildBookColumns(
             {formatMoneyMinor(b.stats.current_best_total_minor, b.currency)}
           </span>
           <div className="mt-0.5 flex items-center">
-            <SourceBadge source={b.stats.current_best_source} />
+            <SourceBadge
+              source={b.stats.current_best_source}
+              seller={b.stats.current_best_seller}
+            />
             <ConditionPill condition={b.stats.current_best_condition} />
           </div>
         </div>
+      );
+    },
+  },
+  {
+    id: "shipping",
+    accessorFn: (b) => b.stats.current_best_shipping_minor ?? -1,
+    header: "Shipping",
+    cell: ({ row }) => {
+      const b = row.original;
+      return (
+        <span className="tabular-nums text-muted-foreground">
+          {formatShippingMinor(b.stats.current_best_shipping_minor, b.currency)}
+        </span>
       );
     },
   },

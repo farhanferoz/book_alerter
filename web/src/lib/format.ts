@@ -77,6 +77,50 @@ export function poundsToMinor(pounds: string): number | null {
   return Math.round(value * 100);
 }
 
+// Bookfinder is an aggregator that resolves to whichever marketplace
+// (EBAY, BIBLIO_ES, ABEBOOKS, ...) actually fulfils the order. The seller
+// string carries the affiliate prefix — surface that as the user-facing
+// source label so people see "EBAY", not "BOOKFINDER", as the place
+// they'd buy from.
+const BOOKFINDER_AFFILIATE_RE = /^([A-Z][A-Z0-9_]+)(?:\s|$)/;
+
+export function displaySourceLabel(
+  source: string | null | undefined,
+  seller: string | null | undefined,
+): string {
+  if (!source) return "—";
+  if (source === "bookfinder" && seller) {
+    const m = BOOKFINDER_AFFILIATE_RE.exec(seller);
+    if (m) return m[1];
+  }
+  return source.toUpperCase();
+}
+
+export function isBookfinderSourcedLabel(
+  source: string | null | undefined,
+): boolean {
+  return source === "bookfinder";
+}
+
+export function formatCondition(
+  condition: string | null | undefined,
+): string {
+  if (!condition) return "—";
+  return condition.replace(/_/g, " ");
+}
+
+// Compact shipping descriptor for tables: "—" (unknown), "free" (zero),
+// or "+£X.XX" (paid). For the prose snapshot variant, format the value
+// directly with `formatMoneyMinor`.
+export function formatShippingMinor(
+  minor: number | null | undefined,
+  currency: string = "GBP",
+): string {
+  if (minor == null) return "—";
+  if (minor === 0) return "free";
+  return `+${formatMoneyMinor(minor, currency)}`;
+}
+
 export function minorToPoundsInput(minor: number | null | undefined): string {
   if (minor == null) return "";
   // Two decimals; matches how `formatMoneyMinor` would render but without the

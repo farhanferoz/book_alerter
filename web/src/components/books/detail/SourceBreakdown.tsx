@@ -15,11 +15,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
+import {
+  displaySourceLabel,
+  formatCondition,
+  formatMoneyMinor,
+  formatRelativeTime,
+  formatShippingMinor,
+  isBookfinderSourcedLabel,
+} from "@/lib/format";
 
+// Keepa is a historical price archive, not a vendor — there's no Keepa
+// page to click "buy" on. Filter it out of the per-source breakdown so the
+// table only lists offers the user could actually transact on. Keepa still
+// drives the chart and percentile distribution via its own code paths.
 function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
   const seen = new Map<string, PriceObservation>();
   for (const o of observations) {
+    if (o.source === "keepa") continue;
     const key = `${o.source}::${o.condition}`;
     if (!seen.has(key)) seen.set(key, o);
   }
@@ -53,7 +65,9 @@ export function SourceBreakdown({
             <TableRow>
               <TableHead>Source</TableHead>
               <TableHead>Condition</TableHead>
-              <TableHead>Total</TableHead>
+              <TableHead className="text-right">Item</TableHead>
+              <TableHead className="text-right">Shipping</TableHead>
+              <TableHead className="text-right">Total</TableHead>
               <TableHead>Observed</TableHead>
               <TableHead>Link</TableHead>
             </TableRow>
@@ -61,13 +75,28 @@ export function SourceBreakdown({
           <TableBody>
             {rows.map((o) => (
               <TableRow key={o.id}>
-                <TableCell className="font-medium uppercase">
-                  {o.source}
+                <TableCell className="font-medium">
+                  <span className="uppercase">
+                    {displaySourceLabel(o.source, o.seller)}
+                  </span>
+                  {isBookfinderSourcedLabel(o.source) && (
+                    <div className="text-[10px] font-normal text-muted-foreground/70">
+                      via bookfinder
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {o.condition.replace(/_/g, " ")}
+                  {formatCondition(o.condition)}
                 </TableCell>
-                <TableCell>{formatMoneyMinor(o.total_minor, o.currency)}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatMoneyMinor(o.price_minor, o.currency)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">
+                  {formatShippingMinor(o.shipping_minor, o.currency)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums font-medium">
+                  {formatMoneyMinor(o.total_minor, o.currency)}
+                </TableCell>
                 <TableCell className="text-muted-foreground">
                   {formatRelativeTime(o.observed_at)}
                 </TableCell>
