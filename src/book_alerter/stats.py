@@ -256,9 +256,7 @@ def compute_signal(
         return "INSUFFICIENT_DATA"
     if effective <= p_field:
         return "BUY"
-    if (
-        stats.p50_total_minor is not None
-        and effective <= stats.p50_total_minor
-    ):
+    watch_cut = stats.percentile_at(cfg.watch_percentile)
+    if watch_cut is not None and effective <= watch_cut:
         return "WATCH"
     return "WAIT"

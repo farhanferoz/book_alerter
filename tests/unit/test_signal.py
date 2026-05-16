@@ -134,6 +134,33 @@ def test_wait_when_no_target_and_current_above_p50(
     assert compute_signal(book, stats, cfg) == "WAIT"
 
 
+def test_watch_uses_watch_percentile_not_hardcoded_p50(
+    transient_book, transient_stats,
+):
+    # sorted_totals=[100..500] → percentile_at(25)=200, percentile_at(50)=300.
+    # With watch_percentile=25, current=250 sits between buy(p10≈100) and
+    # watch(p25=200) — strictly above watch cutoff → WAIT (not WATCH as
+    # the pre-fix code would say by comparing against p50=300).
+    cfg = RecommendationConfig(buy_percentile=10, watch_percentile=25)
+    book = transient_book()
+    stats = transient_stats(
+        observation_count=20,
+        current_best_total_minor=250,
+        p50_total_minor=300,
+        sorted_totals=[100, 200, 300, 400, 500],
+    )
+    assert compute_signal(book, stats, cfg) == "WAIT"
+
+    # And current=200 (== p25 cutoff) → WATCH.
+    stats_at_p25 = transient_stats(
+        observation_count=20,
+        current_best_total_minor=200,
+        p50_total_minor=300,
+        sorted_totals=[100, 200, 300, 400, 500],
+    )
+    assert compute_signal(book, stats_at_p25, cfg) == "WATCH"
+
+
 def test_book_percentile_threshold_override(transient_book, transient_stats):
     # book.percentile_threshold=50, p50=300, current=300 → BUY
     cfg = RecommendationConfig()
