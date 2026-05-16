@@ -44,9 +44,9 @@ def test_empty_book_returns_zero_count_stats(engine_with_view, make_book):
     assert stats.book_id == book.id
     assert stats.observation_count == 0
     assert stats.current_best_total_minor is None
-    assert stats.p25_total_minor is None
-    assert stats.p50_total_minor is None
-    assert stats.p75_total_minor is None
+    assert stats.windows["3m"].p25 is None
+    assert stats.windows["3m"].p50 is None
+    assert stats.windows["3m"].p75 is None
     assert stats.sorted_totals == []
     assert stats.all_time_min_total_minor is None
     assert stats.all_time_max_total_minor is None
@@ -62,9 +62,9 @@ def test_one_observation_yields_that_value_for_all_percentiles(engine_with_view,
 
     assert stats.observation_count == 1
     assert stats.current_best_total_minor == 500
-    assert stats.p25_total_minor == 500
-    assert stats.p50_total_minor == 500
-    assert stats.p75_total_minor == 500
+    assert stats.windows["3m"].p25 == 500
+    assert stats.windows["3m"].p50 == 500
+    assert stats.windows["3m"].p75 == 500
     assert stats.percentile_at(33) == 500
     assert stats.sorted_totals == [500]
 
@@ -78,9 +78,9 @@ def test_three_observations_yields_reasonable_percentiles(engine_with_view, make
 
     # statistics.quantiles(sorted([100,200,300]), n=4, method="inclusive")
     # = [150.0, 200.0, 250.0]
-    assert stats.p25_total_minor == 150
-    assert stats.p50_total_minor == 200
-    assert stats.p75_total_minor == 250
+    assert stats.windows["3m"].p25 == 150
+    assert stats.windows["3m"].p50 == 200
+    assert stats.windows["3m"].p75 == 250
     assert stats.observation_count == 3
     assert stats.sorted_totals == [100, 200, 300]
 
@@ -93,10 +93,10 @@ def test_ten_observations_p25_lt_p50_lt_p75(engine_with_view, make_book):
             _add_obs(s, book_id=book.id, total=total, source=f"src_{i:02d}")
         stats = compute_book_stats(book.id, s)
 
-    assert stats.p25_total_minor is not None
-    assert stats.p50_total_minor is not None
-    assert stats.p75_total_minor is not None
-    assert stats.p25_total_minor < stats.p50_total_minor < stats.p75_total_minor
+    assert stats.windows["3m"].p25 is not None
+    assert stats.windows["3m"].p50 is not None
+    assert stats.windows["3m"].p75 is not None
+    assert stats.windows["3m"].p25 < stats.windows["3m"].p50 < stats.windows["3m"].p75
     assert stats.sorted_totals == sorted(totals)
 
 
@@ -112,11 +112,11 @@ def test_percentile_at_arbitrary_value(engine_with_view, make_book):
     # NOTE: p50 is computed via statistics.quantiles inclusive (round-cast to int);
     # percentile_at uses linear interpolation. For the even-length sequence
     # 100..1000, both yield the same value 550.
-    assert stats.percentile_at(50) == stats.p50_total_minor
+    assert stats.percentile_at(50) == stats.windows["3m"].p50
     # p10 of [100,200,...,1000] via linear interp:
     #   idx = 0.10 * 9 = 0.9 -> 100 + (200-100)*0.9 = 190
     assert stats.percentile_at(10) == 190
-    assert stats.percentile_at(10) < stats.p25_total_minor
+    assert stats.percentile_at(10) < stats.windows["3m"].p25
 
 
 def test_percentile_at_returns_none_for_empty():
@@ -129,9 +129,6 @@ def test_percentile_at_returns_none_for_empty():
         current_best_seller=None,
         current_best_condition=None,
         current_best_url=None,
-        p25_total_minor=None,
-        p50_total_minor=None,
-        p75_total_minor=None,
         all_time_min_total_minor=None,
         all_time_max_total_minor=None,
         observation_count=0,
@@ -151,9 +148,6 @@ def test_percentile_at_clamps_out_of_range_pct():
         current_best_seller=None,
         current_best_condition=None,
         current_best_url=None,
-        p25_total_minor=None,
-        p50_total_minor=None,
-        p75_total_minor=None,
         all_time_min_total_minor=None,
         all_time_max_total_minor=None,
         observation_count=3,
@@ -179,9 +173,6 @@ def test_percentile_monotonicity_property(values):
         current_best_seller=None,
         current_best_condition=None,
         current_best_url=None,
-        p25_total_minor=None,
-        p50_total_minor=None,
-        p75_total_minor=None,
         all_time_min_total_minor=None,
         all_time_max_total_minor=None,
         observation_count=len(values),
@@ -334,7 +325,7 @@ def test_current_percentile_rank_basic(engine_with_view, make_book):
 
     # current_best = cheapest of 5 → rank 1/5 = 20%
     assert stats.current_best_total_minor == 1000
-    assert stats.current_percentile_rank == 20
+    assert stats.windows["3m"].rank == 20
     assert stats.current_effective_total_minor == 1000
 
 
@@ -696,4 +687,4 @@ def test_keepa_only_book_distribution_uses_default(
     assert stats.all_time_max_total_minor == 2080
     # Current = 1500 + 280 = 1780; rank = bisect_right(...,1780) / 6 = 3/6 = 50%.
     assert stats.current_effective_total_minor == 1780
-    assert stats.current_percentile_rank == 50
+    assert stats.windows["3m"].rank == 50

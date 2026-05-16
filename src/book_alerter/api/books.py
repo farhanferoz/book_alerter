@@ -125,9 +125,6 @@ class BookStatsOut(BaseModel):
     current_best_seller: str | None
     current_best_condition: str | None
     current_best_url: str | None
-    p25_total_minor: int | None
-    p50_total_minor: int | None
-    p75_total_minor: int | None
     all_time_min_total_minor: int | None
     all_time_max_total_minor: int | None
     observation_count: int
@@ -135,7 +132,6 @@ class BookStatsOut(BaseModel):
     last_observed_at: datetime | None
     last_polled_at: datetime | None
     percentile_window_days: int
-    current_percentile_rank: int | None
     current_effective_total_minor: int | None
     shipping_estimate_minor: int | None
     # Authoritative signal computed once on the backend with the live
@@ -169,9 +165,6 @@ class BookStatsOut(BaseModel):
             current_best_seller=s.current_best_seller,
             current_best_condition=s.current_best_condition,
             current_best_url=s.current_best_url,
-            p25_total_minor=s.p25_total_minor,
-            p50_total_minor=s.p50_total_minor,
-            p75_total_minor=s.p75_total_minor,
             all_time_min_total_minor=s.all_time_min_total_minor,
             all_time_max_total_minor=s.all_time_max_total_minor,
             observation_count=s.observation_count,
@@ -179,7 +172,6 @@ class BookStatsOut(BaseModel):
             last_observed_at=s.last_observed_at,
             last_polled_at=s.last_polled_at,
             percentile_window_days=s.percentile_window_days,
-            current_percentile_rank=s.current_percentile_rank,
             current_effective_total_minor=s.current_effective_total_minor,
             shipping_estimate_minor=s.shipping_estimate_minor,
             signal=signal,

@@ -47,6 +47,10 @@ def transient_stats():
         current_best_shipping_minor: int | None = 0,
         current_effective_total_minor: int | None | object = _USE_BEST,
     ) -> BookStats:
+        """The p50_total_minor / current_percentile_rank kwargs are legacy
+        shape hooks for the dispatcher message body and signal-percentile
+        readout — they're synthesized into windows["3m"] so tests targeting
+        the old flat fields keep working without rewriting their setup."""
         if current_effective_total_minor is _USE_BEST:
             current_effective_total_minor = current_best_total_minor
         totals = sorted_totals if sorted_totals is not None else []
@@ -54,6 +58,15 @@ def transient_stats():
         if rank is None and totals and current_best_total_minor is not None:
             below = sum(1 for t in totals if t <= current_best_total_minor)
             rank = int(round((below / len(totals)) * 100))
+        # Synthesize the "3m" window so callers that exercise the dispatcher
+        # alert-message path (reads windows[cfg_label].p50) get the median
+        # they passed in. Other windows stay empty.
+        from book_alerter.stats import WindowStats
+        windows = {
+            "1m": WindowStats(),
+            "3m": WindowStats(count=len(totals), rank=rank, p50=p50_total_minor),
+            "12m": WindowStats(),
+        }
         return BookStats(
             book_id=1,
             current_best_total_minor=current_best_total_minor,
@@ -63,19 +76,16 @@ def transient_stats():
             current_best_seller=None,
             current_best_condition=None,
             current_best_url=None,
-            p25_total_minor=None,
-            p50_total_minor=p50_total_minor,
-            p75_total_minor=None,
             all_time_min_total_minor=None,
             all_time_max_total_minor=None,
             observation_count=observation_count,
             days_of_history=days_of_history,
             last_observed_at=None,
             percentile_window_days=90,
-            current_percentile_rank=rank,
             current_effective_total_minor=current_effective_total_minor,
             shipping_estimate_minor=None,
             sorted_totals=totals,
+            windows=windows,
         )
 
     return _make

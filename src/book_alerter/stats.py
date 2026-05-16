@@ -75,9 +75,6 @@ class BookStats:
     current_best_seller: str | None
     current_best_condition: str | None
     current_best_url: str | None
-    p25_total_minor: int | None
-    p50_total_minor: int | None
-    p75_total_minor: int | None
     # "All-time" within the bounded scan window in `compute_book_stats`
     # (`max(WINDOW_DAYS) ∨ window_days`). Long-running deploys never reach
     # the literal all-time; the `new_low` alert treats this as "lower than
@@ -91,11 +88,9 @@ class BookStats:
     # scrape; `last_observed_at` only moves on a canonical price change.
     last_polled_at: datetime | None = None
     # Window used to derive the percentile distribution for signal logic.
+    # The matching key under `windows` (1m/3m/12m) carries the p25/p50/p75 and
+    # `rank` for this window — callers use `windows[label_for(percentile_window_days)]`.
     percentile_window_days: int = 90
-    # Where the (estimated) current total sits in the windowed distribution,
-    # as a 0–100 rank. `None` when there is no usable distribution or the
-    # current price's shipping can't be imputed by the cascade.
-    current_percentile_rank: int | None = None
     # `current_best_total_minor` adjusted by the cascade-imputed shipping
     # when the current row had no shipping signal. Used for apples-to-apples
     # percentile comparison; `current_best_total_minor` is the raw display
@@ -308,9 +303,6 @@ def compute_book_stats(
             current_best_seller=None,
             current_best_condition=None,
             current_best_url=None,
-            p25_total_minor=None,
-            p50_total_minor=None,
-            p75_total_minor=None,
             all_time_min_total_minor=None,
             all_time_max_total_minor=None,
             observation_count=0,
@@ -439,10 +431,11 @@ def compute_book_stats(
     )
     if cfg_label is not None:
         cfg_totals = totals_by_label[cfg_label]
-        cfg_window = windows[cfg_label]
     else:
+        # Custom window not in the canonical 1m/3m/12m set: compute on the
+        # fly. `sorted_totals` still backs `percentile_at()` for signal logic;
+        # the `windows` dict only carries the canonical keys.
         cfg_totals = _slice_sorted_totals(window_days)
-        cfg_window = _window_stats_from_sorted(cfg_totals, effective)
 
     return BookStats(
         book_id=book_id,
@@ -459,11 +452,7 @@ def compute_book_stats(
         last_observed_at=head[8],
         days_of_history=head[9] or 0,
         last_polled_at=head[10],
-        p25_total_minor=cfg_window.p25,
-        p50_total_minor=cfg_window.p50,
-        p75_total_minor=cfg_window.p75,
         percentile_window_days=window_days,
-        current_percentile_rank=cfg_window.rank,
         current_effective_total_minor=effective,
         shipping_estimate_minor=shipping_estimate,
         sorted_totals=cfg_totals,

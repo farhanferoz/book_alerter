@@ -657,12 +657,6 @@ export interface components {
             current_best_condition: string | null;
             /** Current Best Url */
             current_best_url: string | null;
-            /** P25 Total Minor */
-            p25_total_minor: number | null;
-            /** P50 Total Minor */
-            p50_total_minor: number | null;
-            /** P75 Total Minor */
-            p75_total_minor: number | null;
             /** All Time Min Total Minor */
             all_time_min_total_minor: number | null;
             /** All Time Max Total Minor */
@@ -677,8 +671,6 @@ export interface components {
             last_polled_at: string | null;
             /** Percentile Window Days */
             percentile_window_days: number;
-            /** Current Percentile Rank */
-            current_percentile_rank: number | null;
             /** Current Effective Total Minor */
             current_effective_total_minor: number | null;
             /** Shipping Estimate Minor */

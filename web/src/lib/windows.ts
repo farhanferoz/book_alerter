@@ -7,6 +7,19 @@ import type { Book } from "@/hooks/useBooks";
 export const WINDOW_KEYS = ["1m", "3m", "12m"] as const;
 export type WindowKey = (typeof WINDOW_KEYS)[number];
 
+// Days-per-key mirror of WINDOW_DAYS in src/book_alerter/stats.py. Used to
+// map `stats.percentile_window_days` (e.g. 90) back to the key ("3m") so
+// per-window stats (p50, rank) for the configured window can be read without
+// passing labels around.
+const WINDOW_DAYS: Record<WindowKey, number> = { "1m": 30, "3m": 90, "12m": 365 };
+
+export function keyForDays(days: number | null | undefined): WindowKey | null {
+  for (const k of WINDOW_KEYS) {
+    if (WINDOW_DAYS[k] === days) return k;
+  }
+  return null;
+}
+
 export function rankIn(book: Book, key: WindowKey): number | null {
   return book.stats.windows?.[key]?.rank ?? null;
 }
