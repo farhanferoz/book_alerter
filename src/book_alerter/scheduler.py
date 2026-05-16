@@ -294,14 +294,20 @@ class Scheduler:
                 # don't conflate them so that a scrape which finally extracts
                 # a shipping value supersedes an older unknown.
                 #
-                # Seller is compared case-insensitively to stay in lockstep
+                # Seller is compared after trim + lower to stay in lockstep
                 # with `_normalize_seller` in sources/amazon.py — Amazon's
                 # seller link text is parsed from rendered HTML and is not
-                # contractually stable on casing.
+                # contractually stable on casing or whitespace. Every current
+                # source happens to strip at parse time, so the trim is
+                # defensive (against a future source forgetting to strip and
+                # against pre-trim rows that may exist in older DBs).
                 if c.seller is None:
                     seller_clause = PriceObservation.seller.is_(None)  # type: ignore[union-attr]
                 else:
-                    seller_clause = func.lower(PriceObservation.seller) == c.seller.lower()
+                    seller_clause = (
+                        func.lower(func.trim(PriceObservation.seller))
+                        == c.seller.strip().lower()
+                    )
                 prior_q = select(PriceObservation).where(
                     PriceObservation.book_id == book.id,
                     PriceObservation.source == source_name,

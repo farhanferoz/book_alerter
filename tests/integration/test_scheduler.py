@@ -252,12 +252,17 @@ async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
         assert d.is_duplicate_of in canonical_ids
 
 
-async def test_persist_dedup_is_case_insensitive_on_seller(sqlite_engine, make_book):
-    """If a source returns 'Amazon' on one scrape and 'amazon' on the next
-    (Amazon's rendered seller link text is not contractually stable on
-    casing), `_persist` must still flag the second row as a duplicate of
-    the first — otherwise the `book_stats` view counts both as canonical
-    observations and the percentile distribution drifts.
+async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine, make_book):
+    """If a source returns 'Amazon' on one scrape, ' amazon ' on the next,
+    and 'AMAZON' on the third (rendered seller link text is not
+    contractually stable on casing or whitespace), `_persist` must flag
+    each later row as a duplicate of the first — otherwise the
+    `book_stats` view counts each as a canonical observation and the
+    percentile distribution drifts.
+
+    Covers both axes (case AND whitespace) so the persist-time match
+    stays in lockstep with `_normalize_seller` in sources/amazon.py,
+    which strips + lowers.
     """
     from book_alerter.sources.base import ObservationCandidate
 
@@ -282,14 +287,12 @@ async def test_persist_dedup_is_case_insensitive_on_seller(sqlite_engine, make_b
             url="https://www.amazon.co.uk/dp/0747532699",
         )
 
-    with Session(sqlite_engine) as s:
-        first_book = s.get(models.Book, book_id)
-        assert first_book is not None
-        scheduler._persist("amazon", first_book, [_cand("Amazon")])
-        second_book = s.get(models.Book, book_id)
-        assert second_book is not None
-        # Same offer, different seller casing — must still dedup.
-        scheduler._persist("amazon", second_book, [_cand("amazon")])
+    variants = ["Amazon", " amazon ", "AMAZON", "\tAmazon\n"]
+    for variant in variants:
+        with Session(sqlite_engine) as s:
+            book_row = s.get(models.Book, book_id)
+            assert book_row is not None
+            scheduler._persist("amazon", book_row, [_cand(variant)])
 
     with Session(sqlite_engine) as s:
         canonical = s.exec(
@@ -305,6 +308,7 @@ async def test_persist_dedup_is_case_insensitive_on_seller(sqlite_engine, make_b
             )
         ).all()
 
-    assert len(canonical) == 1
-    assert len(dupes) == 1
-    assert dupes[0].is_duplicate_of == canonical[0].id
+    assert len(canonical) == 1, f"expected 1 canonical, got {len(canonical)}"
+    assert len(dupes) == len(variants) - 1
+    for d in dupes:
+        assert d.is_duplicate_of == canonical[0].id
