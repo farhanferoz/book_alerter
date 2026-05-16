@@ -669,6 +669,8 @@ export interface components {
             days_of_history: number;
             /** Last Observed At */
             last_observed_at: string | null;
+            /** Last Polled At */
+            last_polled_at: string | null;
             /** Percentile Window Days */
             percentile_window_days: number;
             /** Current Percentile Rank */

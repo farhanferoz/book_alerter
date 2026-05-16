@@ -32,7 +32,10 @@ export function SnapshotCard({ book }: { book: Book }) {
                 : " · shipping unknown"}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Last observed {formatRelativeTime(s.last_observed_at)}
+            Last polled {formatRelativeTime(s.last_polled_at)}
+            {s.last_observed_at &&
+              s.last_observed_at !== s.last_polled_at &&
+              ` · price last changed ${formatRelativeTime(s.last_observed_at)}`}
           </p>
           {s.current_best_url && (
             <a

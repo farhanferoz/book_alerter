@@ -179,11 +179,11 @@ export function buildBookColumns(
   },
   {
     id: "last_seen",
-    accessorFn: (b) => b.stats.last_observed_at ?? "",
+    accessorFn: (b) => b.stats.last_polled_at ?? "",
     header: "Last seen",
     cell: ({ row }) => (
       <span className="text-muted-foreground">
-        {formatRelativeTime(row.original.stats.last_observed_at)}
+        {formatRelativeTime(row.original.stats.last_polled_at)}
       </span>
     ),
   },

@@ -63,8 +63,8 @@ function applyFilters(
       break;
     case "last_seen":
       sorted.sort((a, b) => {
-        const av = a.stats.last_observed_at ?? "";
-        const bv = b.stats.last_observed_at ?? "";
+        const av = a.stats.last_polled_at ?? "";
+        const bv = b.stats.last_polled_at ?? "";
         return bv.localeCompare(av); // newest first
       });
       break;

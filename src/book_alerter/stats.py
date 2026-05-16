@@ -47,6 +47,9 @@ class BookStats:
     observation_count: int
     days_of_history: int
     last_observed_at: datetime | None
+    # Max observed_at across ALL rows (including duplicates). Moves on every
+    # scrape; `last_observed_at` only moves on a canonical price change.
+    last_polled_at: datetime | None = None
     # Window used to derive the percentile distribution.
     percentile_window_days: int = 90
     # Where the (estimated) current total sits in the windowed distribution,
@@ -128,7 +131,8 @@ def compute_book_stats(
                    current_best_shipping_minor, current_best_source,
                    current_best_condition, current_best_seller, current_best_url,
                    all_time_min_total_minor, all_time_max_total_minor,
-                   observation_count, last_observed_at, days_of_history
+                   observation_count, last_observed_at, days_of_history,
+                   last_polled_at
             FROM book_stats WHERE book_id = :bid
             """
         ).bindparams(bid=book_id)
@@ -211,6 +215,7 @@ def compute_book_stats(
         observation_count=row[9] or 0,
         last_observed_at=row[10],
         days_of_history=row[11] or 0,
+        last_polled_at=row[12],
         p25_total_minor=p25,
         p50_total_minor=p50,
         p75_total_minor=p75,
