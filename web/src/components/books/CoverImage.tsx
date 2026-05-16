@@ -21,10 +21,15 @@ export function CoverImage({
 }) {
   if (src) {
     return (
+      // `max-w-none` overrides the Tailwind preflight `img { max-width: 100% }`
+      // reset. Without it, the dashboard's cover column collapses to 0px:
+      // table-cell width is `auto` (content-sized), the img's effective
+      // max-width clamps to that auto-cell, and they resolve each other to
+      // zero. The `w-N`/`h-N` classes alone don't break the loop.
       <img
         src={src}
         alt={alt}
-        className={cn("object-cover", className)}
+        className={cn("object-cover max-w-none", className)}
         loading="lazy"
       />
     );
