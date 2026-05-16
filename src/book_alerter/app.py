@@ -124,7 +124,16 @@ async def lifespan(app: FastAPI):
     engine = get_engine()
     http = build_shared_client()
     app.state.http = http
-    _build_runtime(app, cfg, engine, http=http)
+    try:
+        _build_runtime(app, cfg, engine, http=http)
+    except Exception:
+        # Boot failure (bad config, source/notifier construction error, etc.).
+        # The finally below only runs after yield, so we'd otherwise leak the
+        # shared client + engine. Close them here and re-raise so FastAPI
+        # surfaces the failure to the operator.
+        await http.aclose()
+        engine.dispose()
+        raise
 
     try:
         yield

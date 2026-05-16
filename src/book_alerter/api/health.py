@@ -10,7 +10,10 @@ from fastapi import APIRouter, Request, Response, status
 from sqlalchemy import text
 from sqlmodel import Session
 
+from book_alerter.logging_setup import get_logger
+
 router = APIRouter(prefix="/api/health", tags=["health"])
+log = get_logger(__name__)
 
 
 def _probe_db(request: Request) -> str | None:
@@ -22,7 +25,11 @@ def _probe_db(request: Request) -> str | None:
             session.exec(text("SELECT 1"))
         return None
     except Exception as e:
-        return f"db unavailable: {e}"
+        # Log the full error for ops, but return a generic message so the
+        # unauthenticated /api/health response doesn't echo SQLAlchemy
+        # internals (table names, full statement text).
+        log.error("health.db_probe.failed", error=str(e))
+        return "db probe failed"
 
 
 def _probe_scheduler(request: Request) -> str | None:

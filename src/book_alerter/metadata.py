@@ -54,7 +54,10 @@ async def _fetch_openlibrary(
     "found but missing required fields" / empty-response case so the race
     waits for the other provider; raises on HTTP errors."""
     params = {"bibkeys": f"ISBN:{isbn13}", "format": "json", "jscmd": "data"}
-    resp = await client.get(_OPENLIBRARY_URL, params=params)
+    # Per-call 5s timeout overrides whatever the (shared) client carries —
+    # metadata race relies on a short timeout so the loser doesn't dominate
+    # the wait when one provider is slow.
+    resp = await client.get(_OPENLIBRARY_URL, params=params, timeout=_TIMEOUT)
     resp.raise_for_status()
     payload: dict[str, Any] = resp.json()
     entry = payload.get(f"ISBN:{isbn13}")
@@ -86,7 +89,7 @@ async def _fetch_googlebooks(
     params: dict[str, str] = {"q": f"isbn:{isbn13}"}
     if api_key:
         params["key"] = api_key
-    resp = await client.get(_GOOGLEBOOKS_URL, params=params)
+    resp = await client.get(_GOOGLEBOOKS_URL, params=params, timeout=_TIMEOUT)
     resp.raise_for_status()
     payload: dict[str, Any] = resp.json()
     if not payload.get("totalItems"):
@@ -221,7 +224,7 @@ async def search_books(
         params["key"] = google_api_key
     try:
         async with shared_or_fresh(http) as client:
-            resp = await client.get(_GOOGLEBOOKS_URL, params=params)
+            resp = await client.get(_GOOGLEBOOKS_URL, params=params, timeout=_TIMEOUT)
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()
     except httpx.HTTPStatusError as exc:

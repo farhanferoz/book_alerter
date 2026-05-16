@@ -58,13 +58,16 @@ class NtfyNotifier(Notifier):
             if self._client_factory is not None:
                 async with self._client_factory() as client:
                     resp = await client.post(
-                        url, content=body.encode("utf-8"), headers=headers
+                        url, content=body.encode("utf-8"), headers=headers,
                     )
                     resp.raise_for_status()
             else:
+                # Per-call 10s overrides the shared-client default so ntfy
+                # stays the short-timeout channel the original design called for.
                 async with shared_or_fresh(self._http) as client:
                     resp = await client.post(
-                        url, content=body.encode("utf-8"), headers=headers
+                        url, content=body.encode("utf-8"), headers=headers,
+                        timeout=10,
                     )
                     resp.raise_for_status()
         except httpx.HTTPError as e:
