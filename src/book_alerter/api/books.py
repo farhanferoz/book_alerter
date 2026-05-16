@@ -197,7 +197,10 @@ class BookOut(BaseModel):
             isbn13=book.isbn13,
             title=book.title,
             author=book.author,
-            cover_url=book.cover_url,
+            # Same-origin proxy URL so browser shields don't block third-party
+            # CDN requests. Bytes are served by `api/covers.py`, lazily fetched
+            # from `book.cover_url` (kept upstream in the DB row) on first hit.
+            cover_url=(f"/api/covers/{book.isbn13}" if book.cover_url else None),
             format=book.format,
             region=book.region,
             currency=book.currency,
