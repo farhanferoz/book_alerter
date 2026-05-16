@@ -19,14 +19,13 @@
 // validator anyway — client-side Ajv would only duplicate it. Net: fewer
 // deps, same authoritative answer, one extra click.
 //
-// Theme: read `<html>.classList.contains("dark")` at mount; no live
-// MutationObserver. Toggling dark mode while the editor is open won't
-// re-theme it (cheap deviation — power-user pane, edge case).
+// Theme: a MutationObserver on `<html>.classList` keeps Monaco in sync with
+// the global dark-mode toggle without a page reload.
 //
 // Bundle: route-split via `React.lazy` in App.tsx so Monaco only loads when
 // the user navigates here (same pattern as BookDetail / Recharts).
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import yaml from "js-yaml";
 import Editor from "@monaco-editor/react";
@@ -106,13 +105,19 @@ function AdvancedEditor({ config, schema }: AdvancedEditorProps) {
   const [showSchema, setShowSchema] = useState(false);
   const { savedAt, flash: flashSaved } = useSavedFlash();
   const update = useUpdateConfig();
-  // Theme captured at mount via useMemo — Monaco doesn't live-react to
-  // dark-mode toggles after mount (documented deviation). Pulling this
-  // through useMemo (vs ref) keeps the lint clean and explicit.
-  const initialTheme = useMemo(
-    () => (readInitialDark() ? "vs-dark" : "light"),
-    [],
-  );
+    // Live-watch `<html>.classList` for the `dark` toggle so Monaco re-themes
+  // without a page reload. MutationObserver only observes the attribute we
+  // care about (`class`) so it stays cheap.
+  const [isDark, setIsDark] = useState<boolean>(readInitialDark);
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setIsDark(root.classList.contains("dark"));
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  const theme = isDark ? "vs-dark" : "light";
 
   // Reset draft + validation if the server config changes underneath us
   // (e.g. another tab persisted via PUT). Key-on-server-yaml at parent
@@ -230,7 +235,7 @@ function AdvancedEditor({ config, schema }: AdvancedEditorProps) {
                 setValidation({ kind: "idle" });
               }
             }}
-            theme={initialTheme}
+            theme={theme}
             options={{
               minimap: { enabled: false },
               fontSize: 13,
