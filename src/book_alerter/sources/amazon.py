@@ -184,7 +184,16 @@ class AmazonUKInlineSource(InlineSource):
 
 
 def _normalize_seller(seller: str | None) -> str:
-    return (seller or "").strip().casefold()
+    """Case- and whitespace-insensitive seller key.
+
+    Uses `.lower()` (not `.casefold()`) to stay in lockstep with SQLite's
+    ASCII-only `LOWER()` used by the persistence-layer match in
+    `scheduler._persist`. For Amazon UK seller names (all ASCII in
+    practice) lower() == casefold(), so the choice only matters when
+    paranoid Unicode parity comes up — and SQLite's LOWER is the
+    constraint that pins the choice.
+    """
+    return (seller or "").strip().lower()
 
 
 def _merge_offers(offers: list[ObservationCandidate]) -> list[ObservationCandidate]:

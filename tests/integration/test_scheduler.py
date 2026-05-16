@@ -250,3 +250,61 @@ async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
     canonical_ids = {o.id for o in canonical}
     for d in dupes:
         assert d.is_duplicate_of in canonical_ids
+
+
+async def test_persist_dedup_is_case_insensitive_on_seller(sqlite_engine, make_book):
+    """If a source returns 'Amazon' on one scrape and 'amazon' on the next
+    (Amazon's rendered seller link text is not contractually stable on
+    casing), `_persist` must still flag the second row as a duplicate of
+    the first — otherwise the `book_stats` view counts both as canonical
+    observations and the percentile distribution drifts.
+    """
+    from book_alerter.sources.base import ObservationCandidate
+
+    with Session(sqlite_engine) as s:
+        book = make_book(s, isbn13="9780747532699")
+        book_id = book.id
+
+    scheduler = Scheduler(
+        config=Config(),
+        sources={},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipeline=AsyncMock(),
+    )
+
+    def _cand(seller: str) -> ObservationCandidate:
+        return ObservationCandidate(
+            seller=seller,
+            condition="new",
+            price_minor=799,
+            shipping_minor=0,
+            currency="GBP",
+            url="https://www.amazon.co.uk/dp/0747532699",
+        )
+
+    with Session(sqlite_engine) as s:
+        first_book = s.get(models.Book, book_id)
+        assert first_book is not None
+        scheduler._persist("amazon", first_book, [_cand("Amazon")])
+        second_book = s.get(models.Book, book_id)
+        assert second_book is not None
+        # Same offer, different seller casing — must still dedup.
+        scheduler._persist("amazon", second_book, [_cand("amazon")])
+
+    with Session(sqlite_engine) as s:
+        canonical = s.exec(
+            select(models.PriceObservation).where(
+                models.PriceObservation.book_id == book_id,
+                models.PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+            )
+        ).all()
+        dupes = s.exec(
+            select(models.PriceObservation).where(
+                models.PriceObservation.book_id == book_id,
+                models.PriceObservation.is_duplicate_of.is_not(None),  # type: ignore[union-attr]
+            )
+        ).all()
+
+    assert len(canonical) == 1
+    assert len(dupes) == 1
+    assert dupes[0].is_duplicate_of == canonical[0].id

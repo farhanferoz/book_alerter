@@ -11,6 +11,7 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from book_alerter.config import Config
@@ -292,10 +293,19 @@ class Scheduler:
                 # "FREE delivery") are DIFFERENT signals — we deliberately
                 # don't conflate them so that a scrape which finally extracts
                 # a shipping value supersedes an older unknown.
+                #
+                # Seller is compared case-insensitively to stay in lockstep
+                # with `_normalize_seller` in sources/amazon.py — Amazon's
+                # seller link text is parsed from rendered HTML and is not
+                # contractually stable on casing.
+                if c.seller is None:
+                    seller_clause = PriceObservation.seller.is_(None)  # type: ignore[union-attr]
+                else:
+                    seller_clause = func.lower(PriceObservation.seller) == c.seller.lower()
                 prior_q = select(PriceObservation).where(
                     PriceObservation.book_id == book.id,
                     PriceObservation.source == source_name,
-                    PriceObservation.seller == c.seller,
+                    seller_clause,
                     PriceObservation.condition == c.condition,
                     PriceObservation.price_minor == c.price_minor,
                     PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
