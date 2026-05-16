@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from freezegun import freeze_time
 from sqlmodel import Session, select
 
 from book_alerter.config import (
@@ -114,6 +115,15 @@ def _alerts_for(engine, book_id: int) -> list[str]:
 
 
 def main() -> int:
+    # Same time-rot guard as scenario_01: freeze "now" just past the latest
+    # observation so windowed stats include the full series even when the
+    # real clock has moved on. See scenario_01_signal_transitions.py for
+    # the failure mode this prevents.
+    with freeze_time("2026-02-02 12:00:00"):
+        return _run_scenario()
+
+
+def _run_scenario() -> int:
     r = make_recorder("scenario_05_alert_kind_toggle")
 
     # --- Case 1: baseline, everything enabled — expect target_hit + new_low.

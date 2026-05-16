@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from book_alerter.api import alerts as alerts_routes
 from book_alerter.api import books as books_routes
@@ -138,6 +139,15 @@ def _build_app(engine, cfg_path: Path) -> FastAPI:
 
 
 def main() -> int:
+    # Same time-rot guard as scenario_01: freeze "now" just past the latest
+    # seeded observation so windowed stats include the full series even when
+    # the real clock has moved on. See scenario_01_signal_transitions.py for
+    # the failure mode this prevents.
+    with freeze_time("2026-01-17 12:00:00"):
+        return _run_scenario()
+
+
+def _run_scenario() -> int:
     r = make_recorder("scenario_06_ui_surface")
     engine = fresh_engine()
     ids = _seed_realistic_data(engine)
