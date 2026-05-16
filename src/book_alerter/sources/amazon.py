@@ -366,23 +366,49 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
     )
 
 
+# Class tokens that mark a price span as a strike-through RRP rather than
+# the actual offer price. `basisPrice` is the legacy hook; the modern apex
+# pricing template uses `apex-basisprice-value` for the inner `<span>` and
+# `centralizedApexBasisPriceCSS` for its container. `apb-price-was` and
+# `a-text-strike` cover older A/B variants.
+_STRIKE_THROUGH_ANCESTORS: tuple[str, ...] = (
+    "basisPrice",
+    "apex-basisprice-value",
+    "centralizedApexBasisPriceCSS",
+    "apb-price-was",
+    "a-text-strike",
+)
+
+
 def _extract_price_minor(scope: Node) -> int | None:
-    """Pull the price in pence from a `.a-price .a-offscreen` node under `scope`.
+    """Pull the offer price in pence from `scope`.
 
-    Amazon's price markup always pairs the visible `.a-price-whole/.a-price-fraction`
-    spans with a screen-reader `.a-offscreen` carrying the full "£7.99" string;
-    we read the latter.
+    Two paths, tried in order:
 
-    When a product is discounted, the dp page renders BOTH the current
-    selling price (under `.a-price.apex-core-price-identifier` or a similar
-    sibling) AND the strike-through RRP (under `.a-price.basisPrice`).
-    Picking the first `.a-offscreen` in document order would silently use
-    the RRP on every discounted listing. Skip any node whose ancestor
-    chain includes `.basisPrice` (also catches `apb-price-was` and similar
-    "was" markers used by Amazon's A/B variants).
+    1. `.apex-pricetopay-accessibility-label` — modern apex pricing
+       template renders the offer price as plain text inside an
+       `aok-offscreen` span carrying this class. It sits as a SIBLING of
+       `.a-price` (not a child), so the legacy `.a-price .a-offscreen`
+       scan below cannot reach it. Real Amazon UK offer-listing rows ship
+       the `.a-offscreen` inside `.a-price` empty for the offer price —
+       the visible price is assembled from `.a-price-whole` /
+       `.a-price-fraction` under `aria-hidden=true` — which is why a
+       parser that only walks `.a-price .a-offscreen` ends up picking up
+       the strike-through RRP instead. Reading the pricetopay
+       accessibility label fixes this.
+
+    2. Fallback: `.a-price .a-offscreen` scan, used by the synthetic
+       fixtures and older AOD templates. Skip strike-through RRPs via
+       `_STRIKE_THROUGH_ANCESTORS`.
     """
+    for label in scope.css(".apex-pricetopay-accessibility-label"):
+        if _ancestor_has_class(label, _STRIKE_THROUGH_ANCESTORS):
+            continue
+        minor = _parse_gbp_to_minor((label.text() or "").strip())
+        if minor is not None:
+            return minor
     for off in scope.css(".a-price .a-offscreen"):
-        if _ancestor_has_class(off, ("basisPrice", "apb-price-was", "a-text-strike")):
+        if _ancestor_has_class(off, _STRIKE_THROUGH_ANCESTORS):
             continue
         minor = _parse_gbp_to_minor((off.text() or "").strip())
         if minor is not None:
@@ -434,9 +460,48 @@ def _extract_condition(row: Node) -> Condition:
     return condition_from_grade_text(heading.text() or "") if heading else "unknown"
 
 
+_ARIA_LABEL_SELLER_SUFFIX = ". Opens a new page"
+
+
 def _extract_offer_seller(row: Node) -> str:
-    node = row.css_first("#aod-offer-soldBy a") or row.css_first("#aod-offer-soldBy")
-    return _node_text(node) or "?"
+    """Read the seller name from an offer-listing row.
+
+    Real Amazon UK markup uses two layouts in the soldBy block:
+
+      - Marketplace seller: `<a aria-label="SellerName. Opens a new page"
+        ...>SellerName </a>` plus a sibling `<div id="aod-offer-seller-rating">`
+        carrying a rating tooltip ("Seller rating is 5 out of 5 stars").
+      - Amazon-direct: no `<a>` — just `<span aria-label="Amazon. Opens a
+        new page">Amazon</span>` next to the "Sold by" label span.
+
+    Both cases attach the seller's name to an `aria-label` ending in
+    "Opens a new page". Reading that attribute is the most reliable way
+    to get just the seller's name without leaking the "Sold by" prefix
+    or the seller-rating tooltip into the result. The element-text and
+    div-text fallbacks remain for older markup variants and the
+    synthetic fixtures.
+    """
+    for el in row.css("#aod-offer-soldBy [aria-label]"):
+        label = (el.attributes.get("aria-label") or "").strip()
+        if not label:
+            continue
+        cleaned = label.removesuffix(_ARIA_LABEL_SELLER_SUFFIX).strip()
+        if cleaned:
+            return cleaned
+    a_node = row.css_first("#aod-offer-soldBy a")
+    if a_node is not None:
+        text = (a_node.text() or "").strip()
+        if text:
+            return text
+    div = row.css_first("#aod-offer-soldBy")
+    if div is None:
+        return "?"
+    text = " ".join((div.text() or "").split()).strip()
+    for prefix in ("Sold by:", "Sold by"):
+        if text.lower().startswith(prefix.lower()):
+            text = text[len(prefix):].strip(" :| ")
+            break
+    return text or "?"
 
 
 def _extract_clickout(row: Node, fallback_url: str) -> str:

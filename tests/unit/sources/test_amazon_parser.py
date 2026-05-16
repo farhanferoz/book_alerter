@@ -210,3 +210,72 @@ def test_merge_keeps_first_when_both_shipping_values_concrete() -> None:
 
 def test_merge_empty_input_returns_empty() -> None:
     assert _merge_offers([]) == []
+
+
+# --- Real-HTML offer-listing fixture (captured 2026-05-16) -------------------
+# Guards the modern apex pricing template: offer price in
+# `.apex-pricetopay-accessibility-label` (sibling of `.a-price`), strike-through
+# RRP in `.a-price.apex-basisprice-value`, seller on `aria-label="X. Opens a
+# new page"`, heading in a `<span>` (not `<h5>`).
+
+REAL_OL = "9780241638194-uk-offer-listing-real.html"
+
+
+def test_real_offer_listing_parses_offer_price_not_rrp() -> None:
+    """The page renders £50.00 as the strike-through RRP on every offer row;
+    the actual offer prices range £25.66 – £40.74. A naive `.a-price
+    .a-offscreen` scan would lock onto the £50 strike-through and miss the
+    real price entirely. This test pins us to the offer price."""
+    html = _load(REAL_OL)
+    offers = parse_offer_listing(html, fallback_url="https://x.example/")
+    assert len(offers) == 10
+    totals = sorted(o.price_minor for o in offers)
+    assert totals[0] == 2566  # cheapest = £25.66 Used - Like New
+    assert totals[-1] == 4074  # most expensive = £40.74
+    # The £50 RRP must NOT appear as any offer's price.
+    assert 5000 not in totals
+
+
+def test_real_offer_listing_surfaces_used_grades() -> None:
+    """Two of the ten rows on this page are 'Used - Like New'. The previous
+    parser collapsed every row to condition=new because its heading
+    selector targeted `<h5>` while real Amazon ships a `<span>`."""
+    html = _load(REAL_OL)
+    offers = parse_offer_listing(html, fallback_url="https://x.example/")
+    by_cond: dict[str, int] = {}
+    for o in offers:
+        by_cond[o.condition] = by_cond.get(o.condition, 0) + 1
+    assert by_cond.get("used_vg", 0) == 2
+    assert by_cond.get("new", 0) == 8
+
+
+def test_real_offer_listing_seller_has_no_sold_by_prefix() -> None:
+    """Amazon-direct rows render the seller as a `<span>` (no `<a>`),
+    which used to fall through to the whole-div text and emit
+    'Sold by      Amazon' with a string of internal whitespace. The
+    aria-label-based selector returns the seller's name cleanly."""
+    html = _load(REAL_OL)
+    offers = parse_offer_listing(html, fallback_url="https://x.example/")
+    sellers = [o.seller for o in offers]
+    for s in sellers:
+        assert s is not None
+        assert not s.lower().startswith("sold by"), (
+            f"seller {s!r} leaks the 'Sold by' label"
+        )
+        # No internal multi-space whitespace from a div-text extraction.
+        assert "  " not in s, f"seller {s!r} has runs of internal whitespace"
+    assert "Amazon" in sellers  # Amazon-direct row resolved to bare "Amazon"
+
+
+def test_real_offer_listing_amazon_resale_used_row_has_correct_price() -> None:
+    """Spot check on the row that the user's screenshot called out: the
+    Amazon Resale 'Used - Like New' offer at £25.66 — the cheapest row
+    on the page and exactly the kind of offer the prior dp-first scraper
+    flow missed entirely."""
+    html = _load(REAL_OL)
+    offers = parse_offer_listing(html, fallback_url="https://x.example/")
+    amazon_resale = [o for o in offers if o.seller == "Amazon Resale"]
+    assert len(amazon_resale) == 1
+    o = amazon_resale[0]
+    assert o.condition == "used_vg"
+    assert o.price_minor == 2566
