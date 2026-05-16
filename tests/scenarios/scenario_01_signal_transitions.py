@@ -22,6 +22,7 @@ from pathlib import Path
 # Allow `uv run python tests/scenarios/scenario_01_signal_transitions.py`.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from freezegun import freeze_time
 from sqlmodel import select
 
 from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
@@ -40,6 +41,16 @@ from helpers import (  # noqa: E402
 
 
 def main() -> int:
+    # Freeze "now" inside the scenario's observation range. compute_book_stats
+    # filters raw observations to those within `max(WINDOW_DAYS) ∨ window_days`
+    # of `datetime.now(UTC)`; without freezing, every run on a real clock past
+    # 2026-04 sees an empty windowed slice and percentile_at returns None,
+    # which collapses every computed signal back to INSUFFICIENT_DATA.
+    with freeze_time("2026-01-18 12:00:00"):
+        return _run_scenario()
+
+
+def _run_scenario() -> int:
     r = make_recorder("scenario_01_signal_transitions")
     engine = fresh_engine()
     session_factory = session_factory_for(engine)
