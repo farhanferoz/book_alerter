@@ -63,6 +63,10 @@ def rebuild_runtime(app: FastAPI) -> None:
     from `app.state.config`. Called after the config swap on PUT /api/config
     and PATCH /api/sources so config changes take effect without a restart.
 
+    Must be invoked from a coroutine — `AsyncIOScheduler.start()` reads
+    `asyncio.get_running_loop()`, which raises in a threadpool worker. The
+    callers (`put_config`, `patch_source`) are `async def` for that reason.
+
     The previous scheduler is shut down with `wait=False`; any in-flight
     source run aborts and the next cron tick picks up the new config.
 

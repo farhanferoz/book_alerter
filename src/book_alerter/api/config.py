@@ -111,7 +111,7 @@ def get_config_schema() -> dict[str, Any]:
 
 
 @router.put("")
-def put_config(
+async def put_config(
     body: ConfigUpdate,
     request: Request,
     cfg: ConfigDep,

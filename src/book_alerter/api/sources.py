@@ -223,7 +223,7 @@ async def trigger_source_run(
 
 
 @router.patch("/{name}", response_model=SourceStatusOut)
-def patch_source(
+async def patch_source(
     name: str,
     payload: SourcePatch,
     request: Request,
