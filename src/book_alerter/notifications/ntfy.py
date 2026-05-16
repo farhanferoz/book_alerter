@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
-from contextlib import asynccontextmanager
 
 import httpx
 
 from book_alerter.config import NtfyChannelConfig
 from book_alerter.db.models import Alert, Book
+from book_alerter.http_client import shared_or_fresh
 from book_alerter.notifications.base import NotificationResult, Notifier
 
 
@@ -38,22 +38,11 @@ class NtfyNotifier(Notifier):
         *,
         http: httpx.AsyncClient | None = None,
     ) -> None:
-        """`http` is the lifespan-scoped shared client; `client_factory` is
-        the legacy per-send constructor kept for unit-test injection. When
-        both are None we create a fresh client per send (back-compat with
-        ad-hoc CLI / script use). `http` wins when both are provided."""
+        """`client_factory` is the legacy per-send constructor kept for unit-
+        test injection; if a test passes one it wins over the shared `http`."""
         self._cfg = cfg
         self._http = http
-        self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=10))
-
-    @asynccontextmanager
-    async def _client(self):
-        if self._http is not None:
-            # Don't close the shared client — caller owns its lifecycle.
-            yield self._http
-        else:
-            async with self._client_factory() as c:
-                yield c
+        self._client_factory = client_factory
 
     async def send(self, alert: Alert, book: Book) -> NotificationResult:
         if not self._cfg.enabled or not self._cfg.topic:
@@ -65,12 +54,19 @@ class NtfyNotifier(Notifier):
             "Priority": self._cfg.priority,
             "Tags": ",".join(self._cfg.tags),
         }
-        async with self._client() as client:
-            try:
-                resp = await client.post(
-                    url, content=body.encode("utf-8"), headers=headers
-                )
-                resp.raise_for_status()
-            except httpx.HTTPError as e:
-                return {"status": "error", "error_message": str(e)}
+        try:
+            if self._client_factory is not None:
+                async with self._client_factory() as client:
+                    resp = await client.post(
+                        url, content=body.encode("utf-8"), headers=headers
+                    )
+                    resp.raise_for_status()
+            else:
+                async with shared_or_fresh(self._http) as client:
+                    resp = await client.post(
+                        url, content=body.encode("utf-8"), headers=headers
+                    )
+                    resp.raise_for_status()
+        except httpx.HTTPError as e:
+            return {"status": "error", "error_message": str(e)}
         return {"status": "sent"}

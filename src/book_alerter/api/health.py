@@ -1,19 +1,9 @@
 """Deep health endpoint.
 
-Docker's HEALTHCHECK polls this every 30s. Returning 200 only when the
-DB is writable and the scheduler is running prevents a stuck container
-from looking healthy to the orchestrator.
-
-  - DB probe: a SELECT 1 round-trip via a fresh Session from the lifespan
-    engine. If the connection is broken or the file is read-only the
-    SQLAlchemy connection raises and we 503.
-  - Scheduler probe: APScheduler exposes `.running` (False after a clean
-    shutdown or before .start()). Tests attach a stub scheduler — we
-    treat a missing `.running` attribute as "no probe available, OK".
-
-Failure mode returns HTTP 503 with the same JSON shape (with `status` =
-"error" and an `errors` array) so Docker considers the container
-unhealthy and restarts it after the configured retries.
+Docker's HEALTHCHECK polls this every 30s. 503 (not 200-with-an-errors-
+field) is critical — only the status code makes the orchestrator
+restart the container after the configured retries. Test stubs that
+omit `.running` are treated as "no probe available, OK".
 """
 
 from fastapi import APIRouter, Request, Response, status

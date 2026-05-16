@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import re
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 from pydantic import BaseModel
 
+from book_alerter.http_client import shared_or_fresh
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.amazon import BOT_MARKERS
 from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
@@ -28,18 +28,6 @@ log = get_logger(__name__)
 _OPENLIBRARY_URL = "https://openlibrary.org/api/books"
 _GOOGLEBOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 _TIMEOUT = httpx.Timeout(5.0)
-
-
-@asynccontextmanager
-async def _maybe_client(http: httpx.AsyncClient | None):
-    """Yield `http` when provided (lifespan-scoped); else open a fresh
-    short-lived client. Either way the caller can `async with` the result.
-    The shared client is not closed on exit."""
-    if http is not None:
-        yield http
-    else:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            yield client
 
 
 class BookMetadata(BaseModel):
@@ -131,11 +119,8 @@ async def lookup_isbn(
     fails.
 
     Caller is responsible for passing a canonical ISBN-13. Pre-normalize
-    raw user input via `book_alerter.sources.normalizers.to_isbn13`.
-
-    `http` is the lifespan-scoped shared client; when None we open a
-    fresh client (back-compat for tests and CLI use)."""
-    async with _maybe_client(http) as client:
+    raw user input via `book_alerter.sources.normalizers.to_isbn13`."""
+    async with shared_or_fresh(http) as client:
         tasks: set[asyncio.Task[BookMetadata | None]] = {
             asyncio.create_task(_fetch_openlibrary(isbn13, client), name="ol"),
             asyncio.create_task(
@@ -235,7 +220,7 @@ async def search_books(
     if google_api_key:
         params["key"] = google_api_key
     try:
-        async with _maybe_client(http) as client:
+        async with shared_or_fresh(http) as client:
             resp = await client.get(_GOOGLEBOOKS_URL, params=params)
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()

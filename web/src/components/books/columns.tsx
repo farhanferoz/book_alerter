@@ -85,10 +85,6 @@ export function buildBookColumns(): ColumnDef<Book>[] {
               {b.title}
             </Link>
             {b.last_scrape_error && (
-              // Inline red dot with the truncated error in the native tooltip.
-              // Hover for the message; clicking the row navigates to the
-              // detail page where the full error and last-attempt timestamp
-              // can be surfaced more richly later.
               <span
                 role="img"
                 aria-label={`Scrape error: ${b.last_scrape_error}`}

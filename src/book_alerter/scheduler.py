@@ -205,10 +205,10 @@ class Scheduler:
                             isbn=book.isbn13,
                             error=str(e),
                         )
-                        self._record_book_attempt(book.id, error=str(e))
+                        self._record_book_failure(book.id, str(e))
                         return
+                    # `_persist` clears last_scrape_error in the same commit.
                     self._persist(source_name, book, candidates)
-                    self._record_book_attempt(book.id, error=None)
                     affected_book_ids.append(book.id or 0)
                     succeeded += 1
 
@@ -277,6 +277,10 @@ class Scheduler:
         check") but the `book_stats` view excludes them, keeping the
         observation count and percentile distribution honest. See
         `RecommendationConfig.min_days_of_history` for why this matters.
+
+        Also updates the Book row's last_scrape_attempt_at + clears
+        last_scrape_error in the SAME session so a per-book scrape costs
+        one DB commit, not two.
         """
         now = datetime.now(UTC)
         with self._session_factory() as session:
@@ -326,23 +330,23 @@ class Scheduler:
                         is_duplicate_of=duplicate_of,
                     )
                 )
+            if book.id is not None:
+                fresh_book = session.get(Book, book.id)
+                if fresh_book is not None:
+                    fresh_book.last_scrape_attempt_at = now
+                    fresh_book.last_scrape_error = None
+                    session.add(fresh_book)
             session.commit()
 
-    # Truncation cap for last_scrape_error — long Playwright tracebacks would
-    # otherwise bloat the Book row and dwarf the dashboard tooltip.
-    _ERROR_MSG_CAP = 500
-
-    def _record_book_attempt(self, book_id: int | None, *, error: str | None) -> None:
-        """Persist the per-book scrape-attempt outcome on the Book row.
-
-        Sets last_scrape_attempt_at unconditionally; clears last_scrape_error
-        on success or replaces it with the truncated error message on failure.
-        Whichever source finishes last for a given book wins — that's enough
-        signal for the FE to flag "something is broken right now".
-        """
+    def _record_book_failure(self, book_id: int | None, error: str) -> None:
+        """Persist a failed scrape attempt on the Book row. Success path is
+        folded into `_persist` so a successful scrape costs one commit.
+        Last-write-wins across sources — enough signal for the FE to flag
+        "something is broken right now"."""
         if book_id is None:
             return
-        truncated = error[: self._ERROR_MSG_CAP] if error is not None else None
+        # Truncate long Playwright tracebacks so they don't bloat the row.
+        truncated = error[: self._ERROR_MSG_CAP]
         with self._session_factory() as session:
             book = session.get(Book, book_id)
             if book is None:
@@ -351,6 +355,8 @@ class Scheduler:
             book.last_scrape_error = truncated
             session.add(book)
             session.commit()
+
+    _ERROR_MSG_CAP = 500
 
     def _apply_backoff(self, source_name: str) -> None:
         sc = self._cfg.sources[source_name]

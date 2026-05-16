@@ -6,6 +6,7 @@ import re
 import httpx
 
 from book_alerter.db.models import Book
+from book_alerter.http_client import shared_or_fresh
 from book_alerter.sources.base import (
     Condition,
     ObservationCandidate,
@@ -128,19 +129,10 @@ class WobInlineSource(InlineSource):
             "Accept-Language": "en-GB,en;q=0.9",
         }
         try:
-            if self._http is not None:
-                # Lifespan-scoped shared client — reuse the connection pool.
-                # Per-call timeout/headers override the client defaults.
-                resp = await self._http.get(
+            async with shared_or_fresh(self._http) as client:
+                resp = await client.get(
                     url, headers=headers, timeout=self.timeout_s,
                 )
-            else:
-                async with httpx.AsyncClient(
-                    timeout=self.timeout_s,
-                    follow_redirects=True,
-                    headers=headers,
-                ) as client:
-                    resp = await client.get(url)
         except httpx.HTTPError as e:
             raise SourceError(self.name, f"http error at {url}: {e}") from e
 

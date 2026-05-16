@@ -1,16 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useIsDark } from "@/hooks/useIsDark";
 
 const STORAGE_KEY = "book-alerter:theme";
 
 type Theme = "light" | "dark";
-
-function readInitialTheme(): Theme {
-  if (typeof document !== "undefined" && document.documentElement.classList.contains("dark")) {
-    return "dark";
-  }
-  return "light";
-}
 
 function applyTheme(theme: Theme): void {
   const root = document.documentElement;
@@ -22,7 +16,10 @@ function applyTheme(theme: Theme): void {
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(readInitialTheme);
+  // Read the current theme via `useIsDark` so the button label flips when
+  // any code mutates `<html>.classList` (e.g. another tab synced via storage).
+  const isDark = useIsDark();
+  const [theme, setTheme] = useState<Theme>(isDark ? "dark" : "light");
 
   useEffect(() => {
     applyTheme(theme);

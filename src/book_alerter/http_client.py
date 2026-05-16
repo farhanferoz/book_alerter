@@ -1,28 +1,26 @@
 """Shared httpx.AsyncClient plumbing.
 
-A single client lives on `app.state.http` for the lifetime of the FastAPI
-process. Callers that have a Request (HTTP handlers) pull it via
-`Depends(get_http)`; non-handler callers (sources running in the scheduler,
-the ntfy notifier) get it injected at construction time by `_build_runtime`.
+A single client lives on `app.state.http` for the FastAPI process lifetime.
+HTTP handlers pull it via `Depends(get_http)`; scheduler-driven sources and
+notifiers get it injected at construction time by `_build_runtime`.
 
-Every consumer falls back to per-call `async with httpx.AsyncClient(...)`
-when `client` is None, which keeps unit tests and standalone CLI use
-working without a live app.
+Every consumer accepts `http: AsyncClient | None`; `shared_or_fresh(http)`
+yields the shared client when present or opens a one-shot client otherwise,
+so unit tests and CLI use that bypass the lifespan still work.
 """
 
 from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Request
 
 
 def build_shared_client() -> httpx.AsyncClient:
-    """Construct the process-wide client used for everything that's not
-    a long-lived scrape (Playwright handles its own sessions).
-
-    Timeout matches the most-generous per-call value previously used in
-    the sources/metadata modules; per-request overrides (e.g. WOB's 30s)
-    can still be passed at the call site."""
+    """Process-wide client for non-Playwright HTTP. Per-request overrides
+    (timeout, headers) are passed at the call site."""
     return httpx.AsyncClient(
         timeout=httpx.Timeout(15.0, connect=10.0),
         follow_redirects=True,
@@ -30,10 +28,22 @@ def build_shared_client() -> httpx.AsyncClient:
 
 
 async def get_http(request: Request) -> httpx.AsyncClient | None:
-    """FastAPI dependency exposing the lifespan-scoped client.
-
-    Returns None in test contexts whose fixture bypasses the lifespan
-    (the api_client fixture attaches a stub scheduler but no http client).
-    Every downstream consumer accepts `None` and falls back to a per-call
-    `async with httpx.AsyncClient(...)`."""
+    """Lifespan-scoped client; None outside lifespan (tests / CLI)."""
     return getattr(request.app.state, "http", None)
+
+
+@asynccontextmanager
+async def shared_or_fresh(
+    http: httpx.AsyncClient | None,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Yield the shared client if provided, else open a fresh one-shot
+    client. The shared client is NOT closed on exit — its lifecycle is
+    owned by the FastAPI lifespan."""
+    if http is not None:
+        yield http
+    else:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            yield client

@@ -21,7 +21,7 @@ from book_alerter.db.models import (
     NotificationDelivery,
 )
 from book_alerter.notifications.base import Notifier
-from book_alerter.stats import WINDOW_DAYS, BookStats, Signal, compute_book_stats
+from book_alerter.stats import BookStats, Signal, compute_book_stats, label_for_days
 
 
 def _in_quiet_hours(now_local: datetime, qh: QuietHours | None) -> bool:
@@ -162,13 +162,7 @@ class AlertPipeline:
     ) -> str:
         assert stats.current_best_total_minor is not None
         current = stats.current_best_total_minor
-        # Read p50 for the configured window directly off `windows` (single
-        # source of truth). Custom window_days values that don't map to a
-        # canonical 1m/3m/12m key fall through to the "no median" branch.
-        cfg_label = next(
-            (k for k, d in WINDOW_DAYS.items() if d == stats.percentile_window_days),
-            None,
-        )
+        cfg_label = label_for_days(stats.percentile_window_days)
         p50 = (
             stats.windows[cfg_label].p50
             if cfg_label is not None and cfg_label in stats.windows

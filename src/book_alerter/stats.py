@@ -48,6 +48,16 @@ WINDOW_DAYS: dict[str, int] = {
 }
 
 
+def label_for_days(days: int) -> str | None:
+    """Map a `percentile_window_days` value back to its canonical key in
+    `WINDOW_DAYS` ("1m"/"3m"/"12m"), or None for a custom (non-canonical)
+    window. Used by every consumer that needs `windows[label]`."""
+    for label, d in WINDOW_DAYS.items():
+        if d == days:
+            return label
+    return None
+
+
 @dataclass
 class WindowStats:
     """Distribution summary for a time window, computed over imputed totals.
@@ -231,20 +241,23 @@ def source_seller_global_shipping_medians(
     min_observations: int = 10,
 ) -> dict[tuple[str, SellerClass], int]:
     """Median of observed shipping per (source, seller_class) across every
-    book. Used as cascade tier 2 in `_imputed_shipping`. Exposed so callers
-    that invoke `compute_book_stats` in a loop (e.g. the dashboard list
-    endpoint) compute it once per request rather than per book.
+    book, bounded to the widest configured window. Used as cascade tier 2
+    in `_imputed_shipping`. Exposed so callers that invoke
+    `compute_book_stats` in a loop (e.g. the dashboard list endpoint)
+    compute it once per request rather than per book.
 
     Buckets with fewer than `min_observations` rows are excluded so
     sparse-sample medians don't pollute the cascade — the caller's
     terminal default fires instead."""
+    since = datetime.now(UTC) - timedelta(days=max(WINDOW_DAYS.values()))
     rows = session.exec(
         text(
             """
             SELECT source, seller, shipping_minor FROM priceobservation
             WHERE shipping_minor IS NOT NULL
+              AND observed_at >= :since
             """
-        )
+        ).bindparams(since=since)
     ).all()
     by_key: dict[tuple[str, SellerClass], list[int]] = {}
     for source, seller, shipping in rows:
@@ -331,19 +344,18 @@ def compute_book_stats(
         ).bindparams(bid=book_id, since=since)
     ).all()
 
-    # Shipping medians span all history (NOT window-bounded): medians benefit
-    # from every observed shipping signal we have, and a slow-moving book may
-    # only have a meaningful sample if we look back further than 12m. Dupes
-    # included on purpose — dupes repeat the canonical shipping signal, and
-    # on slow-moving books they're the bulk of the sample. Matches
-    # `source_seller_global_shipping_medians`.
+    # Shipping medians window-bounded to match the global query. Dupes
+    # included on purpose — dupes repeat the canonical shipping signal,
+    # and on slow-moving books they're the bulk of the sample.
     shipping_rows = session.exec(
         text(
             """
             SELECT source, shipping_minor FROM priceobservation
-            WHERE book_id = :bid AND shipping_minor IS NOT NULL
+            WHERE book_id = :bid
+              AND shipping_minor IS NOT NULL
+              AND observed_at >= :since
             """
-        ).bindparams(bid=book_id)
+        ).bindparams(bid=book_id, since=since)
     ).all()
     by_book_source: dict[str, list[int]] = {}
     all_book_shipping: list[int] = []
@@ -426,15 +438,10 @@ def compute_book_stats(
     else:
         all_time_min = all_time_max = None
 
-    cfg_label = next(
-        (k for k, d in WINDOW_DAYS.items() if d == window_days), None
-    )
+    cfg_label = label_for_days(window_days)
     if cfg_label is not None:
         cfg_totals = totals_by_label[cfg_label]
     else:
-        # Custom window not in the canonical 1m/3m/12m set: compute on the
-        # fly. `sorted_totals` still backs `percentile_at()` for signal logic;
-        # the `windows` dict only carries the canonical keys.
         cfg_totals = _slice_sorted_totals(window_days)
 
     return BookStats(

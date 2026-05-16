@@ -9,12 +9,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
+import httpx
+
 from book_alerter.api import alerts, books, covers, health, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
 from book_alerter.api import notifications as notifications_routes
-import httpx
-
 from book_alerter.auth import basic_auth_dep, is_basic_auth_enabled
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
@@ -104,16 +104,14 @@ async def lifespan(app: FastAPI):
     first_boot = not cfg_path.exists()
     cfg = Config.load(cfg_path)
     if first_boot:
-        # Persist the default Config to disk so the user can discover the
-        # full schema by reading data/config.yaml or via the Advanced editor,
-        # rather than confronting an empty file. Safe to write because we
-        # only land here when the file genuinely doesn't exist.
+        # Persist defaults so the user can discover the schema via
+        # data/config.yaml or the Advanced editor rather than an empty file.
         try:
             cfg.save(cfg_path)
             log.info("startup.config.created", config_path=str(cfg_path))
         except OSError as e:
-            # Don't crash boot — defaults already loaded in memory; the user
-            # can still operate, they just won't get a seed file on disk.
+            # Read-only mount or permission error — in-memory defaults are
+            # loaded; boot continues without a seed file on disk.
             log.warning(
                 "startup.config.create_failed",
                 config_path=str(cfg_path),

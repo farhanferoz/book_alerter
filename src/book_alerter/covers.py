@@ -26,6 +26,8 @@ from pathlib import Path
 
 import httpx
 
+from book_alerter.http_client import shared_or_fresh
+
 COVER_DIR = Path(os.environ.get("BOOK_ALERTER_COVER_DIR", "data/covers"))
 
 _MAGIC: tuple[tuple[bytes, str], ...] = (
@@ -70,9 +72,6 @@ async def fetch_and_cache(
     fetch upstream once even if many requests miss the cache at the
     same instant. After acquiring the lock we re-check `path.exists()`
     — a previous waiter may have already populated the cache.
-
-    `http` is the lifespan-scoped shared client; when None we build a
-    fresh client per call (back-compat for tests and CLI use).
     """
     lock = _locks.setdefault(isbn13, asyncio.Lock())
     async with lock:
@@ -80,11 +79,8 @@ async def fetch_and_cache(
         if path.exists():
             return path
         try:
-            if http is not None:
-                r = await http.get(url, timeout=15)
-            else:
-                async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                    r = await client.get(url)
+            async with shared_or_fresh(http) as client:
+                r = await client.get(url, timeout=15)
         except httpx.HTTPError:
             return None
         if r.status_code != 200 or not r.content:

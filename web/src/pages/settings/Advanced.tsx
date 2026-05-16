@@ -25,7 +25,7 @@
 // Bundle: route-split via `React.lazy` in App.tsx so Monaco only loads when
 // the user navigates here (same pattern as BookDetail / Recharts).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import yaml from "js-yaml";
 import Editor from "@monaco-editor/react";
@@ -33,6 +33,7 @@ import Editor from "@monaco-editor/react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DiffPreviewDialog } from "@/components/settings/DiffPreviewDialog";
+import { useIsDark } from "@/hooks/useIsDark";
 import {
   useConfig,
   useConfigSchema,
@@ -57,13 +58,6 @@ function configToYaml(cfg: ConfigShape): string {
   // round-trips); `sortKeys: false` preserves insertion order so the editor
   // matches the on-disk file's natural layout.
   return yaml.dump(cfg, { noRefs: true, sortKeys: false, lineWidth: 100 });
-}
-
-function readInitialDark(): boolean {
-  return (
-    typeof document !== "undefined" &&
-    document.documentElement.classList.contains("dark")
-  );
 }
 
 export function SettingsAdvanced() {
@@ -105,19 +99,7 @@ function AdvancedEditor({ config, schema }: AdvancedEditorProps) {
   const [showSchema, setShowSchema] = useState(false);
   const { savedAt, flash: flashSaved } = useSavedFlash();
   const update = useUpdateConfig();
-    // Live-watch `<html>.classList` for the `dark` toggle so Monaco re-themes
-  // without a page reload. MutationObserver only observes the attribute we
-  // care about (`class`) so it stays cheap.
-  const [isDark, setIsDark] = useState<boolean>(readInitialDark);
-  useEffect(() => {
-    const root = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setIsDark(root.classList.contains("dark"));
-    });
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, []);
-  const theme = isDark ? "vs-dark" : "light";
+    const theme = useIsDark() ? "vs-dark" : "light";
 
   // Reset draft + validation if the server config changes underneath us
   // (e.g. another tab persisted via PUT). Key-on-server-yaml at parent
