@@ -2,10 +2,10 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source now captures used grades (dp + offer-listing merge with dedup) — the prior dp-first/fallback flow silently dropped every used offer when a new copy was in stock. Scenario_01/05/06 time-rot fix landed alongside; scheduler `_persist` dedup now normalizes seller case + whitespace consistently with `_merge_offers`. Second Tier-2 pass (Tier-1 simplify + find-bugs + gemini second-opinion + fp-check) found one TRUE POSITIVE latent defect (whitespace asymmetry between merge-time and persist-time dedup) — fixed in `9137eb9`. **Next action: first deploy to NAS.**
+**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix + real-HTML parser fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source captures used grades end-to-end. The first live run against `9780241638194` (Gemini) exposed three more parser bugs against real Amazon HTML that the synthetic fixtures didn't cover — every offer recorded as £50 RRP, every offer flagged `condition=new`, seller leaked the "Sold by" label. Fixed via apex pricing template selectors + aria-label seller path + real-HTML-derived fixture (`9b1a74e`, simplify-pass `5f25bfd`). Polluted observations from the broken-parser run wiped (8 rows). End-to-end verified: Gemini's current best is now `£25.66 Used - Like New` from Amazon Resale. **Next action: first deploy to NAS.**
 
-**Branch:** `master` (no worktree, linear chain). 17 commits beyond the prior MVP-complete head (`bd4ffa5`).
-**Last update:** 2026-05-16, Tier-2 follow-up — Amazon dp + offer-listing merge + scenario freeze_time + scheduler seller normalization. Branch is deploy-ready.
+**Branch:** `master` (no worktree, linear chain). 20 commits beyond the prior MVP-complete head (`bd4ffa5`).
+**Last update:** 2026-05-16, live Amazon end-to-end verified — used grades capture cleanly. Branch is deploy-ready.
 
 ## What ships
 
@@ -22,7 +22,7 @@ cd /home/ff235/dev/book_alerter
 
 # Layer 1: unit + integration (≤6 s)
 uv run pytest -q
-# expected: 280 passed, 3 skipped, 1 deselected
+# expected: 285 passed, 3 skipped, 1 deselected
 #   - 3 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1) + one VCR cassette gate
 #   - 1 deselected: e2e marker (opt-in only)
 
@@ -52,7 +52,13 @@ uv run playwright install chromium
 ```bash
 cd /home/ff235/dev/book_alerter
 
-# One-step deploy
+# Convenience wrapper (added 2026-05-16) — up + wait-for-healthy + smoke
+scripts/start.sh                  # up
+scripts/start.sh status           # health + last 30 log lines
+scripts/start.sh logs             # follow logs
+scripts/start.sh down             # stop and remove the container
+
+# Or use docker compose directly:
 cp .env.example .env  # edit NTFY_* if you want push
 docker compose up -d
 # wait ~10 s for healthy state
@@ -108,6 +114,8 @@ Closed by the 2026-05-16 review pass (no longer deferred):
 - ~~scenario_01 fails on Phase B's "first computed signal" assertion~~ — shipped in `0df2403`: scenario observations are anchored at `2026-01-01` but the pipeline ran on the real clock, so `compute_book_stats`'s 90-day window filtered them all out (today is past the window). Wrapped `main()` in `freeze_time("2026-01-18 12:00:00")`. Test-rot only; no production change.
 - ~~scenarios 05 + 06 carry the same fixed-date pattern without freeze_time~~ — shipped in `d55a559`: both wrapped in `freeze_time` at deterministic instants past their observation ranges, mirroring scenario_01's pattern. Currently pass without it but will rot the same way if any future change ties their assertions to windowed stats.
 - ~~Scheduler `_persist` matches sellers case-sensitively while `_merge_offers` casefolds~~ — shipped in `4c78f55` + `9137eb9`: case-insensitive (via `func.lower()`) initially, then expanded to trim+lower after a gemini second-opinion flagged a latent whitespace asymmetry (`_normalize_seller` strips, `_persist` didn't). Both layers now run identical ASCII `strip().lower()` semantics, with `func.trim(func.lower(...))` on the SQL side.
+- ~~Amazon offer-listing parser drops used grades + reports £50 RRP + leaks "Sold by" label~~ — shipped in `9b1a74e` (Tier-1 simplify follow-up `5f25bfd`): three bugs surfaced when the new dp+offer-listing merge first ran against real Amazon HTML for `9780241638194`. Real Amazon uses an apex pricing template where the offer price lives in `.apex-pricetopay-accessibility-label` (sibling of `.a-price`, not a child), the RRP strike-through sits inside `.a-price.apex-basisprice-value`, and the seller is on `aria-label="X. Opens a new page"`. Parser now tries the apex label first, expands the strike-through skip list with `apex-basisprice-value` + `centralizedApexBasisPriceCSS`, and pulls seller from the aria-label (handles both marketplace `<a>` and Amazon-direct `<span>` variants). Trimmed real-HTML fixture (`tests/fixtures/amazon/9780241638194-uk-offer-listing-real.html`) pins the new selectors against drift. Companion capture script at `scripts/capture_amazon_offer_listing.py` mirrors the existing dp capture.
+- ~~Need a one-command convenience wrapper to start the app and tail health~~ — shipped in `9b1a74e`: `scripts/start.sh up|down|restart|logs|status` wraps `docker compose` + health polling + smoke check.
 
 ## Open decisions
 
