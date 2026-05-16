@@ -8,13 +8,14 @@ import type { Book } from "@/hooks/useBook";
 import { formatMoneyMinor, ordinalSuffix } from "@/lib/format";
 import { SignalPill, bookSignal } from "@/components/books/signal";
 import { useConfig, RECOMMENDATION_DEFAULTS } from "@/hooks/useConfig";
-import { keyForDays, rankIn } from "@/lib/windows";
 
 function percentileSummary(book: Book): string | null {
+  // Read the rank for the configured window (canonical OR custom) directly
+  // from the backend-computed `current_percentile_rank` field. The backend
+  // handles non-canonical windows by computing rank against the bounded
+  // slice on the fly.
   const s = book.stats;
-  const key = keyForDays(s.percentile_window_days);
-  if (key == null) return null;
-  const rank = rankIn(book, key);
+  const rank = s.current_percentile_rank;
   if (rank == null) return null;
   return `At the ${rank}${ordinalSuffix(rank)} percentile of ${s.percentile_window_days}-day history`;
 }

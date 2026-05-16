@@ -101,6 +101,11 @@ class BookStats:
     # The matching key under `windows` (1m/3m/12m) carries the p25/p50/p75 and
     # `rank` for this window — callers use `windows[label_for(percentile_window_days)]`.
     percentile_window_days: int = 90
+    # Rank for the configured window, including non-canonical custom values
+    # (e.g. 60 days) that don't map to a `windows` key. Mirrors
+    # `windows[label_for_days(...)].rank` for canonical windows and is the
+    # only way to surface a rank readout for custom ones.
+    current_percentile_rank: int | None = None
     # `current_best_total_minor` adjusted by the cascade-imputed shipping
     # when the current row had no shipping signal. Used for apples-to-apples
     # percentile comparison; `current_best_total_minor` is the raw display
@@ -441,8 +446,17 @@ def compute_book_stats(
     cfg_label = label_for_days(window_days)
     if cfg_label is not None:
         cfg_totals = totals_by_label[cfg_label]
+        cfg_rank = windows[cfg_label].rank
     else:
+        # Custom window not in 1m/3m/12m. `sorted_totals` backs
+        # `percentile_at()` for signal logic; we also compute a standalone
+        # rank so the FE has something to render for non-canonical windows.
         cfg_totals = _slice_sorted_totals(window_days)
+        cfg_rank = (
+            _percentile_rank(cfg_totals, effective)
+            if cfg_totals and effective is not None
+            else None
+        )
 
     return BookStats(
         book_id=book_id,
@@ -460,6 +474,7 @@ def compute_book_stats(
         days_of_history=head[9] or 0,
         last_polled_at=head[10],
         percentile_window_days=window_days,
+        current_percentile_rank=cfg_rank,
         current_effective_total_minor=effective,
         shipping_estimate_minor=shipping_estimate,
         sorted_totals=cfg_totals,

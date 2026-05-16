@@ -132,6 +132,7 @@ class BookStatsOut(BaseModel):
     last_observed_at: datetime | None
     last_polled_at: datetime | None
     percentile_window_days: int
+    current_percentile_rank: int | None
     current_effective_total_minor: int | None
     shipping_estimate_minor: int | None
     # Authoritative signal computed once on the backend with the live
@@ -172,6 +173,7 @@ class BookStatsOut(BaseModel):
             last_observed_at=s.last_observed_at,
             last_polled_at=s.last_polled_at,
             percentile_window_days=s.percentile_window_days,
+            current_percentile_rank=s.current_percentile_rank,
             current_effective_total_minor=s.current_effective_total_minor,
             shipping_estimate_minor=s.shipping_estimate_minor,
             signal=signal,

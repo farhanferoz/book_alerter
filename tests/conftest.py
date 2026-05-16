@@ -82,6 +82,7 @@ def transient_stats():
             days_of_history=days_of_history,
             last_observed_at=None,
             percentile_window_days=90,
+            current_percentile_rank=rank,
             current_effective_total_minor=current_effective_total_minor,
             shipping_estimate_minor=None,
             sorted_totals=totals,

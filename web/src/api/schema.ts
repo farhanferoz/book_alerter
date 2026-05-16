@@ -671,6 +671,8 @@ export interface components {
             last_polled_at: string | null;
             /** Percentile Window Days */
             percentile_window_days: number;
+            /** Current Percentile Rank */
+            current_percentile_rank: number | null;
             /** Current Effective Total Minor */
             current_effective_total_minor: number | null;
             /** Shipping Estimate Minor */
