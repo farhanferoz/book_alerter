@@ -78,6 +78,10 @@ class BookStats:
     p25_total_minor: int | None
     p50_total_minor: int | None
     p75_total_minor: int | None
+    # "All-time" within the bounded scan window in `compute_book_stats`
+    # (`max(WINDOW_DAYS) ∨ window_days`). Long-running deploys never reach
+    # the literal all-time; the `new_low` alert treats this as "lower than
+    # any recently-seen total."
     all_time_min_total_minor: int | None
     all_time_max_total_minor: int | None
     observation_count: int
@@ -316,6 +320,13 @@ def compute_book_stats(
             windows={k: WindowStats() for k in WINDOW_DAYS},
         )
 
+    # Bound the imputation/percentile scan to the widest window we'll use so
+    # per-book work stays O(window) not O(history). `all_time_min/max` below
+    # therefore mean "min/max within this window" — for long-running deploys
+    # that's the more useful signal anyway, and the `new_low` alert reads it
+    # as "lower than recently seen".
+    max_window_days = max(max(WINDOW_DAYS.values()), window_days)
+    since = datetime.now(UTC) - timedelta(days=max_window_days)
     raw = session.exec(
         text(
             """
@@ -323,13 +334,17 @@ def compute_book_stats(
             FROM priceobservation
             WHERE book_id = :bid
               AND is_duplicate_of IS NULL
+              AND observed_at >= :since
             """
-        ).bindparams(bid=book_id)
+        ).bindparams(bid=book_id, since=since)
     ).all()
 
-    # Shipping medians include duplicate rows on purpose: dupes repeat the
-    # canonical shipping signal, and on slow-moving books they're the bulk
-    # of the sample. Matches `source_seller_global_shipping_medians`.
+    # Shipping medians span all history (NOT window-bounded): medians benefit
+    # from every observed shipping signal we have, and a slow-moving book may
+    # only have a meaningful sample if we look back further than 12m. Dupes
+    # included on purpose — dupes repeat the canonical shipping signal, and
+    # on slow-moving books they're the bulk of the sample. Matches
+    # `source_seller_global_shipping_medians`.
     shipping_rows = session.exec(
         text(
             """
