@@ -18,28 +18,39 @@ buyable AS (
     SELECT * FROM non_dupes
     WHERE source != 'keepa'
 ),
-latest_per_source AS (
+-- Partition by the FULL offer identity so each distinct live offer competes
+-- in the `current_best` MIN() race. Partitioning by (book, source) alone
+-- collapsed multi-condition / multi-seller rows from the same source: e.g.
+-- WOB returning both `new £19.09` and `used_vg £17.50` in one scrape would
+-- have the cheaper offer dropped if the ROW_NUMBER tie-break didn't pick it.
+latest_per_offer AS (
     SELECT book_id, source, total_minor, price_minor, shipping_minor,
            condition, seller, url, observed_at,
-           ROW_NUMBER() OVER (PARTITION BY book_id, source ORDER BY observed_at DESC) AS rn
+           ROW_NUMBER() OVER (
+               PARTITION BY book_id, source, condition, seller
+               ORDER BY observed_at DESC
+           ) AS rn
     FROM buyable
 ),
 current_best AS (
-    -- When two sources tie at the same lowest price, deterministically prefer
-    -- the alphabetically-first source name. Otherwise the view returns
-    -- non-deterministic rows for ties.
+    -- When two offers tie at the same lowest total, deterministically prefer
+    -- alphabetically-first source, then condition, then seller. Otherwise
+    -- the view returns non-deterministic rows for ties.
     SELECT lp.book_id, lp.total_minor, lp.price_minor, lp.shipping_minor,
            lp.source, lp.condition, lp.seller, lp.url
-    FROM latest_per_source lp
+    FROM latest_per_offer lp
     JOIN (
         SELECT book_id, MIN(total_minor) AS m
-        FROM latest_per_source
+        FROM latest_per_offer
         WHERE rn = 1
         GROUP BY book_id
     ) best ON best.book_id = lp.book_id AND best.m = lp.total_minor AND lp.rn = 1
-    WHERE lp.source = (
-        SELECT MIN(source) FROM latest_per_source lp2
+    WHERE (lp.source, lp.condition, COALESCE(lp.seller, '')) = (
+        SELECT lp2.source, lp2.condition, COALESCE(lp2.seller, '')
+        FROM latest_per_offer lp2
         WHERE lp2.book_id = lp.book_id AND lp2.total_minor = lp.total_minor AND lp2.rn = 1
+        ORDER BY lp2.source, lp2.condition, COALESCE(lp2.seller, '')
+        LIMIT 1
     )
 ),
 agg AS (
