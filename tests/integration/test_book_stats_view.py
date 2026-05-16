@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from book_alerter.db import models
+from book_alerter.stats import compute_book_stats
 
 
 def test_book_stats_view_current_best(tmp_path):
@@ -50,9 +51,10 @@ def test_book_stats_view_current_best(tmp_path):
         row = s.exec(
             text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
         ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
     assert row["observation_count"] == 5
-    assert row["all_time_min_total_minor"] == 850
-    assert row["all_time_max_total_minor"] == 1500
     assert row["current_best_total_minor"] == 850
     assert row["current_best_source"] == "wob"
+    assert stats.all_time_min_total_minor == 850
+    assert stats.all_time_max_total_minor == 1500

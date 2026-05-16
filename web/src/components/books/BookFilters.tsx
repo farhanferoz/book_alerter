@@ -13,7 +13,7 @@ export type SignalFilter = Signal | "ALL";
 export type SortKey =
   | "signal"
   | "best_price"
-  | "pct_vs_median"
+  | "percentile"
   | "last_seen"
   | "title";
 
@@ -48,7 +48,7 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "signal", label: "Signal" },
   { value: "best_price", label: "Best price" },
-  { value: "pct_vs_median", label: "% vs median" },
+  { value: "percentile", label: "Percentile (3m)" },
   { value: "last_seen", label: "Last seen" },
   { value: "title", label: "Title" },
 ];

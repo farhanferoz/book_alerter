@@ -17,6 +17,7 @@ import { ActionBar } from "@/components/books/detail/ActionBar";
 import { HeaderCard } from "@/components/books/detail/HeaderCard";
 import { HistoryChart } from "@/components/books/detail/HistoryChart";
 import { KeepaChart } from "@/components/books/detail/KeepaChart";
+import { PercentileChart } from "@/components/books/detail/PercentileChart";
 import { SettingsPanel } from "@/components/books/detail/SettingsPanel";
 import { SignalCard } from "@/components/books/detail/SignalCard";
 import { SnapshotCard } from "@/components/books/detail/SnapshotCard";
@@ -93,6 +94,8 @@ export function BookDetail() {
         <SnapshotCard book={book} />
         <SignalCard book={book} />
       </div>
+
+      <PercentileChart book={book} />
 
       <HistoryChart observations={observations} isLoading={obsQuery.isLoading} />
 

@@ -1,15 +1,9 @@
 /* eslint-disable react-refresh/only-export-components */
 // Column definitions for the dashboard book table.
-//
-// Columns chosen from design spec (§ "Dashboard (/)" → main table row):
-//   cover · title+author · best price (source badge + condition pill) ·
-//   signal pill · % vs median (sparkline-coloured) · days of history ·
-//   last seen · row actions
-//
-// Inline sparkline (Recharts cell) is still pending — the "% vs median"
-// column renders as plain coloured text for now; sparkline conversion is
-// a follow-up. Per-row actions (refetch/archive/delete) are wired via
-// BookRowMenu; mute remains detail-page-only.
+//   cover · title+author · best price · shipping · signal · percentile
+//   mini-bars (1m/3m/12m, sort key = 3m rank) · days · last seen · actions
+// Per-row actions (refetch/archive/delete) are wired via BookRowMenu;
+// mute remains detail-page-only.
 
 import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "react-router-dom";
@@ -25,6 +19,8 @@ import {
 import type { Book } from "@/hooks/useBooks";
 import { BookRowMenu } from "./BookRowMenu";
 import { CoverImage } from "./CoverImage";
+import { rank3mOrInf } from "@/lib/windows";
+import { MiniBars } from "./MiniBars";
 import { SignalPill, bookSignal, type Signal } from "./signal";
 
 function ConditionPill({ condition }: { condition: string | null }) {
@@ -55,21 +51,6 @@ function SourceBadge({
       )}
     </span>
   );
-}
-
-function percentVsMedian(book: Book): number | null {
-  const current = book.stats.current_best_total_minor;
-  const median = book.stats.p50_total_minor;
-  if (current == null || median == null || median === 0) return null;
-  return Math.round(((current - median) / median) * 100);
-}
-
-function pctClass(pct: number | null): string {
-  if (pct == null) return "text-muted-foreground";
-  if (pct <= -15) return "text-green-700 dark:text-green-400 font-medium";
-  if (pct <= 0) return "text-green-700 dark:text-green-400";
-  if (pct <= 15) return "text-amber-700 dark:text-amber-400";
-  return "text-rose-700 dark:text-rose-400";
 }
 
 // The signal pill reads `book.stats.signal` directly — the backend
@@ -146,23 +127,13 @@ export function buildBookColumns(): ColumnDef<Book>[] {
     cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
   },
   {
-    id: "pct_vs_median",
-    accessorFn: percentVsMedian,
-    header: "% vs median",
-    cell: ({ getValue }) => {
-      const pct = getValue<number | null>();
-      return (
-        <span className={pctClass(pct)}>
-          {pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct}%`}
-        </span>
-      );
-    },
+    id: "percentile",
+    accessorFn: rank3mOrInf,
+    header: "Percentile",
+    cell: ({ row }) => <MiniBars book={row.original} />,
     sortingFn: (a, b) => {
-      const av = a.getValue<number | null>("pct_vs_median");
-      const bv = b.getValue<number | null>("pct_vs_median");
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
+      const av = a.getValue<number>("percentile");
+      const bv = b.getValue<number>("percentile");
       return av - bv;
     },
   },

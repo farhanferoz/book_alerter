@@ -34,6 +34,8 @@ def transient_stats():
     # Default days_of_history past the gate (config default is 7) so tests
     # that don't care about the time gate stay focused on signal logic.
     # Tests that DO want to exercise the gate pass `days_of_history=0`.
+    _USE_BEST: object = object()
+
     def _make(
         *,
         observation_count: int,
@@ -43,7 +45,10 @@ def transient_stats():
         days_of_history: int = 30,
         current_percentile_rank: int | None = None,
         current_best_shipping_minor: int | None = 0,
+        current_effective_total_minor: int | None | object = _USE_BEST,
     ) -> BookStats:
+        if current_effective_total_minor is _USE_BEST:
+            current_effective_total_minor = current_best_total_minor
         totals = sorted_totals if sorted_totals is not None else []
         rank = current_percentile_rank
         if rank is None and totals and current_best_total_minor is not None:
@@ -68,7 +73,7 @@ def transient_stats():
             last_observed_at=None,
             percentile_window_days=90,
             current_percentile_rank=rank,
-            current_effective_total_minor=current_best_total_minor,
+            current_effective_total_minor=current_effective_total_minor,
             shipping_estimate_minor=None,
             sorted_totals=totals,
         )

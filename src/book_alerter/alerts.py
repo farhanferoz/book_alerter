@@ -38,9 +38,14 @@ def detect_alert_kinds(
     if cur_signal == "BUY" and prev_signal != "BUY":
         out.append("percentile_cross")
 
+    # `prev_all_time_min` is the cascade-imputed bound persisted by the
+    # dispatcher. Compare on the same metric (`current_effective_total_minor`)
+    # so a current row with NULL shipping doesn't falsely beat a historical
+    # min that includes imputed shipping.
     if (
         prev_all_time_min is not None
-        and stats.current_best_total_minor < prev_all_time_min
+        and stats.current_effective_total_minor is not None
+        and stats.current_effective_total_minor < prev_all_time_min
     ):
         out.append("new_low")
 

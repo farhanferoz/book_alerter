@@ -121,6 +121,21 @@ export function formatShippingMinor(
   return `+${formatMoneyMinor(minor, currency)}`;
 }
 
+export function ordinalSuffix(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return "th";
+  switch (n % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
 export function minorToPoundsInput(minor: number | null | undefined): string {
   if (minor == null) return "";
   // Two decimals; matches how `formatMoneyMinor` would render but without the

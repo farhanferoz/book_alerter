@@ -102,6 +102,39 @@ def test_new_low_does_not_fire_when_current_equals_prev_min(
     assert "new_low" not in out
 
 
+def test_new_low_compares_effective_not_raw(transient_book, transient_stats):
+    # Live row has NULL shipping → raw=800 looks below prev_min=850, but the
+    # cascade-imputed effective=900 is above it. `prev_all_time_min` is the
+    # imputed bound; compare on the same metric.
+    cfg = RecommendationConfig()
+    book = transient_book()
+    stats = transient_stats(
+        observation_count=5,
+        current_best_total_minor=800,
+        current_effective_total_minor=900,
+    )
+    out, _ = detect_alert_kinds(
+        book, stats, prev_signal="WAIT", prev_all_time_min=850, cfg=cfg
+    )
+    assert "new_low" not in out
+
+
+def test_new_low_does_not_fire_when_effective_is_none(
+    transient_book, transient_stats,
+):
+    cfg = RecommendationConfig()
+    book = transient_book()
+    stats = transient_stats(
+        observation_count=5,
+        current_best_total_minor=800,
+        current_effective_total_minor=None,
+    )
+    out, _ = detect_alert_kinds(
+        book, stats, prev_signal="WAIT", prev_all_time_min=1000, cfg=cfg
+    )
+    assert "new_low" not in out
+
+
 def test_no_alerts_when_current_best_none(transient_book, transient_stats):
     cfg = RecommendationConfig()
     book = transient_book(target_price_minor=1000)

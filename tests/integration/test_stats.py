@@ -8,7 +8,7 @@ from hypothesis import given, strategies as st
 from sqlmodel import Session
 
 from book_alerter.db import models
-from book_alerter.stats import BookStats, _percentiles, compute_book_stats
+from book_alerter.stats import BookStats, compute_book_stats
 
 
 def _add_obs(session: Session, *, book_id: int, total: int, source: str = "wob",
@@ -213,13 +213,6 @@ def test_duplicate_observations_excluded_from_percentiles(engine_with_view, make
     assert stats.observation_count == 3
 
 
-def test_percentiles_helper_directly():
-    assert _percentiles([]) == (None, None, None)
-    assert _percentiles([42]) == (42, 42, 42)
-    p25, p50, p75 = _percentiles([100, 200, 300])
-    assert (p25, p50, p75) == (150, 200, 250)
-
-
 def _add_obs_with_shipping(
     session: Session,
     *,
@@ -281,8 +274,15 @@ def test_window_default_is_90_days(engine_with_view, make_book):
 
 def test_shipping_estimate_folds_keepa_into_distribution(engine_with_view, make_book):
     """Two real observations carry shipping (£0 and £2.80); a Keepa-style
-    NULL-shipping row at £15 item price should be folded in at £15 + median
-    shipping (£1.40)."""
+    NULL-shipping row at £15 item price should be folded in via the
+    shipping cascade. With no per-(book, keepa) or per-source-global data
+    for 'keepa', the cascade falls through to per-book median ([0, 280] →
+    £1.40), giving an imputed total of 1500 + 140 = 1640.
+
+    `shipping_estimate_minor` reports the value used to impute the CURRENT
+    row's shipping. The current row here is the wob £20.00 listing with
+    observed £0 shipping, so no imputation runs and the field is None.
+    """
     with Session(engine_with_view) as s:
         book = make_book(s, isbn13="9780000000022")
         _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=0,
@@ -293,9 +293,9 @@ def test_shipping_estimate_folds_keepa_into_distribution(engine_with_view, make_
                                source="keepa")
         stats = compute_book_stats(book.id, s)
 
-    # median([0, 280]) == 140
-    assert stats.shipping_estimate_minor == 140
-    # Distribution: real totals (2000, 2080) + estimate-folded (1500 + 140)
+    assert stats.current_best_shipping_minor == 0
+    assert stats.shipping_estimate_minor is None  # current row had observed shipping
+    # Distribution: real totals (2000, 2080) + cascade-imputed (1500 + 140)
     assert stats.sorted_totals == [1640, 2000, 2080]
 
 
@@ -352,3 +352,192 @@ def test_current_effective_total_uses_estimate_when_current_shipping_null(
     # the £3 estimate → £18
     assert stats.current_best_total_minor == 1500
     assert stats.current_effective_total_minor == 1800
+
+
+# ---------------------------------------------------------------------------
+# Cascade behaviour: each fallback level fires in the right circumstances.
+# ---------------------------------------------------------------------------
+
+
+def test_cascade_step1_uses_observed_shipping(engine_with_view, make_book):
+    """When a row carries observed shipping, the cascade never runs — the
+    row's own total is used as-is regardless of medians."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000030")
+        _add_obs_with_shipping(s, book_id=book.id, price=1000, shipping=250,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=400,
+                               source="amazon")
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.sorted_totals == [1250, 2400]
+
+
+def test_cascade_step2_uses_book_source_median(engine_with_view, make_book):
+    """A NULL-shipping row prefers the per-(book, source) median over the
+    per-book median across sources."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000031")
+        # WOB: two observed-shipping rows, median = 50
+        _add_obs_with_shipping(s, book_id=book.id, price=1000, shipping=0,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=book.id, price=1100, shipping=100,
+                               source="wob")
+        # Amazon: one row with high shipping, lifts the per-book median
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=500,
+                               source="amazon")
+        # A WOB row with NULL shipping — cascade step 2 should fire and use
+        # the WOB-specific median (50), NOT the per-book median (100).
+        _add_obs_with_shipping(s, book_id=book.id, price=900, shipping=None,
+                               source="wob")
+        stats = compute_book_stats(book.id, s)
+
+    # Imputed total for the NULL row: 900 + 50 = 950
+    assert 950 in stats.sorted_totals
+
+
+def test_cascade_step3_uses_source_global_median(engine_with_view, make_book):
+    """When the book has no per-(book, source) history for a given source,
+    fall back to the per-source-global median across all books."""
+    with Session(engine_with_view) as s:
+        # Seed a second book with WOB shipping data so the global median
+        # exists for source='wob'.
+        other = make_book(s, isbn13="9780000000040")
+        _add_obs_with_shipping(s, book_id=other.id, price=500, shipping=180,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=other.id, price=600, shipping=180,
+                               source="wob")
+
+        book = make_book(s, isbn13="9780000000032")
+        # Book has only ONE WOB row, and it lacks shipping — so per-(book,
+        # source) median is empty. Per-source-global = 180.
+        _add_obs_with_shipping(s, book_id=book.id, price=800, shipping=None,
+                               source="wob")
+        # Add an amazon row with observed shipping so per-book median exists
+        # — we want to prove step 3 wins over step 4 (per-book median = 900).
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=900,
+                               source="amazon")
+        stats = compute_book_stats(book.id, s)
+
+    # The WOB null-shipping row should be imputed at 800 + 180 = 980 (step 3),
+    # not 800 + 900 = 1700 (step 4).
+    assert 980 in stats.sorted_totals
+    assert 1700 not in stats.sorted_totals
+
+
+def test_cascade_step4_falls_back_to_per_book_median(engine_with_view, make_book):
+    """Keepa rows always fall through to per-book median: there's never a
+    per-(book, keepa) median (Keepa never carries shipping) and typically
+    no per-source-global for keepa either."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000033")
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=300,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
+                               source="keepa")
+        stats = compute_book_stats(book.id, s)
+
+    # Keepa row imputed at 1500 + 300 = 1800 via step 4
+    assert sorted(stats.sorted_totals) == [1800, 1800]
+
+
+def test_cascade_drops_row_when_no_shipping_signal(engine_with_view, make_book):
+    """If a book has zero observed shipping anywhere AND no per-source-global
+    fallback applies, NULL-shipping rows are dropped."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000034")
+        # Two Keepa rows only — both lack shipping, no fallback available
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
+                               source="keepa")
+        _add_obs_with_shipping(s, book_id=book.id, price=1600, shipping=None,
+                               source="keepa")
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.sorted_totals == []
+    assert stats.all_time_min_total_minor is None
+
+
+# ---------------------------------------------------------------------------
+# All-time bounds: Keepa-inclusive via cascade.
+# ---------------------------------------------------------------------------
+
+
+def test_all_time_min_includes_keepa_via_imputation(engine_with_view, make_book):
+    """A Keepa archive row cheaper than any live offer should set the
+    all-time low (after shipping imputation). The legacy view excluded
+    Keepa and would have reported a higher floor."""
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000035")
+        # Live offers: 2000 and 2200 (with observed shipping)
+        _add_obs_with_shipping(s, book_id=book.id, price=1900, shipping=100,
+                               source="wob")
+        _add_obs_with_shipping(s, book_id=book.id, price=2100, shipping=100,
+                               source="amazon")
+        # Keepa: historic £14 item; cascade imputes shipping = 100 via step 4
+        _add_obs_with_shipping(s, book_id=book.id, price=1400, shipping=None,
+                               source="keepa")
+        stats = compute_book_stats(book.id, s)
+
+    # 1400 + 100 = 1500 — that's the new all-time min
+    assert stats.all_time_min_total_minor == 1500
+    assert stats.all_time_max_total_minor == 2200
+
+
+# ---------------------------------------------------------------------------
+# Windowed percentile bands (1m / 3m / 12m).
+# ---------------------------------------------------------------------------
+
+
+def test_windows_partition_correctly_by_observed_at(engine_with_view, make_book):
+    """Each window contains exactly the imputed totals from its cutoff."""
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000036")
+        # 5 days ago, 60 days ago, 200 days ago — fall into 1m, 3m, 12m
+        _add_obs_with_shipping(s, book_id=book.id, price=1000, shipping=0,
+                               source="a", observed_at=now - timedelta(days=5))
+        _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=0,
+                               source="b", observed_at=now - timedelta(days=60))
+        _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=0,
+                               source="c", observed_at=now - timedelta(days=200))
+        stats = compute_book_stats(book.id, s)
+
+    assert stats.windows["1m"].count == 1
+    assert stats.windows["3m"].count == 2
+    assert stats.windows["12m"].count == 3
+    # p50 should differ across windows because the membership differs.
+    assert stats.windows["1m"].p50 == 1000
+    assert stats.windows["3m"].p50 in (1000, 1250, 1500)  # linear interp
+    assert stats.windows["12m"].p50 == 1500
+
+
+def test_windows_empty_when_no_observations(engine_with_view, make_book):
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000037")
+        stats = compute_book_stats(book.id, s)
+
+    for label in ("1m", "3m", "12m"):
+        w = stats.windows[label]
+        assert w.count == 0
+        assert w.rank is None
+        assert w.p5 is w.p25 is w.p50 is w.p75 is w.p95 is None
+
+
+def test_window_rank_reflects_current_position(engine_with_view, make_book):
+    """The window's rank field reports where the current effective total
+    sits within that window's imputed distribution."""
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000038")
+        # 5 observations in last 20 days at totals 100, 200, 300, 400, 500
+        for i, total in enumerate([500, 400, 300, 200, 100]):
+            _add_obs_with_shipping(
+                s, book_id=book.id, price=total, shipping=0,
+                source=f"src_{i}",
+                observed_at=now - timedelta(days=i * 3),
+            )
+        stats = compute_book_stats(book.id, s)
+
+    # current_best is the cheapest row (100), so rank = 1/5 = 20%
+    assert stats.windows["1m"].count == 5
+    assert stats.windows["1m"].rank == 20

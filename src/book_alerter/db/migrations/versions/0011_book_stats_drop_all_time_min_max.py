@@ -1,28 +1,29 @@
-"""Canonical DDL for SQL views. Imported by Alembic migrations and by
-integration tests (SQLModel.metadata.create_all does not create views)."""
-from __future__ import annotations
+"""book_stats view: drop all_time_min/max columns; bounds now computed in Python.
+
+`compute_book_stats` imputes shipping for Keepa rows and derives the
+bounds from the imputed totals, so the view's Keepa-excluded values
+would have been stale.
+"""
+from alembic import op
+
+from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 
 
-BOOK_STATS_VIEW_SQL = """
+revision = "0011_book_stats_drop_all_time_min_max"
+down_revision = "0010_book_stats_buyable_min_max"
+branch_labels = None
+depends_on = None
+
+
+_PREV_VIEW_SQL = """
 CREATE VIEW book_stats AS
 WITH non_dupes AS (
     SELECT * FROM priceobservation WHERE is_duplicate_of IS NULL
 ),
--- current_best is restricted to live offers (excludes Keepa, which is a
--- historical archive whose PNG only renders item prices — its rows have
--- NULL shipping and would unfairly beat live totals that include postage).
--- Live rows with NULL shipping still qualify so the user sees the item
--- price plus an em-dash, rather than nothing at all when no source on a
--- given book managed to extract a delivery line.
 buyable AS (
     SELECT * FROM non_dupes
     WHERE source != 'keepa'
 ),
--- Partition by the FULL offer identity so each distinct live offer competes
--- in the `current_best` MIN() race. Partitioning by (book, source) alone
--- collapsed multi-condition / multi-seller rows from the same source: e.g.
--- WOB returning both `new £19.09` and `used_vg £17.50` in one scrape would
--- have the cheaper offer dropped if the ROW_NUMBER tie-break didn't pick it.
 latest_per_offer AS (
     SELECT book_id, source, total_minor, price_minor, shipping_minor,
            condition, seller, url, observed_at,
@@ -33,9 +34,6 @@ latest_per_offer AS (
     FROM buyable
 ),
 current_best AS (
-    -- When two offers tie at the same lowest total, deterministically prefer
-    -- alphabetically-first source, then condition, then seller. Otherwise
-    -- the view returns non-deterministic rows for ties.
     SELECT lp.book_id, lp.total_minor, lp.price_minor, lp.shipping_minor,
            lp.source, lp.condition, lp.seller, lp.url
     FROM latest_per_offer lp
@@ -53,10 +51,6 @@ current_best AS (
         LIMIT 1
     )
 ),
--- Full canonical history (including Keepa) — gates INSUFFICIENT_DATA on
--- observation_count / days_of_history. All-time bounds live in
--- `compute_book_stats` (see stats.py) so Keepa rows can participate with
--- a fair shipping estimate.
 agg_history AS (
     SELECT book_id,
            COUNT(*)         AS observation_count,
@@ -65,10 +59,13 @@ agg_history AS (
     FROM non_dupes
     GROUP BY book_id
 ),
--- `last_polled_at` is the max observed_at over EVERY row (including dupes
--- that record "we checked and the price was unchanged"). This is what the
--- dashboard's "Last seen" should display — `last_observed_at` from
--- `agg_history` above only moves when the canonical price actually changes.
+agg_buyable AS (
+    SELECT book_id,
+           MIN(total_minor) AS all_time_min_total_minor,
+           MAX(total_minor) AS all_time_max_total_minor
+    FROM buyable
+    GROUP BY book_id
+),
 polled AS (
     SELECT book_id, MAX(observed_at) AS last_polled_at
     FROM priceobservation
@@ -84,6 +81,8 @@ SELECT b.id AS book_id,
        cb.condition      AS current_best_condition,
        cb.seller         AS current_best_seller,
        cb.url            AS current_best_url,
+       ab.all_time_min_total_minor,
+       ab.all_time_max_total_minor,
        ah.observation_count,
        ah.last_observed_at,
        p.last_polled_at,
@@ -91,7 +90,16 @@ SELECT b.id AS book_id,
 FROM book b
 LEFT JOIN current_best cb ON cb.book_id = b.id
 LEFT JOIN agg_history ah  ON ah.book_id = b.id
+LEFT JOIN agg_buyable ab  ON ab.book_id = b.id
 LEFT JOIN polled p        ON p.book_id  = b.id
 """
 
-DROP_BOOK_STATS_VIEW_SQL = "DROP VIEW IF EXISTS book_stats"
+
+def upgrade() -> None:
+    op.execute(DROP_BOOK_STATS_VIEW_SQL)
+    op.execute(BOOK_STATS_VIEW_SQL)
+
+
+def downgrade() -> None:
+    op.execute(DROP_BOOK_STATS_VIEW_SQL)
+    op.execute(_PREV_VIEW_SQL)

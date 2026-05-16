@@ -15,6 +15,7 @@ import { DataTable } from "@/components/books/BookTable";
 import { buildBookColumns } from "@/components/books/columns";
 import { bookSignal, type Signal } from "@/components/books/signal";
 import { useBooks, type Book } from "@/hooks/useBooks";
+import { rank3mOrInf } from "@/lib/windows";
 import { formatErrorMessage } from "@/lib/utils";
 
 const SIGNAL_ORDER: Record<Signal, number> = {
@@ -47,8 +48,8 @@ function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
         return av - bv;
       });
       break;
-    case "pct_vs_median":
-      sorted.sort((a, b) => pctOrInf(a) - pctOrInf(b));
+    case "percentile":
+      sorted.sort((a, b) => rank3mOrInf(a) - rank3mOrInf(b));
       break;
     case "last_seen":
       sorted.sort((a, b) => {
@@ -62,13 +63,6 @@ function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
       break;
   }
   return sorted;
-}
-
-function pctOrInf(book: Book): number {
-  const current = book.stats.current_best_total_minor;
-  const median = book.stats.p50_total_minor;
-  if (current == null || median == null || median === 0) return Number.MAX_SAFE_INTEGER;
-  return (current - median) / median;
 }
 
 function SkeletonRows() {

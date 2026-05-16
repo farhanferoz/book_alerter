@@ -681,6 +681,10 @@ export interface components {
             shipping_estimate_minor: number | null;
             /** Signal */
             signal: ("BUY" | "WATCH" | "WAIT" | "TARGET_HIT" | "INSUFFICIENT_DATA") | null;
+            /** Windows */
+            windows: {
+                [key: string]: components["schemas"]["WindowStatsOut"];
+            };
         };
         /** ConfigDiff */
         ConfigDiff: {
@@ -936,6 +940,29 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WindowStatsOut
+         * @description Wire mirror of `book_alerter.stats.WindowStats` — per-window
+         *     distribution summary surfaced for the dashboard mini-bars column and
+         *     the detail-page box-plot. `count` lets the UI dim a window whose
+         *     sample size is too small to trust.
+         */
+        WindowStatsOut: {
+            /** Count */
+            count: number;
+            /** Rank */
+            rank: number | null;
+            /** P5 */
+            p5: number | null;
+            /** P25 */
+            p25: number | null;
+            /** P50 */
+            p50: number | null;
+            /** P75 */
+            p75: number | null;
+            /** P95 */
+            p95: number | null;
         };
     };
     responses: never;

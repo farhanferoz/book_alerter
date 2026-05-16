@@ -5,7 +5,7 @@
 // the alert dispatcher will fire.
 
 import type { Book } from "@/hooks/useBook";
-import { formatMoneyMinor } from "@/lib/format";
+import { formatMoneyMinor, ordinalSuffix } from "@/lib/format";
 import { SignalPill, bookSignal } from "@/components/books/signal";
 import { useConfig, RECOMMENDATION_DEFAULTS } from "@/hooks/useConfig";
 
@@ -14,16 +14,6 @@ function percentileSummary(book: Book): string | null {
   const rank = s.current_percentile_rank;
   if (rank == null) return null;
   return `At the ${rank}${ordinalSuffix(rank)} percentile of ${s.percentile_window_days}-day history`;
-}
-
-function ordinalSuffix(n: number): string {
-  const tens = n % 100;
-  if (tens >= 11 && tens <= 13) return "th";
-  const ones = n % 10;
-  if (ones === 1) return "st";
-  if (ones === 2) return "nd";
-  if (ones === 3) return "rd";
-  return "th";
 }
 
 function targetDistance(book: Book): string | null {

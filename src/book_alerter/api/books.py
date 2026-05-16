@@ -35,7 +35,15 @@ from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
 from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
-from book_alerter.stats import BookStats, Signal, compute_book_stats, compute_signal
+from book_alerter.stats import (
+    WINDOW_DAYS,
+    BookStats,
+    Signal,
+    WindowStats,
+    compute_book_stats,
+    compute_signal,
+    source_global_shipping_medians,
+)
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -69,6 +77,27 @@ class BookPatch(BaseModel):
     alert_kinds_disabled: list[str] | None = None
 
 
+class WindowStatsOut(BaseModel):
+    """Wire mirror of `book_alerter.stats.WindowStats` — per-window
+    distribution summary surfaced for the dashboard mini-bars column and
+    the detail-page box-plot. `count` lets the UI dim a window whose
+    sample size is too small to trust."""
+    count: int
+    rank: int | None
+    p5: int | None
+    p25: int | None
+    p50: int | None
+    p75: int | None
+    p95: int | None
+
+    @classmethod
+    def from_dataclass(cls, w: WindowStats) -> WindowStatsOut:
+        return cls(
+            count=w.count, rank=w.rank,
+            p5=w.p5, p25=w.p25, p50=w.p50, p75=w.p75, p95=w.p95,
+        )
+
+
 class BookStatsOut(BaseModel):
     """Wire mirror of `book_alerter.stats.BookStats`.
 
@@ -100,6 +129,10 @@ class BookStatsOut(BaseModel):
     # client-side re-derivation, so the dashboard pill can't drift from
     # what the alert dispatcher will fire.
     signal: Signal | None
+    # Per-window distribution summaries — keys: "1m", "3m", "12m". The
+    # dashboard `MiniBars` column reads each window's `rank`; the detail-
+    # page box-plot reads p5/p25/p50/p75/p95.
+    windows: dict[str, WindowStatsOut]
 
     @classmethod
     def from_dataclass(
@@ -136,6 +169,12 @@ class BookStatsOut(BaseModel):
             current_effective_total_minor=s.current_effective_total_minor,
             shipping_estimate_minor=s.shipping_estimate_minor,
             signal=signal,
+            # Emit all canonical keys (filling missing with empties) so the
+            # FE layout stays stable across books with sparse history.
+            windows={
+                k: WindowStatsOut.from_dataclass(s.windows.get(k, WindowStats()))
+                for k in WINDOW_DAYS
+            },
         )
 
 
@@ -253,10 +292,16 @@ def list_books(
     if not include_archived:
         stmt = stmt.where(models.Book.status != "archived")
     books = session.exec(stmt).all()
+    medians = source_global_shipping_medians(session)
     return [
         BookOut.from_book(
             b,
-            compute_book_stats(b.id or 0, session, _effective_window_days(b, cfg)),
+            compute_book_stats(
+                b.id or 0,
+                session,
+                _effective_window_days(b, cfg),
+                source_global_medians=medians,
+            ),
             reco=cfg.recommendation,
         )
         for b in books
