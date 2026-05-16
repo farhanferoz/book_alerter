@@ -2,27 +2,28 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE.** All plan phases 0–13 shipped. The system is feature-complete per `docs/superpowers/specs/2026-05-09-book-alerter-design.md` (with documented deviations for the post-2026-05-14 inline-sources architecture revision). Last action this session: end-to-end re-verification across all test layers — all green.
+**Status:** **MVP COMPLETE + Tier-2 reviewed.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Next action: first deploy to NAS.**
 
-**Branch:** `master` (no worktree, linear chain).
-**Last update:** 2026-05-14, MVP completion + end-to-end re-verification.
+**Branch:** `master` (no worktree, linear chain). 12 commits beyond the prior MVP-complete head (`bd4ffa5`).
+**Last update:** 2026-05-16, Tier-2 review pass — branch is deploy-ready.
 
 ## What ships
 
-- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Three sources (WoB via httpx, Bookfinder + Amazon UK via Playwright). Two notifiers (in-app always-on + ntfy.sh opt-in). Weekly SQLite backup via `VACUUM INTO`.
-- **Frontend** — Vite + React 19 + TS + Tailwind v4 + shadcn/ui + Recharts + TanStack Query + Monaco. Served by FastAPI from the same port in production.
-- **Deployment** — Multi-stage Dockerfile (`mcr.microsoft.com/playwright/python:v1.59.0-noble` base + Node 20 builder), `docker-compose.yml` with healthcheck + log rotation + shm_size, `.env.example` with all knobs documented.
-- **Testing** — 221 unit/integration tests, 6 storyline-style end-to-end scenarios, 1 Docker boot smoke test, 2 live-network canaries (skipped by default).
+- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Three sources (WoB via httpx, Bookfinder + Amazon UK via Playwright). Two notifiers (in-app always-on + ntfy.sh opt-in). Weekly SQLite backup via `VACUUM INTO`. Lifespan-scoped shared `httpx.AsyncClient` threaded through all non-Playwright HTTP. Per-book scrape health (`last_scrape_attempt_at` + `last_scrape_error`) on `Book`, written by the scheduler. Deep `/api/health` (DB `SELECT 1` + APScheduler `.running`) returns 503 on failure so Docker actually restarts an unhealthy container.
+- **Frontend** — Vite + React 19 + TS + Tailwind v4 + shadcn/ui + Recharts + TanStack Query + Monaco. Served by FastAPI from the same port in production. Dashboard shows imputed-shipping marker (`~+£X.XX*`) when the cascade fills in missing postage; per-book red dot when `last_scrape_error` is set. Monaco editor re-themes live via the new `useIsDark` hook.
+- **Stats** — `compute_book_stats` bounds the raw-observation scan to `max(WINDOW_DAYS, percentile_window_days)` days; `all_time_min/max` therefore mean "within window" (better signal for long-running deploys). Cascade-imputed shipping pulled via `seller_class()` (`amazon_fulfilled` vs `third_party`), with `(source, seller_class)` global medians gated by `min_global_median_observations`. `BookStats` wire shape now reads `windows[label_for_days(days)]` for percentiles; `current_percentile_rank` retained for custom (non-canonical) windows.
+- **Deployment** — Multi-stage Dockerfile (`mcr.microsoft.com/playwright/python:v1.59.0-noble` base + Node 20 builder), `docker-compose.yml` with healthcheck + log rotation + shm_size + PUID/PGID, `.env.example` with every knob documented. First boot writes `data/config.yaml` from defaults so the user has a discoverable seed file.
+- **Testing** — 273 unit/integration tests, 6 storyline-style end-to-end scenarios, 1 Docker boot smoke test, 2 live-network canaries (skipped by default).
 
 ## Test layers — verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter
 
-# Layer 1: unit + integration (≤4 s)
+# Layer 1: unit + integration (≤6 s)
 uv run pytest -q
-# expected: 221 passed, 2 skipped, 1 deselected
-#   - 2 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1)
+# expected: 273 passed, 3 skipped, 1 deselected
+#   - 3 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1) + one VCR cassette gate
 #   - 1 deselected: e2e marker (opt-in only)
 
 # Layer 2: storyline scenarios (≤2 s)
@@ -40,7 +41,7 @@ cd web && npx tsc --noEmit && npx eslint . && npm run build
 
 # Database
 uv run alembic current
-# expected: 0004_book_stats_view (head)
+# expected: 0012_book_scrape_health (head)
 
 # First-time setup on a new machine
 uv run playwright install chromium
@@ -66,10 +67,10 @@ docker compose down
 
 ## What to do first
 
-1. **Browser smoke** — `docker compose up -d`, visit `http://localhost:8000`, add a book by ISBN, verify the dashboard renders. The CLI smoke tests above prove API + SPA serving but don't exercise the actual UI in a browser.
-2. **Ntfy wiring** — set `NTFY_SERVER` + `NTFY_TOPIC` in `.env`, click "Send test" on the Notifications settings tab. (Channel won't be instantiated if topic is empty.)
-3. **Live sources** — enable a source in Settings → Sources (default `config.yaml` ships `sources: {}` empty); WoB is the lowest-flake; Bookfinder and Amazon UK both Playwright-based with anti-bot exposure.
-4. **NAS deploy** — `docker compose up -d` on the NAS; restrict to Tailscale ACLs at the network layer (container binds `0.0.0.0:8000` by design).
+1. **NAS deploy** (the next-session goal): bring the repo onto the target NAS, `id -u` / `id -g` on the host to get the right values for `PUID/PGID`, copy `.env.example` → `.env` and fill them (+ optional `GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`), ensure `./data` is owned by `PUID:PGID`, then `docker compose up -d`. First boot will apply migrations `0001..0012` against an empty SQLite and seed `data/config.yaml` from defaults; deep `/api/health` gates orchestrator readiness. Synology default UID/GID is `1026:100`; Unraid is `99:100`.
+2. **Browser smoke** — visit the deployed UI, add a book by ISBN, verify the dashboard renders the new fields (signal pill, mini-bars per window, imputed shipping marker, per-book red dot if a source fails).
+3. **Ntfy wiring** — set `NTFY_SERVER` + `NTFY_TOPIC` in `.env` (or via the Notifications settings tab), click "Send test". Channel won't be instantiated if topic is empty.
+4. **Live sources** — enable a source in Settings → Sources (default `config.yaml` ships `sources: {}` empty); WoB is the lowest-flake; Bookfinder and Amazon UK both Playwright-based with anti-bot exposure.
 
 ## Deferred follow-ups (NOT bugs — design choices or post-MVP scope)
 
@@ -79,21 +80,31 @@ Triage of the end-to-end scenario findings (see CHANGELOG "Scenario findings —
 - **Dedup uses wall clock, not `observed_at`**. Correct user-facing behavior; comment added to `_filter_dedup` (commit `f1970f7`). Scenarios needing distinct same-kind alerts across the window must use `freeze_time` (scenario 2 demonstrates).
 - **Mute skips `BookSignalState` writes**. By design — preserves pre-mute prev state so `new_low` can still fire on mute-lift when there was a prior all-time min. Edge case (mute brand-new book before any observation) loses `new_low` capability on lift; not a realistic flow.
 
-Carried follow-ups from prior phases:
+Carried follow-ups (deferred for first NAS deploy; revisit after production behaviour observed):
 
 - **Source-ABC `prepare()`/`cleanup()` hooks** for per-scheduler-run shared Chromium browser (currently per-fetch shared); + **`PlaywrightInlineSource` base** to dedup the `_render` skeleton between bookfinder.py and amazon.py. Single follow-up PR scoped together. (Phase 8.3 simplify deferred.)
-- **Monaco theme not live-updated** — captured once at mount; toggling dark mode while the Advanced editor is open won't re-theme until next visit. `MutationObserver` on `<html>.class` would handle it. (Phase 11.5 deferred.)
-- **Telegram + Pushover notifier slots reserved** but unimplemented. `NotificationsConfig.channels` has no types yet; adding requires Pydantic models + dispatcher wiring + FE channel cards. (Working agreement: ntfy only at MVP.)
+- **Telegram + Pushover notifier slots reserved** but unimplemented. `.env.example` has the env vars; `NotificationsConfig.channels` has no Pydantic types yet. Adding requires Pydantic models + dispatcher wiring + FE channel cards. (Working agreement: ntfy only at MVP.)
 - **shadcn base color is `neutral`** (default); plan called for `slate`. Hand-edit `components.json` + re-init if/when the design decision matters. (Phase 9.1 deviation.)
 - **`monaco-editor → dompurify`** 2 transitive moderate-severity audit findings. Address with `npm audit fix` or a newer `monaco-editor` pin once `@monaco-editor/react` bumps. (Phase 11.5 deferred.)
 - **`openapi-typescript@7` peer-deps `typescript@^5`** but project is on TS6; installed with `--legacy-peer-deps`. Revisit if upstream widens its peer constraint. (Phase 9.2 carried.)
 - **`gen:api` requires a running backend** — could add a `scripts/dump-openapi.py` that writes `/openapi.json` to disk for offline regen. (Phase 9.2 deferred.)
 - **`POST /api/books` on duplicate ISBN** returns 409 with `detail` string only — doesn't include the existing book's ID. FE shows "Already tracked" without a link-out. Minor backend tweak (add `book_id` to the detail). (Phase 10.2 deviation.)
-- **N+1 queries**: `compute_book_stats` in `GET /api/books`; `_last_run_for` in `GET /api/sources`. Per-list-row sub-queries; on a small NAS dataset (≤200 books) this is fine but a `JOIN`+aggregation rewrite is the natural follow-up. (Pre-Phase 8 carried.)
-- **Long-lived `httpx.AsyncClient`** could lift into FastAPI lifespan rather than per-call construction. (Pre-Phase 8 carried.)
-- **Notifier registry frozen at startup**: `app.state.notifiers` is built once during the lifespan (see `app.py:42-44, 60`). Flipping a channel from disabled→enabled via `PUT /api/config` persists the change but doesn't instantiate the new notifier, so `POST /api/notifications/{channel}/test` returns 404 until the container is restarted. Fix: rebuild `app.state.notifiers` inside the PUT handler when `notifications.channels` differs from the previous config. (Found 2026-05-15 while wiring ntfy.)
-- **Source registry frozen at startup, same as notifiers**: `build_sources(cfg)` runs once during the lifespan (`app.py`). Enabling a source via `PUT /api/config` requires a container restart before the new source is instantiated. Same fix pattern as above; consider a single `rebuild_runtime(app)` helper covering both registries. (Found 2026-05-15 while wiring WoB.)
-- **Per-book scrape failures don't surface beyond logs**: `SourceRun.error_message` is run-level (the run "succeeded" in that it visited the page); per-book extraction failures emit a `source.book.error` log line at WARNING level and increment `books_attempted - books_succeeded`. The API offers no way to see *which* books failed or *why*. Result: a user who hits an anti-bot or extraction regression sees "missing observations" with no explanation. Fix: add `last_book_errors: list[{isbn, error}]` to `SourceRun` (or a sibling `source_book_error` table) and expose via `/api/sources` + `/api/books/{id}`. (Found 2026-05-15 while triaging the Amazon UK failure.)
+- **N+1 queries**: `compute_book_stats` in `GET /api/books` (medians hoisted to one scan per request via `source_seller_global_shipping_medians`, but per-book scan + cascade still happens N times); `_last_run_for` in `GET /api/sources`. On a small NAS dataset (≤200 books) this is fine but a `JOIN`+aggregation rewrite is the natural follow-up. (Pre-Phase 8 carried.)
+
+Deferrals new in 2026-05-16 review pass:
+
+- **TTL cache on `source_seller_global_shipping_medians`** — currently bounded to widest WINDOW_DAYS but still a full-table scan per dashboard render. ~30–90 MB peak materialisation at 100 books × 365 days. Within NAS budget today; if it bites in production, cache for ~60s. (Gemini second-opinion G-3, deferred.)
+- **Per-source scrape health** — `last_scrape_error` is `Book`-row-grained with last-write-wins across sources, so a book with one failing source and one succeeding source will flicker between error/no-error on the dashboard depending on completion order. Documented design choice; revisit if real-world flicker becomes a UX issue. (Gemini second-opinion G-5b, accepted as design.)
+- **React.memo on MiniBars** — premature with 9 dashboard rows; revisit only if dashboard rendering becomes visibly janky.
+- **Bound per-book raw observation table** (not just stats reads) — the SQLite table grows unbounded; eventual prune job + retention policy is a natural follow-up once we know how many years of history a user actually wants.
+- **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it.
+
+Closed by the 2026-05-16 review pass (no longer deferred):
+
+- ~~Long-lived `httpx.AsyncClient` could lift into FastAPI lifespan~~ — shipped in `dcab912` (B3).
+- ~~Per-book scrape failures don't surface beyond logs~~ — shipped in `a9842ca` (B2): `last_scrape_attempt_at` + `last_scrape_error` columns + dashboard indicator.
+- ~~Monaco theme not live-updated~~ — shipped in `f937aa2` + `a1d58c8` (C4): `useIsDark` hook drives both Monaco and ThemeToggle.
+- ~~Notifier registry frozen at startup~~ — already addressed by `rebuild_runtime()` in `app.py`. Same for source registry.
 
 ## Open decisions
 
