@@ -75,7 +75,8 @@ def test_api_routes_still_match_with_static_mount(monkeypatch, tmp_path):
     monkeypatch.setenv("BOOK_ALERTER_WEB_DIST", str(dist))
 
     app = create_app()
-    client = TestClient(app)
-    resp = client.get("/api/health")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    # Lifespan-enter so the deep healthcheck has an engine + scheduler.
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"

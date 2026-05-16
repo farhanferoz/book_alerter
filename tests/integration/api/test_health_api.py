@@ -4,11 +4,14 @@ from book_alerter.app import create_app
 
 def test_health_returns_ok():
     app = create_app()
-    client = TestClient(app)
-    resp = client.get("/api/health")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "ok"
+    # `with TestClient(...)` enters the FastAPI lifespan so engine + scheduler
+    # are initialized — the deep healthcheck (db SELECT 1 + scheduler.running)
+    # would otherwise 503.
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
 
 
 def test_health_includes_config_version_when_loaded(monkeypatch, tmp_path):
