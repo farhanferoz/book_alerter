@@ -121,6 +121,21 @@ export function formatShippingMinor(
   return `+${formatMoneyMinor(minor, currency)}`;
 }
 
+// Same as `formatShippingMinor` but, when actual shipping is unknown and
+// the cascade produced an imputed estimate, renders "~+£X.XX*". Used on
+// the dashboard row so the visible price reconciles with the signal/
+// percentile (computed off the imputed total). Detail page surfaces the
+// fuller explanation via SignalCard's `shippingNote`.
+export function formatShippingMinorWithEstimate(
+  observed: number | null | undefined,
+  estimate: number | null | undefined,
+  currency: string = "GBP",
+): string {
+  if (observed != null) return formatShippingMinor(observed, currency);
+  if (estimate == null || estimate === 0) return formatShippingMinor(observed, currency);
+  return `~+${formatMoneyMinor(estimate, currency)}*`;
+}
+
 export function ordinalSuffix(n: number): string {
   const tens = n % 100;
   if (tens >= 11 && tens <= 13) return "th";

@@ -13,7 +13,7 @@ import {
   formatCondition,
   formatMoneyMinor,
   formatRelativeTime,
-  formatShippingMinor,
+  formatShippingMinorWithEstimate,
   isBookfinderSourcedLabel,
 } from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
@@ -130,9 +130,26 @@ export function buildBookColumns(): ColumnDef<Book>[] {
     header: "Shipping",
     cell: ({ row }) => {
       const b = row.original;
+      const imputed =
+        b.stats.current_best_shipping_minor == null &&
+        b.stats.shipping_estimate_minor != null;
       return (
-        <span className="tabular-nums text-muted-foreground">
-          {formatShippingMinor(b.stats.current_best_shipping_minor, b.currency)}
+        <span
+          className="tabular-nums text-muted-foreground"
+          title={
+            imputed
+              ? `Shipping unknown for this listing; using observed median ${formatMoneyMinor(
+                  b.stats.shipping_estimate_minor,
+                  b.currency,
+                )} for signal & percentile (* marks the estimate).`
+              : undefined
+          }
+        >
+          {formatShippingMinorWithEstimate(
+            b.stats.current_best_shipping_minor,
+            b.stats.shipping_estimate_minor,
+            b.currency,
+          )}
         </span>
       );
     },
