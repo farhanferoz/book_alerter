@@ -121,6 +121,26 @@ class BookStats:
 # ---------------------------------------------------------------------------
 
 
+SellerClass = Literal["amazon_fulfilled", "third_party"]
+
+
+def seller_class(seller: str | None) -> SellerClass:
+    """Classify a marketplace seller for shipping-cascade keying.
+
+    `amazon_fulfilled` covers offers shipped by Amazon (Prime-eligible) —
+    detected by the seller string starting with "Amazon". Everything else
+    (third-party Amazon sellers, WOB, BookFinder, empty/None) is
+    `third_party`. The distinction matters for the cascade because
+    Amazon-fulfilled offers typically ship free while third-party offers
+    add postage, and mixing them in a single source-global median lets a
+    Prime-dominant aggregate falsely impute zero shipping onto a
+    third-party row.
+    """
+    if seller and seller.startswith("Amazon"):
+        return "amazon_fulfilled"
+    return "third_party"
+
+
 def _percentile_at_sorted(sorted_totals: list[int], pct: int | float) -> int:
     """Linear-interpolation percentile lookup on a pre-sorted list. Returns
     int; caller must ensure `sorted_totals` is non-empty."""
@@ -147,21 +167,36 @@ def _percentile_rank(sorted_totals: list[int], value: int) -> int:
 
 def _imputed_shipping(
     source: str | None,
+    seller: str | None,
     *,
     book_source_medians: dict[str, int],
-    source_global_medians: dict[str, int],
+    source_seller_global_medians: dict[tuple[str, SellerClass], int],
     book_median: int | None,
-) -> int | None:
+    default_shipping: int,
+) -> int:
     """Cascade lookup for a row whose own `shipping_minor` is NULL.
-    Returns the shipping value to add to `price_minor`, or `None` if the
-    cascade exhausted without a usable estimate. `source=None` short-
-    circuits past the source-specific tiers to the per-book median."""
+
+    Tiers (most-specific first):
+      1. `book_source_medians[source]`   — this book's typical shipping
+                                            on this source.
+      2. `source_seller_global_medians[(source, seller_class)]` — cross-
+         book median for the same (source, fulfilment class). Splits
+         Amazon-fulfilled from third-party so a Prime-dominant aggregate
+         doesn't impute zero shipping onto a third-party offer.
+      3. `book_median`                   — this book's typical shipping
+                                            across all sources.
+      4. `default_shipping`              — terminal config-driven
+                                            estimate; never None.
+    """
     if source is not None:
         if source in book_source_medians:
             return book_source_medians[source]
-        if source in source_global_medians:
-            return source_global_medians[source]
-    return book_median
+        key = (source, seller_class(seller))
+        if key in source_seller_global_medians:
+            return source_seller_global_medians[key]
+    if book_median is not None:
+        return book_median
+    return default_shipping
 
 
 def _window_stats_from_sorted(
@@ -192,22 +227,34 @@ def _window_stats_from_sorted(
 # ---------------------------------------------------------------------------
 
 
-def source_global_shipping_medians(session: Session) -> dict[str, int]:
-    """Per-source median of observed shipping across every book. Used as
-    cascade step 3. Exposed so callers that invoke `compute_book_stats` in
-    a loop can compute it once per request rather than per book."""
+def source_seller_global_shipping_medians(
+    session: Session,
+    min_observations: int = 10,
+) -> dict[tuple[str, SellerClass], int]:
+    """Median of observed shipping per (source, seller_class) across every
+    book. Used as cascade tier 2 in `_imputed_shipping`. Exposed so callers
+    that invoke `compute_book_stats` in a loop (e.g. the dashboard list
+    endpoint) compute it once per request rather than per book.
+
+    Buckets with fewer than `min_observations` rows are excluded so
+    sparse-sample medians don't pollute the cascade — the caller's
+    terminal default fires instead."""
     rows = session.exec(
         text(
             """
-            SELECT source, shipping_minor FROM priceobservation
+            SELECT source, seller, shipping_minor FROM priceobservation
             WHERE shipping_minor IS NOT NULL
             """
         )
     ).all()
-    by_source: dict[str, list[int]] = {}
-    for source, shipping in rows:
-        by_source.setdefault(source, []).append(int(shipping))
-    return {s: int(statistics.median(v)) for s, v in by_source.items()}
+    by_key: dict[tuple[str, SellerClass], list[int]] = {}
+    for source, seller, shipping in rows:
+        by_key.setdefault((source, seller_class(seller)), []).append(int(shipping))
+    return {
+        k: int(statistics.median(v))
+        for k, v in by_key.items()
+        if len(v) >= min_observations
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +267,19 @@ def compute_book_stats(
     session: Session,
     window_days: int = 90,
     *,
-    source_global_medians: dict[str, int] | None = None,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
+    default_shipping_minor: int = 280,
+    min_global_median_observations: int = 10,
 ) -> BookStats:
     """Compute the stats bundle for a single book.
 
-    `source_global_medians` is a cascade-step-3 input. Callers that invoke
-    this in a loop (e.g. the dashboard list endpoint) should compute it
-    once via `source_global_shipping_medians(session)` and pass it in, so
-    we don't scan the whole `priceobservation` table per book.
+    `source_seller_global_medians` is a cascade-step-2 input. Callers that
+    invoke this in a loop (e.g. the dashboard list endpoint) compute it
+    once via `source_seller_global_shipping_medians(session)` and pass it
+    in, so we don't scan the whole `priceobservation` table per book.
+    `default_shipping_minor` is the cascade's terminal fallback when no
+    tier produces an estimate. `min_global_median_observations` gates the
+    (source, seller_class) tier so sparse buckets don't fire.
     """
     head = session.exec(
         text(
@@ -267,7 +319,7 @@ def compute_book_stats(
     raw = session.exec(
         text(
             """
-            SELECT observed_at, source, price_minor, shipping_minor, total_minor
+            SELECT observed_at, source, seller, price_minor, shipping_minor, total_minor
             FROM priceobservation
             WHERE book_id = :bid
               AND is_duplicate_of IS NULL
@@ -277,7 +329,7 @@ def compute_book_stats(
 
     # Shipping medians include duplicate rows on purpose: dupes repeat the
     # canonical shipping signal, and on slow-moving books they're the bulk
-    # of the sample. Matches `source_global_shipping_medians`.
+    # of the sample. Matches `source_seller_global_shipping_medians`.
     shipping_rows = session.exec(
         text(
             """
@@ -297,29 +349,35 @@ def compute_book_stats(
     book_median: int | None = (
         int(statistics.median(all_book_shipping)) if all_book_shipping else None
     )
-    if source_global_medians is None:
-        source_global_medians = source_global_shipping_medians(session)
+    if source_seller_global_medians is None:
+        source_seller_global_medians = source_seller_global_shipping_medians(
+            session, min_observations=min_global_median_observations,
+        )
 
     cascade_kwargs = dict(
         book_source_medians=book_source_medians,
-        source_global_medians=source_global_medians,
+        source_seller_global_medians=source_seller_global_medians,
         book_median=book_median,
+        default_shipping=default_shipping_minor,
     )
 
     imputed: list[tuple[datetime, int]] = []
-    for observed_at, source, price, shipping, total in raw:
+    for observed_at, source, seller, price, shipping, total in raw:
         if shipping is not None and total is not None:
             imputed.append((_to_aware(observed_at), int(total)))
             continue
-        imp = _imputed_shipping(source, **cascade_kwargs)
-        if imp is None or price is None:
+        if price is None:
             continue
+        imp = _imputed_shipping(source, seller, **cascade_kwargs)
         imputed.append((_to_aware(observed_at), int(price) + imp))
 
     # Current row uses the same cascade. The view picks `current_best` from
     # live offers, so `current_shipping` may be NULL for a live row that
     # failed to extract postage — cascade fills it.
-    current_total, current_price, current_shipping, current_source = head[:4]
+    (
+        current_total, current_price, current_shipping,
+        current_source, _current_condition, current_seller,
+    ) = head[:6]
     effective: int | None
     shipping_estimate: int | None = None
     if current_total is None:
@@ -327,12 +385,14 @@ def compute_book_stats(
     elif current_shipping is not None:
         effective = int(current_total)
     else:
-        imp = _imputed_shipping(current_source, **cascade_kwargs)
-        if imp is not None and current_price is not None:
-            effective = int(current_price) + imp
-            shipping_estimate = imp
-        else:
-            effective = None
+        # `price_minor` is non-nullable in the model, so when the view's
+        # `current_best` row exists (current_total is not None), current_price
+        # is guaranteed set. Assert the invariant so a schema regression
+        # surfaces here rather than silently producing 0+imp.
+        assert current_price is not None
+        imp = _imputed_shipping(current_source, current_seller, **cascade_kwargs)
+        effective = int(current_price) + imp
+        shipping_estimate = imp
 
     # Sort by ts ascending once so each window resolves to a tail slice
     # via bisect, and the all-time bounds fold in alongside.

@@ -8,7 +8,7 @@ from hypothesis import given, strategies as st
 from sqlmodel import Session
 
 from book_alerter.db import models
-from book_alerter.stats import BookStats, compute_book_stats
+from book_alerter.stats import BookStats, compute_book_stats, seller_class
 
 
 def _add_obs(session: Session, *, book_id: int, total: int, source: str = "wob",
@@ -220,6 +220,7 @@ def _add_obs_with_shipping(
     price: int,
     shipping: int | None,
     source: str = "wob",
+    seller: str | None = None,
     observed_at: datetime | None = None,
 ) -> models.PriceObservation:
     """Helper for shipping-aware tests. `shipping=None` mirrors a Keepa
@@ -229,6 +230,7 @@ def _add_obs_with_shipping(
     obs = models.PriceObservation(
         book_id=book_id,
         source=source,
+        seller=seller,
         condition="new",
         price_minor=price,
         currency="GBP",
@@ -299,20 +301,25 @@ def test_shipping_estimate_folds_keepa_into_distribution(engine_with_view, make_
     assert stats.sorted_totals == [1640, 2000, 2080]
 
 
-def test_shipping_estimate_none_drops_null_rows(engine_with_view, make_book):
-    """A book whose only observations have NULL shipping (all Keepa) gets
-    `shipping_estimate_minor=None` and the NULL rows are excluded from the
-    distribution — no fabricated default."""
+def test_cascade_terminal_default_imputes_when_no_shipping_signal(
+    engine_with_view, make_book,
+):
+    """A book whose only observations have NULL shipping (all Keepa) still
+    gets a distribution — the cascade's terminal default kicks in so rows
+    aren't dropped just because no shipping was ever observed. The
+    `shipping_estimate_minor` field stays None because the view returns no
+    `current_best` for Keepa-only books (Keepa is excluded from `buyable`),
+    so there's no current row to estimate against."""
     with Session(engine_with_view) as s:
         book = make_book(s, isbn13="9780000000023")
         _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
                                source="keepa")
         _add_obs_with_shipping(s, book_id=book.id, price=1600, shipping=None,
                                source="keepa")
-        stats = compute_book_stats(book.id, s)
+        stats = compute_book_stats(book.id, s, default_shipping_minor=280)
 
-    assert stats.shipping_estimate_minor is None
-    assert stats.sorted_totals == []
+    assert sorted(stats.sorted_totals) == [1780, 1880]
+    assert stats.all_time_min_total_minor == 1780
 
 
 def test_current_percentile_rank_basic(engine_with_view, make_book):
@@ -417,7 +424,9 @@ def test_cascade_step3_uses_source_global_median(engine_with_view, make_book):
         # — we want to prove step 3 wins over step 4 (per-book median = 900).
         _add_obs_with_shipping(s, book_id=book.id, price=2000, shipping=900,
                                source="amazon")
-        stats = compute_book_stats(book.id, s)
+        # Bypass the sparse-bucket threshold; this test is about cascade
+        # tier ordering, not the threshold.
+        stats = compute_book_stats(book.id, s, min_global_median_observations=1)
 
     # The WOB null-shipping row should be imputed at 800 + 180 = 980 (step 3),
     # not 800 + 900 = 1700 (step 4).
@@ -441,20 +450,22 @@ def test_cascade_step4_falls_back_to_per_book_median(engine_with_view, make_book
     assert sorted(stats.sorted_totals) == [1800, 1800]
 
 
-def test_cascade_drops_row_when_no_shipping_signal(engine_with_view, make_book):
-    """If a book has zero observed shipping anywhere AND no per-source-global
-    fallback applies, NULL-shipping rows are dropped."""
+def test_cascade_terminal_default_used_when_all_tiers_miss(
+    engine_with_view, make_book,
+):
+    """If a book has zero observed shipping anywhere AND no per-(source,
+    seller_class) global fallback applies, NULL-shipping rows fall through
+    to the cascade's terminal default rather than being dropped."""
     with Session(engine_with_view) as s:
         book = make_book(s, isbn13="9780000000034")
-        # Two Keepa rows only — both lack shipping, no fallback available
         _add_obs_with_shipping(s, book_id=book.id, price=1500, shipping=None,
                                source="keepa")
         _add_obs_with_shipping(s, book_id=book.id, price=1600, shipping=None,
                                source="keepa")
-        stats = compute_book_stats(book.id, s)
+        stats = compute_book_stats(book.id, s, default_shipping_minor=280)
 
-    assert stats.sorted_totals == []
-    assert stats.all_time_min_total_minor is None
+    assert sorted(stats.sorted_totals) == [1780, 1880]
+    assert stats.all_time_min_total_minor == 1780
 
 
 # ---------------------------------------------------------------------------
@@ -541,3 +552,148 @@ def test_window_rank_reflects_current_position(engine_with_view, make_book):
     # current_best is the cheapest row (100), so rank = 1/5 = 20%
     assert stats.windows["1m"].count == 5
     assert stats.windows["1m"].rank == 20
+
+
+# ---------------------------------------------------------------------------
+# Seller-class cascade keying — Amazon-fulfilled vs third-party shipping.
+# ---------------------------------------------------------------------------
+
+
+def test_seller_class_classification():
+    assert seller_class("Amazon") == "amazon_fulfilled"
+    assert seller_class("Amazon Marketplace") == "amazon_fulfilled"
+    assert seller_class("Amazon.co.uk") == "amazon_fulfilled"
+    assert seller_class("TheGlobalBuyer") == "third_party"
+    assert seller_class("World of Books") == "third_party"
+    assert seller_class(None) == "third_party"
+    assert seller_class("") == "third_party"
+
+
+def test_third_party_amazon_does_not_inherit_prime_zero_shipping(
+    engine_with_view, make_book,
+):
+    """Regression: when most Amazon offers globally are Prime (shipping=0),
+    a third-party Amazon row whose own shipping is NULL should NOT inherit
+    the Prime-dominant zero. With (source, seller_class) keying it falls
+    past the empty third-party bucket to the cascade's terminal default."""
+    with Session(engine_with_view) as s:
+        # Foreign book: lots of Prime Amazon shipping=0 observations.
+        prime_book = make_book(s, isbn13="9780000000050")
+        for _ in range(5):
+            _add_obs_with_shipping(
+                s, book_id=prime_book.id, price=2000, shipping=0,
+                source="amazon", seller="Amazon",
+            )
+
+        # Target book: only one live row, third-party Amazon seller, no shipping.
+        target = make_book(s, isbn13="9780000000051")
+        _add_obs_with_shipping(
+            s, book_id=target.id, price=3795, shipping=None,
+            source="amazon", seller="TheGlobalBuyer",
+        )
+        # Disable sparse-bucket threshold so the test isolates the
+        # seller-class behavior (the threshold is verified separately).
+        stats = compute_book_stats(
+            target.id, s,
+            default_shipping_minor=280,
+            min_global_median_observations=1,
+        )
+
+    # NOT 3795+0=3795 (the buggy old behavior). Instead 3795+280=4075.
+    assert stats.current_effective_total_minor == 4075
+    assert stats.shipping_estimate_minor == 280
+
+
+def test_amazon_fulfilled_still_uses_prime_global_median(
+    engine_with_view, make_book,
+):
+    """An Amazon-fulfilled row with NULL shipping correctly inherits the
+    (amazon, amazon_fulfilled) global median (typically 0 for Prime)."""
+    with Session(engine_with_view) as s:
+        prime_book = make_book(s, isbn13="9780000000052")
+        for _ in range(5):
+            _add_obs_with_shipping(
+                s, book_id=prime_book.id, price=2000, shipping=0,
+                source="amazon", seller="Amazon",
+            )
+
+        target = make_book(s, isbn13="9780000000053")
+        _add_obs_with_shipping(
+            s, book_id=target.id, price=1599, shipping=None,
+            source="amazon", seller="Amazon",
+        )
+        # Bypass sparse-bucket threshold; this test asserts tier-2 hit.
+        stats = compute_book_stats(
+            target.id, s,
+            default_shipping_minor=280,
+            min_global_median_observations=1,
+        )
+
+    # Prime median is 0, so effective = 1599 + 0 = 1599 (not 1599 + default).
+    assert stats.current_effective_total_minor == 1599
+    assert stats.shipping_estimate_minor == 0
+
+
+def test_sparse_global_bucket_excluded_below_threshold(
+    engine_with_view, make_book,
+):
+    """If only a handful of (source, seller_class) shipping rows have ever
+    been observed, the bucket is excluded from the cascade tier so a sparse
+    coincidence (e.g. 3 third-party Amazon rows all at £0) doesn't impute
+    free shipping onto an unrelated row."""
+    with Session(engine_with_view) as s:
+        # Only 3 third-party Amazon observations globally, all at 0.
+        thin = make_book(s, isbn13="9780000000060")
+        for _ in range(3):
+            _add_obs_with_shipping(
+                s, book_id=thin.id, price=2000, shipping=0,
+                source="amazon", seller="TheGlobalBuyer",
+            )
+
+        target = make_book(s, isbn13="9780000000061")
+        _add_obs_with_shipping(
+            s, book_id=target.id, price=3795, shipping=None,
+            source="amazon", seller="AnotherSeller",
+        )
+        # Threshold = 10 → the 3-row bucket is excluded → terminal default fires.
+        stats = compute_book_stats(
+            target.id, s,
+            default_shipping_minor=280,
+            min_global_median_observations=10,
+        )
+
+    assert stats.shipping_estimate_minor == 280
+    assert stats.current_effective_total_minor == 4075
+
+
+def test_keepa_only_book_distribution_uses_default(
+    engine_with_view, make_book,
+):
+    """The pre-fix degenerate case: Keepa-only book whose live offer is a
+    third-party seller with no shipping. Pre-fix: imputed = [], distribution
+    empty. Post-fix: every row imputed via terminal default; distribution
+    reflects historical price spread + the default shipping increment."""
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780000000054")
+        # Keepa history: 5 historical observations.
+        for i, price in enumerate([1400, 1500, 1600, 1700, 1800]):
+            _add_obs_with_shipping(
+                s, book_id=book.id, price=price, shipping=None,
+                source="keepa", seller="Amazon Marketplace",
+                observed_at=now - timedelta(days=i * 20),
+            )
+        # One live third-party Amazon row, no shipping.
+        _add_obs_with_shipping(
+            s, book_id=book.id, price=1500, shipping=None,
+            source="amazon", seller="TheGlobalBuyer",
+        )
+        stats = compute_book_stats(book.id, s, default_shipping_minor=280)
+
+    # Every imputed row = price + 280: 5 Keepa (1680..2080) + 1 live (1780).
+    assert sorted(stats.sorted_totals) == [1680, 1780, 1780, 1880, 1980, 2080]
+    assert stats.all_time_min_total_minor == 1680
+    assert stats.all_time_max_total_minor == 2080
+    # Current = 1500 + 280 = 1780; rank = bisect_right(...,1780) / 6 = 3/6 = 50%.
+    assert stats.current_effective_total_minor == 1780
+    assert stats.current_percentile_rank == 50

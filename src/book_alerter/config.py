@@ -45,6 +45,19 @@ class RecommendationConfig(BaseModel):
     # Window (days) over which percentile-based signals look at price
     # history. Per-book `Book.percentile_window_days` overrides this.
     percentile_window_days: int = 90
+    # Terminal fallback for the shipping cascade in `compute_book_stats`.
+    # Used when a row has no observed shipping, no per-(book, source)
+    # median, no global (source, seller_class) median, and no per-book
+    # median to fall back on. Tune to typical postage for your region;
+    # default 280 = £2.80 (UK paperback baseline).
+    default_shipping_minor: int = 280
+    # Minimum bucket size for the (source, seller_class) global tier in
+    # the shipping cascade. Buckets with fewer than this many observed
+    # shipping rows are excluded — a small sample can mislead (e.g., 4
+    # third-party Amazon rows that all happen to be free-shipping aren't
+    # enough to assert "third-party Amazon ships free"). Below the
+    # threshold the row falls through to the terminal default.
+    min_global_median_observations: int = 10
 
 
 class QuietHours(BaseModel):

@@ -42,7 +42,7 @@ from book_alerter.stats import (
     WindowStats,
     compute_book_stats,
     compute_signal,
-    source_global_shipping_medians,
+    source_seller_global_shipping_medians,
 )
 
 router = APIRouter(prefix="/api/books", tags=["books"])
@@ -50,6 +50,20 @@ router = APIRouter(prefix="/api/books", tags=["books"])
 
 def _effective_window_days(book: models.Book, cfg) -> int:
     return book.percentile_window_days or cfg.recommendation.percentile_window_days
+
+
+def _stats_for(book: models.Book, session: Session, cfg) -> BookStats:
+    """compute_book_stats wired with this book's window and the cascade
+    parameters from RecommendationConfig. Used by every single-book endpoint;
+    `list_books` calls compute_book_stats directly so it can share the global
+    medians across all books in one request."""
+    return compute_book_stats(
+        book.id or 0,
+        session,
+        _effective_window_days(book, cfg),
+        default_shipping_minor=cfg.recommendation.default_shipping_minor,
+        min_global_median_observations=cfg.recommendation.min_global_median_observations,
+    )
 
 
 # --- DTOs -------------------------------------------------------------------
@@ -292,7 +306,11 @@ def list_books(
     if not include_archived:
         stmt = stmt.where(models.Book.status != "archived")
     books = session.exec(stmt).all()
-    medians = source_global_shipping_medians(session)
+    medians = source_seller_global_shipping_medians(
+        session,
+        min_observations=cfg.recommendation.min_global_median_observations,
+    )
+    default_shipping = cfg.recommendation.default_shipping_minor
     return [
         BookOut.from_book(
             b,
@@ -300,7 +318,8 @@ def list_books(
                 b.id or 0,
                 session,
                 _effective_window_days(b, cfg),
-                source_global_medians=medians,
+                source_seller_global_medians=medians,
+                default_shipping_minor=default_shipping,
             ),
             reco=cfg.recommendation,
         )
@@ -364,7 +383,7 @@ def create_book(
         lambda: Session(engine),
     )
 
-    stats = compute_book_stats(book.id, session, _effective_window_days(book, cfg))
+    stats = _stats_for(book, session, cfg)
     return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
@@ -377,7 +396,7 @@ def get_book(
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
-    stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
+    stats = _stats_for(book, session, cfg)
     return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
@@ -401,7 +420,7 @@ def patch_book(
         session.commit()
         session.refresh(book)
 
-    stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
+    stats = _stats_for(book, session, cfg)
     return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
@@ -418,7 +437,7 @@ def delete_book(
     window = _effective_window_days(book, cfg)
 
     if hard:
-        stats = compute_book_stats(book_id, session, window)
+        stats = _stats_for(book, session, cfg)
         out = BookOut.from_book(book, stats, reco=cfg.recommendation)
         session.delete(book)
         session.commit()
@@ -429,7 +448,7 @@ def delete_book(
     session.add(book)
     session.commit()
     session.refresh(book)
-    stats = compute_book_stats(book_id, session, window)
+    stats = _stats_for(book, session, cfg)
     return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
@@ -542,7 +561,7 @@ def get_book_stats(
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
     return BookStatsOut.from_dataclass(
-        compute_book_stats(book_id, session, _effective_window_days(book, cfg)),
+        _stats_for(book, session, cfg),
         book=book,
         reco=cfg.recommendation,
     )
