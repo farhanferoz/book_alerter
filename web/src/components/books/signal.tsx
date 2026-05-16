@@ -1,29 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
-// Client-side approximation of `book_alerter.stats.compute_signal`.
-//
-// The exact backend computation needs `RecommendationConfig` (buy_percentile,
-// min_observations_for_signal, target_tolerance_pct) plus the full
-// `sorted_totals` array carried inside `BookStats`. The wire mirror
-// (`BookStatsOut`) deliberately excludes `sorted_totals`, so we approximate
-// using the materialised p25/p50/p75 fields.
-//
-// Approximation rules (mirrors backend semantics where data allows):
-//   - observation_count < config.min_observations_for_signal: INSUFFICIENT_DATA
-//   - current_best_total_minor is None: INSUFFICIENT_DATA
-//   - target set + current <= target: TARGET_HIT
-//   - current <= p25_total_minor: BUY
-//   - current <= p50_total_minor: WATCH
-//   - else: WAIT
-//
-// Phase 11.3 lifts the `min_observations_for_signal` constant out of this
-// module — callers pass the live `RecommendationConfig` slice from
-// `useConfig()`. When config is loading/errored, callers should fall through
-// to `RECOMMENDATION_DEFAULTS` (or pass it explicitly) so the dashboard
-// degrades to spec defaults rather than crashing. The Signal column is
-// presentation only — alert dispatch uses the server-side computation.
+// Signal accessor — reads the authoritative signal computed by
+// `book_alerter.stats.compute_signal` and shipped on the wire as
+// `BookStatsOut.signal`. Falls back to INSUFFICIENT_DATA if the field is
+// somehow missing (older API payload, error state). The dashboard pill
+// matches exactly what the alert dispatcher will fire.
 
 import type { Book } from "@/hooks/useBooks";
-import type { RecommendationConfigShape } from "@/hooks/useConfig";
 
 export type Signal =
   | "BUY"
@@ -32,29 +14,8 @@ export type Signal =
   | "TARGET_HIT"
   | "INSUFFICIENT_DATA";
 
-export function approximateSignal(
-  book: Book,
-  config: RecommendationConfigShape,
-): Signal {
-  const s = book.stats;
-  if (s.observation_count < config.min_observations_for_signal) {
-    return "INSUFFICIENT_DATA";
-  }
-  if (s.current_best_total_minor == null) return "INSUFFICIENT_DATA";
-
-  if (
-    book.target_price_minor != null &&
-    s.current_best_total_minor <= book.target_price_minor
-  ) {
-    return "TARGET_HIT";
-  }
-
-  const threshold = book.percentile_threshold ?? config.buy_percentile;
-  const rank = s.current_percentile_rank;
-  if (rank == null) return "INSUFFICIENT_DATA";
-  if (rank <= threshold) return "BUY";
-  if (rank <= config.watch_percentile) return "WATCH";
-  return "WAIT";
+export function bookSignal(book: Book): Signal {
+  return book.stats.signal ?? "INSUFFICIENT_DATA";
 }
 
 export const SIGNAL_LABEL: Record<Signal, string> = {

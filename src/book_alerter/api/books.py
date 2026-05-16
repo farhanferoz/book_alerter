@@ -32,9 +32,10 @@ from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_chart
 from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
+from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
 from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
-from book_alerter.stats import BookStats, compute_book_stats
+from book_alerter.stats import BookStats, Signal, compute_book_stats, compute_signal
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -94,9 +95,24 @@ class BookStatsOut(BaseModel):
     current_percentile_rank: int | None
     current_effective_total_minor: int | None
     shipping_estimate_minor: int | None
+    # Authoritative signal computed once on the backend with the live
+    # `RecommendationConfig`. The FE renders this directly — no
+    # client-side re-derivation, so the dashboard pill can't drift from
+    # what the alert dispatcher will fire.
+    signal: Signal | None
 
     @classmethod
-    def from_dataclass(cls, s: BookStats) -> BookStatsOut:
+    def from_dataclass(
+        cls,
+        s: BookStats,
+        book: models.Book | None = None,
+        reco: RecommendationConfig | None = None,
+    ) -> BookStatsOut:
+        signal = (
+            compute_signal(book, s, reco)
+            if book is not None and reco is not None
+            else None
+        )
         return cls(
             book_id=s.book_id,
             current_best_total_minor=s.current_best_total_minor,
@@ -119,6 +135,7 @@ class BookStatsOut(BaseModel):
             current_percentile_rank=s.current_percentile_rank,
             current_effective_total_minor=s.current_effective_total_minor,
             shipping_estimate_minor=s.shipping_estimate_minor,
+            signal=signal,
         )
 
 
@@ -191,7 +208,12 @@ class BookOut(BaseModel):
     stats: BookStatsOut
 
     @classmethod
-    def from_book(cls, book: models.Book, stats: BookStats) -> BookOut:
+    def from_book(
+        cls,
+        book: models.Book,
+        stats: BookStats,
+        reco: RecommendationConfig | None = None,
+    ) -> BookOut:
         return cls(
             id=book.id or 0,
             isbn13=book.isbn13,
@@ -214,7 +236,7 @@ class BookOut(BaseModel):
             muted_until=book.muted_until,
             created_at=book.created_at,
             updated_at=book.updated_at,
-            stats=BookStatsOut.from_dataclass(stats),
+            stats=BookStatsOut.from_dataclass(stats, book=book, reco=reco),
         )
 
 
@@ -235,6 +257,7 @@ def list_books(
         BookOut.from_book(
             b,
             compute_book_stats(b.id or 0, session, _effective_window_days(b, cfg)),
+            reco=cfg.recommendation,
         )
         for b in books
     ]
@@ -297,7 +320,7 @@ def create_book(
     )
 
     stats = compute_book_stats(book.id, session, _effective_window_days(book, cfg))
-    return BookOut.from_book(book, stats)
+    return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
 @router.get("/{book_id}", response_model=BookOut)
@@ -310,7 +333,7 @@ def get_book(
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
     stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
-    return BookOut.from_book(book, stats)
+    return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
 @router.patch("/{book_id}", response_model=BookOut)
@@ -334,7 +357,7 @@ def patch_book(
         session.refresh(book)
 
     stats = compute_book_stats(book_id, session, _effective_window_days(book, cfg))
-    return BookOut.from_book(book, stats)
+    return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
 @router.delete("/{book_id}", response_model=BookOut)
@@ -351,7 +374,7 @@ def delete_book(
 
     if hard:
         stats = compute_book_stats(book_id, session, window)
-        out = BookOut.from_book(book, stats)
+        out = BookOut.from_book(book, stats, reco=cfg.recommendation)
         session.delete(book)
         session.commit()
         return out
@@ -362,7 +385,7 @@ def delete_book(
     session.commit()
     session.refresh(book)
     stats = compute_book_stats(book_id, session, window)
-    return BookOut.from_book(book, stats)
+    return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
 @router.get("/{book_id}/observations", response_model=ObservationsPage)
@@ -474,7 +497,9 @@ def get_book_stats(
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
     return BookStatsOut.from_dataclass(
-        compute_book_stats(book_id, session, _effective_window_days(book, cfg))
+        compute_book_stats(book_id, session, _effective_window_days(book, cfg)),
+        book=book,
+        reco=cfg.recommendation,
     )
 
 

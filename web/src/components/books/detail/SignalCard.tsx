@@ -1,15 +1,12 @@
 // Signal card — pill + target distance + percentile context.
 //
-// Reuses `approximateSignal` from Phase 10.1 (same client-side approximation
-// as the dashboard column). The percentile rank shown here is a coarse bucket
-// derived from the three materialised quantiles in `BookStats` — see
-// `bucketPercentile` below. The real `BookStats.percentile_at()` lives on the
-// backend and isn't on the wire (Phase 11.3 lifts the real recommendation
-// config + percentile data to the client).
+// Signal is read from `book.stats.signal` (computed once on the backend
+// with the live recommendation config), so the pill matches exactly what
+// the alert dispatcher will fire.
 
 import type { Book } from "@/hooks/useBook";
 import { formatMoneyMinor } from "@/lib/format";
-import { SignalPill, approximateSignal } from "@/components/books/signal";
+import { SignalPill, bookSignal } from "@/components/books/signal";
 import { useConfig, RECOMMENDATION_DEFAULTS } from "@/hooks/useConfig";
 
 function percentileSummary(book: Book): string | null {
@@ -42,11 +39,11 @@ function targetDistance(book: Book): string | null {
 }
 
 export function SignalCard({ book }: { book: Book }) {
-  // Config drives `min_observations_for_signal`; fall through to spec
-  // defaults while /api/config is unavailable (Phase 11.3 lift).
+  // `min_observations_for_signal` is shown in the INSUFFICIENT_DATA hint
+  // so the user knows the threshold; signal itself comes from the backend.
   const cfg = useConfig();
   const recommendation = cfg.data?.recommendation ?? RECOMMENDATION_DEFAULTS;
-  const signal = approximateSignal(book, recommendation);
+  const signal = bookSignal(book);
   const summary = percentileSummary(book);
   const distance = targetDistance(book);
   const s = book.stats;

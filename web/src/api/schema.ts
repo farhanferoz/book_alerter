@@ -679,6 +679,8 @@ export interface components {
             current_effective_total_minor: number | null;
             /** Shipping Estimate Minor */
             shipping_estimate_minor: number | null;
+            /** Signal */
+            signal: ("BUY" | "WATCH" | "WAIT" | "TARGET_HIT" | "INSUFFICIENT_DATA") | null;
         };
         /** ConfigDiff */
         ConfigDiff: {

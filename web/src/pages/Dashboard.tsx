@@ -13,13 +13,8 @@ import { AddBookModal } from "@/components/books/AddBookModal";
 import { BookFilters, DEFAULT_FILTERS, type BookFiltersValue } from "@/components/books/BookFilters";
 import { DataTable } from "@/components/books/BookTable";
 import { buildBookColumns } from "@/components/books/columns";
-import { approximateSignal, type Signal } from "@/components/books/signal";
+import { bookSignal, type Signal } from "@/components/books/signal";
 import { useBooks, type Book } from "@/hooks/useBooks";
-import {
-  useConfig,
-  RECOMMENDATION_DEFAULTS,
-  type RecommendationConfigShape,
-} from "@/hooks/useConfig";
 import { formatErrorMessage } from "@/lib/utils";
 
 const SIGNAL_ORDER: Record<Signal, number> = {
@@ -30,14 +25,10 @@ const SIGNAL_ORDER: Record<Signal, number> = {
   INSUFFICIENT_DATA: 4,
 };
 
-function applyFilters(
-  books: Book[],
-  filters: BookFiltersValue,
-  config: RecommendationConfigShape,
-): Book[] {
+function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
   let result = books;
   if (filters.signal !== "ALL") {
-    result = result.filter((b) => approximateSignal(b, config) === filters.signal);
+    result = result.filter((b) => bookSignal(b) === filters.signal);
   }
   if (filters.status !== "all") {
     result = result.filter((b) => b.status === filters.status);
@@ -46,9 +37,7 @@ function applyFilters(
   switch (filters.sort) {
     case "signal":
       sorted.sort(
-        (a, b) =>
-          SIGNAL_ORDER[approximateSignal(a, config)] -
-          SIGNAL_ORDER[approximateSignal(b, config)],
+        (a, b) => SIGNAL_ORDER[bookSignal(a)] - SIGNAL_ORDER[bookSignal(b)],
       );
       break;
     case "best_price":
@@ -121,19 +110,10 @@ export function Dashboard() {
   const { data, isLoading, isError, error } = useBooks({
     include_archived: includeArchived,
   });
-  // Config drives the signal-approximation threshold. Falls through to spec
-  // defaults while loading or on error so the dashboard never crashes when
-  // /api/config is briefly unavailable (Phase 11.3 lift).
-  const cfg = useConfig();
-  const recommendation = cfg.data?.recommendation ?? RECOMMENDATION_DEFAULTS;
-
-  const columns = useMemo(
-    () => buildBookColumns(recommendation),
-    [recommendation],
-  );
+  const columns = useMemo(() => buildBookColumns(), []);
   const filtered = useMemo(
-    () => (data ? applyFilters(data, filters, recommendation) : []),
-    [data, filters, recommendation],
+    () => (data ? applyFilters(data, filters) : []),
+    [data, filters],
   );
 
   const onAddBook = () => setAddBookOpen(true);

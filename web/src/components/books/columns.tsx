@@ -23,10 +23,9 @@ import {
   isBookfinderSourcedLabel,
 } from "@/lib/format";
 import type { Book } from "@/hooks/useBooks";
-import type { RecommendationConfigShape } from "@/hooks/useConfig";
 import { BookRowMenu } from "./BookRowMenu";
 import { CoverImage } from "./CoverImage";
-import { SignalPill, approximateSignal, type Signal } from "./signal";
+import { SignalPill, bookSignal, type Signal } from "./signal";
 
 function ConditionPill({ condition }: { condition: string | null }) {
   if (!condition) return null;
@@ -73,12 +72,10 @@ function pctClass(pct: number | null): string {
   return "text-rose-700 dark:text-rose-400";
 }
 
-// Built as a factory so `approximateSignal(b, config)` can close over the
-// live `RecommendationConfig` (Phase 11.3 lift — was a hard-coded constant
-// in `signal.tsx`).
-export function buildBookColumns(
-  config: RecommendationConfigShape,
-): ColumnDef<Book>[] {
+// The signal pill reads `book.stats.signal` directly — the backend
+// computes it once with the live `RecommendationConfig`, so the FE never
+// re-derives and can't drift from what the alert dispatcher will fire.
+export function buildBookColumns(): ColumnDef<Book>[] {
   return [
   {
     id: "cover",
@@ -144,7 +141,7 @@ export function buildBookColumns(
   },
   {
     id: "signal",
-    accessorFn: (b) => approximateSignal(b, config),
+    accessorFn: (b) => bookSignal(b),
     header: "Signal",
     cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
   },
