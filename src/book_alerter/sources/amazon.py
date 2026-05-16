@@ -488,18 +488,17 @@ def _extract_offer_seller(row: Node) -> str:
         cleaned = label.removesuffix(_ARIA_LABEL_SELLER_SUFFIX).strip()
         if cleaned:
             return cleaned
-    a_node = row.css_first("#aod-offer-soldBy a")
-    if a_node is not None:
-        text = (a_node.text() or "").strip()
-        if text:
-            return text
+    a_text = _node_text(row.css_first("#aod-offer-soldBy a"))
+    if a_text:
+        return a_text
     div = row.css_first("#aod-offer-soldBy")
     if div is None:
         return "?"
     text = " ".join((div.text() or "").split()).strip()
     for prefix in ("Sold by:", "Sold by"):
-        if text.lower().startswith(prefix.lower()):
-            text = text[len(prefix):].strip(" :| ")
+        cleaned = text.removeprefix(prefix).strip(" : ")
+        if cleaned != text:
+            text = cleaned
             break
     return text or "?"
 
