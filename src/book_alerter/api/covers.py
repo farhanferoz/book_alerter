@@ -11,6 +11,8 @@ bypassing browser shield blocklists that fire on third-party CDN hosts
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Response, status
 from sqlmodel import select
 
@@ -20,11 +22,17 @@ from book_alerter.db import models
 
 router = APIRouter(prefix="/api/covers", tags=["covers"])
 
+# Reject anything that isn't exactly 13 digits — the cover_path helper
+# would otherwise resolve `..%2F..%2Fetc%2Fpasswd` and friends to files
+# outside `data/covers/`.
+_ISBN13_RE = re.compile(r"^\d{13}$")
 _CACHE_CONTROL = "public, max-age=86400"
 
 
 @router.get("/{isbn13}", include_in_schema=False)
 async def get_cover(isbn13: str, session: SessionDep) -> Response:
+    if not _ISBN13_RE.fullmatch(isbn13):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     path = cover_path(isbn13)
     if not path.exists():
         book = session.exec(

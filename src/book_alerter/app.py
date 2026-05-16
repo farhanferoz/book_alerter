@@ -131,7 +131,7 @@ def create_app() -> FastAPI:
     #   2. A catch-all GET that returns `index.html` for any unmatched path —
     #      this is the SPA client-side router (e.g. `/books/123`) fallback,
     #      so a deep-link reload doesn't 404.
-    web_dist = Path(os.environ.get("BOOK_ALERTER_WEB_DIST", "web/dist"))
+    web_dist = Path(os.environ.get("BOOK_ALERTER_WEB_DIST", "web/dist")).resolve()
     if web_dist.is_dir():
         index_html = web_dist / "index.html"
         assets_dir = web_dist / "assets"
@@ -147,9 +147,19 @@ def create_app() -> FastAPI:
             # Try a literal file in the dist root first (favicon.svg,
             # icons.svg, robots.txt, ...). Anything else: serve index.html
             # so the React Router can take over.
-            candidate = web_dist / full_path
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
+            #
+            # Resolve + containment check: without it, a path like
+            # `../../../etc/passwd` joins to `web_dist/../../../etc/passwd`
+            # which `Path.resolve()` flattens to `/etc/passwd`. Serving any
+            # file outside `web_dist` is a path-traversal vulnerability.
+            if full_path:
+                candidate = (web_dist / full_path).resolve()
+                try:
+                    candidate.relative_to(web_dist)
+                except ValueError:
+                    candidate = None
+                if candidate is not None and candidate.is_file():
+                    return FileResponse(candidate)
             if index_html.is_file():
                 return FileResponse(index_html)
             raise HTTPException(status_code=404)
