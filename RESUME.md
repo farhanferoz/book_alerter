@@ -2,14 +2,14 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2 reviewed.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Next action: first deploy to NAS.**
+**Status:** **MVP COMPLETE + Tier-2 reviewed + Amazon used-grades fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source now captures used grades (dp + offer-listing merge with dedup) — the prior dp-first/fallback flow silently dropped every used offer when a new copy was in stock. Scenario_01 time-rot fix landed alongside. **Next action: first deploy to NAS.**
 
-**Branch:** `master` (no worktree, linear chain). 12 commits beyond the prior MVP-complete head (`bd4ffa5`).
-**Last update:** 2026-05-16, Tier-2 review pass — branch is deploy-ready.
+**Branch:** `master` (no worktree, linear chain). 14 commits beyond the prior MVP-complete head (`bd4ffa5`).
+**Last update:** 2026-05-16, Amazon dp + offer-listing merge + scenario_01 freeze_time — branch is deploy-ready.
 
 ## What ships
 
-- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Three sources (WoB via httpx, Bookfinder + Amazon UK via Playwright). Two notifiers (in-app always-on + ntfy.sh opt-in). Weekly SQLite backup via `VACUUM INTO`. Lifespan-scoped shared `httpx.AsyncClient` threaded through all non-Playwright HTTP. Per-book scrape health (`last_scrape_attempt_at` + `last_scrape_error`) on `Book`, written by the scheduler. Deep `/api/health` (DB `SELECT 1` + APScheduler `.running`) returns 503 on failure so Docker actually restarts an unhealthy container.
+- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Three sources (WoB via httpx, Bookfinder + Amazon UK via Playwright). Amazon UK renders BOTH the dp and the offer-listing page every fetch and merges with dedup (`(seller, condition, price)` key, concrete shipping wins over `None`), so the new buy-box and every used grade Amazon publishes both land in one observation list. Two notifiers (in-app always-on + ntfy.sh opt-in). Weekly SQLite backup via `VACUUM INTO`. Lifespan-scoped shared `httpx.AsyncClient` threaded through all non-Playwright HTTP. Per-book scrape health (`last_scrape_attempt_at` + `last_scrape_error`) on `Book`, written by the scheduler. Deep `/api/health` (DB `SELECT 1` + APScheduler `.running`) returns 503 on failure so Docker actually restarts an unhealthy container.
 - **Frontend** — Vite + React 19 + TS + Tailwind v4 + shadcn/ui + Recharts + TanStack Query + Monaco. Served by FastAPI from the same port in production. Dashboard shows imputed-shipping marker (`~+£X.XX*`) when the cascade fills in missing postage; per-book red dot when `last_scrape_error` is set. Monaco editor re-themes live via the new `useIsDark` hook.
 - **Stats** — `compute_book_stats` bounds the raw-observation scan to `max(WINDOW_DAYS, percentile_window_days)` days; `all_time_min/max` therefore mean "within window" (better signal for long-running deploys). Cascade-imputed shipping pulled via `seller_class()` (`amazon_fulfilled` vs `third_party`), with `(source, seller_class)` global medians gated by `min_global_median_observations`. `BookStats` wire shape now reads `windows[label_for_days(days)]` for percentiles; `current_percentile_rank` retained for custom (non-canonical) windows.
 - **Deployment** — Multi-stage Dockerfile (`mcr.microsoft.com/playwright/python:v1.59.0-noble` base + Node 20 builder), `docker-compose.yml` with healthcheck + log rotation + shm_size + PUID/PGID, `.env.example` with every knob documented. First boot writes `data/config.yaml` from defaults so the user has a discoverable seed file.
@@ -22,7 +22,7 @@ cd /home/ff235/dev/book_alerter
 
 # Layer 1: unit + integration (≤6 s)
 uv run pytest -q
-# expected: 273 passed, 3 skipped, 1 deselected
+# expected: 280 passed, 3 skipped, 1 deselected
 #   - 3 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1) + one VCR cassette gate
 #   - 1 deselected: e2e marker (opt-in only)
 
@@ -98,6 +98,8 @@ Deferrals new in 2026-05-16 review pass:
 - **React.memo on MiniBars** — premature with 9 dashboard rows; revisit only if dashboard rendering becomes visibly janky.
 - **Bound per-book raw observation table** (not just stats reads) — the SQLite table grows unbounded; eventual prune job + retention policy is a natural follow-up once we know how many years of history a user actually wants.
 - **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it.
+- **scenarios 05 + 06 still anchor observations on fixed 2026 dates without `freeze_time`** — they pass today because their assertions don't depend on percentile windowing, but the same test-rot pattern that broke scenario_01 could surface for them. Audit + retrofit `freeze_time` if either ever starts failing on time-window grounds.
+- **Scheduler `_persist` uses case-sensitive `seller` matching** while `_merge_offers` now casefolds — the two layers disagree on what "same seller" means. Almost certainly fine in practice (Amazon HTML is stable per page), but worth aligning if seller casing ever drifts.
 
 Closed by the 2026-05-16 review pass (no longer deferred):
 
@@ -105,6 +107,8 @@ Closed by the 2026-05-16 review pass (no longer deferred):
 - ~~Per-book scrape failures don't surface beyond logs~~ — shipped in `a9842ca` (B2): `last_scrape_attempt_at` + `last_scrape_error` columns + dashboard indicator.
 - ~~Monaco theme not live-updated~~ — shipped in `f937aa2` + `a1d58c8` (C4): `useIsDark` hook drives both Monaco and ThemeToggle.
 - ~~Notifier registry frozen at startup~~ — already addressed by `rebuild_runtime()` in `app.py`. Same for source registry.
+- ~~Amazon source skips the used market when a new copy is in stock~~ — shipped in `b57f82a`: `fetch()` now renders both dp + offer-listing every call and `_merge_offers` dedups overlapping rows by `(seller, condition, price)` preferring concrete shipping over `None`. Doubles per-Amazon-book wall-clock (≈5 s → ≈10 s); still well inside the 6 h scheduler cadence at ≤200 books.
+- ~~scenario_01 fails on Phase B's "first computed signal" assertion~~ — shipped in `0df2403`: scenario observations are anchored at `2026-01-01` but the pipeline ran on the real clock, so `compute_book_stats`'s 90-day window filtered them all out (today is past the window). Wrapped `main()` in `freeze_time("2026-01-18 12:00:00")`. Test-rot only; no production change.
 
 ## Open decisions
 
