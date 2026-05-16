@@ -25,10 +25,11 @@ from book_alerter.sources.normalizers import amazon_uk_dp_url, asin_for_amazon_u
 # "To discuss automated access to Amazon" interstitial). So this source
 # drives headless Chromium via Playwright for every lookup.
 #
-# Strategy: try /dp/<ISBN> first to extract the buy-box price. If the dp
-# page has no usable buy-box (out of stock, marketplace-only listing,
-# etc.), fall back to /gp/offer-listing/<ISBN>?condition=all and enumerate
-# the marketplace offers.
+# Strategy: render BOTH /dp/<ISBN> and /gp/offer-listing/<ISBN>?condition=all
+# on every fetch and merge. The dp buy-box almost always also appears as a
+# row on the offer-listing page, so a merge-with-dedup gives us the union:
+# the new buy-box guaranteed (even on books with a marketplace-empty AOD
+# page) plus every used grade Amazon publishes on the marketplace.
 #
 # Region: UK only at MVP. Pass region="UK" or accept the default.
 #
@@ -85,8 +86,9 @@ BOT_MARKERS: tuple[str, ...] = (
 class AmazonUKInlineSource(InlineSource):
     """Amazon UK scraper backed by headless Chromium (Playwright).
 
-    Tries the dp page first; falls back to the offer-listing page if the dp
-    page has no usable buy-box. See module docstring for protocol details.
+    Renders both the dp and the offer-listing pages on every fetch and
+    merges the offers, deduping rows that appear on both. See module
+    docstring for protocol details.
     """
 
     def __init__(
@@ -130,20 +132,19 @@ class AmazonUKInlineSource(InlineSource):
                         "#corePrice_feature_div, "
                         ".a-price .a-offscreen"
                     ),
-                    # Buy-box renders fast; missing selector means no buy-box
-                    # here, fall back rather than burn the full timeout.
+                    # Buy-box renders fast — cap the wait so a buy-box-less
+                    # listing doesn't burn the full Playwright timeout.
                     wait_ms=min(10_000, int(self.timeout_s * 1000)),
                 )
-                offers = parse_dp(dp_html, dp)
-                if offers:
-                    return offers
+                dp_offers = parse_dp(dp_html, dp)
                 ol_html = await self._render_page(
                     context,
                     ol,
                     wait_selector="#aod-offer-list, .olpOfferList",
                     wait_ms=int(self.timeout_s * 1000),
                 )
-                return parse_offer_listing(ol_html, ol)
+                ol_offers = parse_offer_listing(ol_html, ol)
+                return _merge_offers([*dp_offers, *ol_offers])
             finally:
                 await browser.close()
 
@@ -180,6 +181,34 @@ class AmazonUKInlineSource(InlineSource):
                     "Playwright was unable to clear it",
                 )
         return html
+
+
+def _normalize_seller(seller: str | None) -> str:
+    return (seller or "").strip().casefold()
+
+
+def _merge_offers(offers: list[ObservationCandidate]) -> list[ObservationCandidate]:
+    """Merge dp + offer-listing offers, deduping rows that describe the same offer.
+
+    Match on (normalized seller, condition, price_minor). Shipping is left
+    out of the key because the dp delivery block and the offer-listing
+    `#aod-offer-shipping` line can disagree representationally for the
+    same buy-box offer (the dp slot may be hydration-skeletoned to
+    shipping_minor=None while the offer-listing row resolves to 0 from
+    "FREE delivery"). When a duplicate is found, the entry with concrete
+    shipping data wins over one with shipping_minor=None — a known value
+    beats no information.
+    """
+    by_key: dict[tuple[str, str, int], ObservationCandidate] = {}
+    for o in offers:
+        key = (_normalize_seller(o.seller), o.condition, o.price_minor)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = o
+            continue
+        if existing.shipping_minor is None and o.shipping_minor is not None:
+            by_key[key] = o
+    return list(by_key.values())
 
 
 _FREE_DELIVERY_RE = re.compile(r"\bFREE\s+delivery\b", re.IGNORECASE)

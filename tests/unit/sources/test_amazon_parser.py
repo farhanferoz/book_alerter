@@ -10,7 +10,8 @@ fixtures should be regenerated and these tests revisited.
 
 from pathlib import Path
 
-from book_alerter.sources.amazon import parse_dp, parse_offer_listing
+from book_alerter.sources.amazon import _merge_offers, parse_dp, parse_offer_listing
+from book_alerter.sources.base import ObservationCandidate
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "amazon"
 
@@ -124,3 +125,88 @@ def test_all_observations_use_valid_condition_enum() -> None:
     ol_html = _load("9780747532699-uk-offer-listing.html")
     for o in parse_offer_listing(ol_html, fallback_url="https://x.example/"):
         assert o.condition in valid
+
+
+def _cand(
+    seller: str,
+    condition: str,
+    price_minor: int,
+    shipping_minor: int | None = None,
+) -> ObservationCandidate:
+    return ObservationCandidate(
+        seller=seller,
+        condition=condition,  # type: ignore[arg-type]
+        price_minor=price_minor,
+        shipping_minor=shipping_minor,
+        currency="GBP",
+        url="https://x.example/",
+    )
+
+
+def test_merge_dedups_overlapping_offer_preferring_concrete_shipping() -> None:
+    """The dp buy-box (shipping_minor=None) duplicates a row on the
+    offer-listing page (shipping_minor=0). The merged result must collapse
+    the pair to a single row carrying the concrete shipping value."""
+    dp_row = _cand("Amazon", "new", 799, shipping_minor=None)
+    ol_amazon = _cand("Amazon", "new", 799, shipping_minor=0)
+    ol_wob = _cand("WorldOfBooks Ltd", "used_g", 399, shipping_minor=280)
+
+    merged = _merge_offers([dp_row, ol_amazon, ol_wob])
+
+    assert len(merged) == 2
+    by_seller = {o.seller: o for o in merged}
+    assert by_seller["Amazon"].shipping_minor == 0
+    assert by_seller["WorldOfBooks Ltd"].price_minor == 399
+
+
+def test_merge_treats_different_conditions_as_distinct() -> None:
+    """Same seller + same price but different conditions = different offers.
+    Don't collapse them."""
+    new = _cand("X", "new", 799, shipping_minor=0)
+    used = _cand("X", "used_g", 799, shipping_minor=280)
+
+    merged = _merge_offers([new, used])
+
+    assert len(merged) == 2
+
+
+def test_merge_seller_match_is_case_and_whitespace_insensitive() -> None:
+    """Amazon sometimes returns the seller as " Amazon " or "amazon" across
+    page templates. Treat them as the same seller for dedup purposes."""
+    dp_row = _cand(" Amazon ", "new", 799, shipping_minor=None)
+    ol_row = _cand("amazon", "new", 799, shipping_minor=0)
+
+    merged = _merge_offers([dp_row, ol_row])
+
+    assert len(merged) == 1
+    assert merged[0].shipping_minor == 0
+
+
+def test_merge_preserves_dp_row_when_no_offer_listing_match() -> None:
+    """dp row with no counterpart on offer-listing survives the merge — the
+    "Amazon's offer doesn't appear in the marketplace AOD" case."""
+    dp_row = _cand("Amazon", "new", 1234, shipping_minor=None)
+    ol_other = _cand("BookCurl", "used_vg", 4074, shipping_minor=0)
+
+    merged = _merge_offers([dp_row, ol_other])
+
+    assert len(merged) == 2
+    sellers = {o.seller for o in merged}
+    assert sellers == {"Amazon", "BookCurl"}
+
+
+def test_merge_keeps_first_when_both_shipping_values_concrete() -> None:
+    """Two concrete shipping values for the same (seller, condition, price)
+    means the same offer reported twice with the same level of detail —
+    preserve insertion order rather than ping-ponging."""
+    first = _cand("X", "new", 799, shipping_minor=0)
+    second = _cand("X", "new", 799, shipping_minor=280)
+
+    merged = _merge_offers([first, second])
+
+    assert len(merged) == 1
+    assert merged[0].shipping_minor == 0
+
+
+def test_merge_empty_input_returns_empty() -> None:
+    assert _merge_offers([]) == []

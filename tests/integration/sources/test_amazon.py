@@ -2,8 +2,10 @@
 
 Playwright/Chromium fetch is mocked at the `_render_page` boundary so the
 test exercises the full Source contract (fetch -> parse -> ObservationCandidate
-list) without launching a browser. The dp -> offer-listing fallback path
-gets its own test.
+list) without launching a browser. The source renders both the dp and the
+offer-listing pages on every fetch and merges/dedups the results; the tests
+cover the all-three combinations (both populated / dp only / offer-listing
+only).
 
 Live capture against amazon.co.uk is gated by `AMAZON_LIVE=1`. Note: as of
 2026-05-14 Amazon's anti-bot reliably defeats headless Chromium for the
@@ -83,19 +85,56 @@ def test_non_uk_region_rejected() -> None:
         AmazonUKInlineSource(region="US")
 
 
-def test_fetch_returns_dp_offer_when_buybox_present(
+def test_fetch_renders_both_pages_and_merges_with_dedup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """dp page with a usable buy-box: return that, never hit offer-listing."""
+    """Both dp + offer-listing populated. The Amazon buy-box appears on both
+    pages; the merged result must collapse it to a single row, preferring
+    the offer-listing's concrete shipping_minor=0 over the dp's None."""
     calls = _install_fake_render_page(
-        monkeypatch, {"/dp/": FIXTURE_DP.read_text(encoding="utf-8")}
+        monkeypatch,
+        {
+            "/dp/": FIXTURE_DP.read_text(encoding="utf-8"),
+            "/gp/offer-listing/": FIXTURE_OFFER_LISTING.read_text(encoding="utf-8"),
+        },
     )
 
     src = AmazonUKInlineSource(region="UK")
     offers = asyncio.run(src.fetch(_hp_book()))
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "/dp/" in calls[0]
+    assert "/gp/offer-listing/" in calls[1]
+    # dp yields 1 Amazon/new/799 row (shipping=None) + offer-listing yields 4
+    # rows incl. an Amazon/new/799 row (shipping=0). Dedup collapses the
+    # overlapping Amazon row, so the union is exactly 4.
+    assert len(offers) == 4
+    sellers = {o.seller for o in offers}
+    assert sellers == {"Amazon", "BetterWorldBooksUK", "WorldOfBooks Ltd", "MusicMagpie"}
+    amazon_row = next(o for o in offers if o.seller == "Amazon")
+    assert amazon_row.shipping_minor == 0  # offer-listing's value wins over dp's None
+    used_conditions = {o.condition for o in offers if o.seller != "Amazon"}
+    assert used_conditions == {"used_vg", "used_g", "used_acceptable"}
+
+
+def test_fetch_returns_dp_only_when_offer_listing_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dp has a buy-box, offer-listing renders but has no #aod-offer rows.
+    Merge returns the dp row untouched — guards the "Amazon-fulfilled
+    new-only" path where the AOD page is empty."""
+    calls = _install_fake_render_page(
+        monkeypatch,
+        {
+            "/dp/": FIXTURE_DP.read_text(encoding="utf-8"),
+            "/gp/offer-listing/": "<html><body></body></html>",
+        },
+    )
+
+    src = AmazonUKInlineSource(region="UK")
+    offers = asyncio.run(src.fetch(_hp_book()))
+
+    assert len(calls) == 2
     assert len(offers) == 1
     o = offers[0]
     assert o.price_minor == 799
@@ -103,8 +142,11 @@ def test_fetch_returns_dp_offer_when_buybox_present(
     assert o.condition == "new"
 
 
-def test_fetch_falls_back_to_offer_listing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Empty buy-box on dp -> source must follow up with offer-listing fetch."""
+def test_fetch_returns_offer_listing_only_when_dp_has_no_buybox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No buy-box on dp (parser returns empty) -> all offers come from
+    offer-listing."""
     calls = _install_fake_render_page(
         monkeypatch,
         {
