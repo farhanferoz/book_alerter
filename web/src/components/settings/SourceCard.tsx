@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { CronScheduleField } from "@/components/settings/CronScheduleField";
 import {
   DiffPreviewDialog,
   type DiffRow,
@@ -227,18 +228,11 @@ export function SourceCard({ source }: SourceCardProps) {
       </header>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor={`schedule-${source.name}`}>Schedule (cron)</Label>
-          <Input
-            id={`schedule-${source.name}`}
-            value={draft.schedule}
-            onChange={(e) =>
-              setDraft((d) => ({ ...d, schedule: e.target.value }))
-            }
-            placeholder="0 */6 * * *"
-            className="font-mono text-xs"
-          />
-        </div>
+        <CronScheduleField
+          id={`schedule-${source.name}`}
+          value={draft.schedule}
+          onChange={(cron) => setDraft((d) => ({ ...d, schedule: cron }))}
+        />
         <div className="space-y-1.5">
           <Label htmlFor={`concurrency-${source.name}`}>Concurrency</Label>
           <Input
