@@ -101,7 +101,24 @@ def rebuild_runtime(app: FastAPI) -> None:
 async def lifespan(app: FastAPI):
     configure_logging()
     cfg_path = Path(os.environ.get("BOOK_ALERTER_CONFIG_PATH", "data/config.yaml"))
+    first_boot = not cfg_path.exists()
     cfg = Config.load(cfg_path)
+    if first_boot:
+        # Persist the default Config to disk so the user can discover the
+        # full schema by reading data/config.yaml or via the Advanced editor,
+        # rather than confronting an empty file. Safe to write because we
+        # only land here when the file genuinely doesn't exist.
+        try:
+            cfg.save(cfg_path)
+            log.info("startup.config.created", config_path=str(cfg_path))
+        except OSError as e:
+            # Don't crash boot — defaults already loaded in memory; the user
+            # can still operate, they just won't get a seed file on disk.
+            log.warning(
+                "startup.config.create_failed",
+                config_path=str(cfg_path),
+                error=str(e),
+            )
     app.state.config = cfg
     app.state.config_path = cfg_path
     log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
