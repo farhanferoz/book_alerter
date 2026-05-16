@@ -53,14 +53,27 @@ current_best AS (
         LIMIT 1
     )
 ),
-agg AS (
+-- `agg_history` counts the full canonical history (including Keepa) so the
+-- INSUFFICIENT_DATA gates fire on observation_count / days_of_history — a
+-- book with rich Keepa backfill but few live polls should still qualify.
+agg_history AS (
     SELECT book_id,
-           MIN(total_minor) AS all_time_min_total_minor,
-           MAX(total_minor) AS all_time_max_total_minor,
            COUNT(*)         AS observation_count,
            MAX(observed_at) AS last_observed_at,
            CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
     FROM non_dupes
+    GROUP BY book_id
+),
+-- `agg_buyable` powers the all_time_min/max used by the `new_low` alert:
+-- Keepa rows have NULL shipping and unfairly-low totals (item price only),
+-- so a Keepa-populated min would never be beaten by a live total that
+-- includes postage — `new_low` would effectively never fire. Restrict
+-- min/max to the same buyable set that `current_best` already uses.
+agg_buyable AS (
+    SELECT book_id,
+           MIN(total_minor) AS all_time_min_total_minor,
+           MAX(total_minor) AS all_time_max_total_minor
+    FROM buyable
     GROUP BY book_id
 ),
 -- `last_polled_at` is the max observed_at over EVERY row (including dupes
@@ -82,16 +95,17 @@ SELECT b.id AS book_id,
        cb.condition      AS current_best_condition,
        cb.seller         AS current_best_seller,
        cb.url            AS current_best_url,
-       a.all_time_min_total_minor,
-       a.all_time_max_total_minor,
-       a.observation_count,
-       a.last_observed_at,
+       ab.all_time_min_total_minor,
+       ab.all_time_max_total_minor,
+       ah.observation_count,
+       ah.last_observed_at,
        p.last_polled_at,
-       a.days_of_history
+       ah.days_of_history
 FROM book b
 LEFT JOIN current_best cb ON cb.book_id = b.id
-LEFT JOIN agg a          ON a.book_id  = b.id
-LEFT JOIN polled p       ON p.book_id  = b.id
+LEFT JOIN agg_history ah  ON ah.book_id = b.id
+LEFT JOIN agg_buyable ab  ON ab.book_id = b.id
+LEFT JOIN polled p        ON p.book_id  = b.id
 """
 
 DROP_BOOK_STATS_VIEW_SQL = "DROP VIEW IF EXISTS book_stats"

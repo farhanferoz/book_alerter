@@ -95,14 +95,20 @@ def _percentiles(values: list[int]) -> tuple[int, int, int] | tuple[None, None, 
 
 def _per_book_shipping_median(session: Session, book_id: int) -> int | None:
     """Median of observed shipping_minor for the book across all sources,
-    all time. `None` if no row carries a known shipping value yet."""
+    all time. `None` if no row carries a known shipping value yet.
+
+    Includes `is_duplicate_of NOT NULL` rows — dedup is keyed on exact
+    (price, shipping) match, so duplicate rows carry the same shipping
+    value as their canonical parent and are real signal, not noise.
+    Filtering them out drops ~85% of the shipping observations on stable
+    books and skews the median toward the oldest representative.
+    """
     rows = session.exec(
         text(
             """
             SELECT shipping_minor FROM priceobservation
             WHERE book_id = :bid
               AND shipping_minor IS NOT NULL
-              AND is_duplicate_of IS NULL
             """
         ).bindparams(bid=book_id)
     ).all()
