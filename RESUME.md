@@ -2,10 +2,10 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2 reviewed + Amazon used-grades fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source now captures used grades (dp + offer-listing merge with dedup) — the prior dp-first/fallback flow silently dropped every used offer when a new copy was in stock. Scenario_01 time-rot fix landed alongside. **Next action: first deploy to NAS.**
+**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source now captures used grades (dp + offer-listing merge with dedup) — the prior dp-first/fallback flow silently dropped every used offer when a new copy was in stock. Scenario_01/05/06 time-rot fix landed alongside; scheduler `_persist` dedup now normalizes seller case + whitespace consistently with `_merge_offers`. Second Tier-2 pass (Tier-1 simplify + find-bugs + gemini second-opinion + fp-check) found one TRUE POSITIVE latent defect (whitespace asymmetry between merge-time and persist-time dedup) — fixed in `9137eb9`. **Next action: first deploy to NAS.**
 
-**Branch:** `master` (no worktree, linear chain). 14 commits beyond the prior MVP-complete head (`bd4ffa5`).
-**Last update:** 2026-05-16, Amazon dp + offer-listing merge + scenario_01 freeze_time — branch is deploy-ready.
+**Branch:** `master` (no worktree, linear chain). 17 commits beyond the prior MVP-complete head (`bd4ffa5`).
+**Last update:** 2026-05-16, Tier-2 follow-up — Amazon dp + offer-listing merge + scenario freeze_time + scheduler seller normalization. Branch is deploy-ready.
 
 ## What ships
 
@@ -98,9 +98,6 @@ Deferrals new in 2026-05-16 review pass:
 - **React.memo on MiniBars** — premature with 9 dashboard rows; revisit only if dashboard rendering becomes visibly janky.
 - **Bound per-book raw observation table** (not just stats reads) — the SQLite table grows unbounded; eventual prune job + retention policy is a natural follow-up once we know how many years of history a user actually wants.
 - **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it.
-- **scenarios 05 + 06 still anchor observations on fixed 2026 dates without `freeze_time`** — they pass today because their assertions don't depend on percentile windowing, but the same test-rot pattern that broke scenario_01 could surface for them. Audit + retrofit `freeze_time` if either ever starts failing on time-window grounds.
-- **Scheduler `_persist` uses case-sensitive `seller` matching** while `_merge_offers` now casefolds — the two layers disagree on what "same seller" means. Almost certainly fine in practice (Amazon HTML is stable per page), but worth aligning if seller casing ever drifts.
-
 Closed by the 2026-05-16 review pass (no longer deferred):
 
 - ~~Long-lived `httpx.AsyncClient` could lift into FastAPI lifespan~~ — shipped in `dcab912` (B3).
@@ -109,6 +106,8 @@ Closed by the 2026-05-16 review pass (no longer deferred):
 - ~~Notifier registry frozen at startup~~ — already addressed by `rebuild_runtime()` in `app.py`. Same for source registry.
 - ~~Amazon source skips the used market when a new copy is in stock~~ — shipped in `b57f82a`: `fetch()` now renders both dp + offer-listing every call and `_merge_offers` dedups overlapping rows by `(seller, condition, price)` preferring concrete shipping over `None`. Doubles per-Amazon-book wall-clock (≈5 s → ≈10 s); still well inside the 6 h scheduler cadence at ≤200 books.
 - ~~scenario_01 fails on Phase B's "first computed signal" assertion~~ — shipped in `0df2403`: scenario observations are anchored at `2026-01-01` but the pipeline ran on the real clock, so `compute_book_stats`'s 90-day window filtered them all out (today is past the window). Wrapped `main()` in `freeze_time("2026-01-18 12:00:00")`. Test-rot only; no production change.
+- ~~scenarios 05 + 06 carry the same fixed-date pattern without freeze_time~~ — shipped in `d55a559`: both wrapped in `freeze_time` at deterministic instants past their observation ranges, mirroring scenario_01's pattern. Currently pass without it but will rot the same way if any future change ties their assertions to windowed stats.
+- ~~Scheduler `_persist` matches sellers case-sensitively while `_merge_offers` casefolds~~ — shipped in `4c78f55` + `9137eb9`: case-insensitive (via `func.lower()`) initially, then expanded to trim+lower after a gemini second-opinion flagged a latent whitespace asymmetry (`_normalize_seller` strips, `_persist` didn't). Both layers now run identical ASCII `strip().lower()` semantics, with `func.trim(func.lower(...))` on the SQL side.
 
 ## Open decisions
 
