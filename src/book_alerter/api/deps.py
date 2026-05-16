@@ -12,10 +12,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, Request
 from sqlmodel import Session
 
 from book_alerter.config import Config
+from book_alerter.http_client import get_http
 from book_alerter.notifications.base import Notifier
 from book_alerter.scheduler import Scheduler
 
@@ -64,3 +66,4 @@ ConfigDep = Annotated[Config, Depends(get_config)]
 ConfigPathDep = Annotated[Path, Depends(get_config_path)]
 SchedulerDep = Annotated[Scheduler, Depends(get_scheduler)]
 NotifiersDep = Annotated[dict[str, Notifier], Depends(get_notifiers)]
+HttpDep = Annotated[httpx.AsyncClient | None, Depends(get_http)]

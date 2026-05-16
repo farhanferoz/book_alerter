@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 import httpx
 
@@ -34,9 +35,25 @@ class NtfyNotifier(Notifier):
         self,
         cfg: NtfyChannelConfig,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
+        *,
+        http: httpx.AsyncClient | None = None,
     ) -> None:
+        """`http` is the lifespan-scoped shared client; `client_factory` is
+        the legacy per-send constructor kept for unit-test injection. When
+        both are None we create a fresh client per send (back-compat with
+        ad-hoc CLI / script use). `http` wins when both are provided."""
         self._cfg = cfg
+        self._http = http
         self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=10))
+
+    @asynccontextmanager
+    async def _client(self):
+        if self._http is not None:
+            # Don't close the shared client — caller owns its lifecycle.
+            yield self._http
+        else:
+            async with self._client_factory() as c:
+                yield c
 
     async def send(self, alert: Alert, book: Book) -> NotificationResult:
         if not self._cfg.enabled or not self._cfg.topic:
@@ -48,7 +65,7 @@ class NtfyNotifier(Notifier):
             "Priority": self._cfg.priority,
             "Tags": ",".join(self._cfg.tags),
         }
-        async with self._client_factory() as client:
+        async with self._client() as client:
             try:
                 resp = await client.post(
                     url, content=body.encode("utf-8"), headers=headers

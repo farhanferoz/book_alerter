@@ -13,9 +13,12 @@ from book_alerter.api import alerts, books, covers, health, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
 from book_alerter.api import notifications as notifications_routes
+import httpx
+
 from book_alerter.auth import basic_auth_dep, is_basic_auth_enabled
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
+from book_alerter.http_client import build_shared_client
 from book_alerter.logging_setup import configure_logging, get_logger
 from book_alerter.notifications.base import Notifier
 from book_alerter.notifications.dispatcher import AlertPipeline
@@ -27,19 +30,30 @@ from book_alerter.sources.registry import build_sources
 log = get_logger(__name__)
 
 
-def _build_notifiers(cfg: Config) -> list[Notifier]:
+def _build_notifiers(cfg: Config, http: httpx.AsyncClient | None) -> list[Notifier]:
     notifiers: list[Notifier] = [InAppNotifier()]
     if cfg.notifications.channels.ntfy.enabled:
-        notifiers.append(NtfyNotifier(cfg.notifications.channels.ntfy))
+        notifiers.append(NtfyNotifier(cfg.notifications.channels.ntfy, http=http))
     return notifiers
 
 
-def _build_runtime(app: FastAPI, cfg: Config, engine) -> None:
+def _build_runtime(
+    app: FastAPI,
+    cfg: Config,
+    engine,
+    http: httpx.AsyncClient | None = None,
+) -> None:
     """Construct sources, notifiers, pipeline, and scheduler from `cfg` and
     attach them to `app.state`. Used by both the lifespan startup and the
-    `rebuild_runtime` hot-reload path."""
-    sources = build_sources(cfg)
-    notifiers = _build_notifiers(cfg)
+    `rebuild_runtime` hot-reload path.
+
+    `http` is the lifespan-scoped shared client; non-None during normal
+    boot, None during `rebuild_runtime` (the existing client on
+    `app.state.http` is reused — we don't tear it down on config swaps)."""
+    if http is None:
+        http = getattr(app.state, "http", None)
+    sources = build_sources(cfg, http=http)
+    notifiers = _build_notifiers(cfg, http=http)
     pipeline = AlertPipeline(
         cfg=cfg,
         session_factory=lambda: Session(engine),
@@ -93,12 +107,15 @@ async def lifespan(app: FastAPI):
     log.info("startup", config_version=cfg.config_version, config_path=str(cfg_path))
 
     engine = get_engine()
-    _build_runtime(app, cfg, engine)
+    http = build_shared_client()
+    app.state.http = http
+    _build_runtime(app, cfg, engine, http=http)
 
     try:
         yield
     finally:
         app.state.scheduler.shutdown()
+        await http.aclose()
         engine.dispose()
         log.info("shutdown")
 

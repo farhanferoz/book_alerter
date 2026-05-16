@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from book_alerter.api.deps import ConfigDep
+from book_alerter.api.deps import ConfigDep, HttpDep
 from book_alerter.metadata import (
     BookMetadata,
     BookMetadataWithIsbn,
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/metadata", tags=["metadata"])
 @router.get("/lookup")
 async def get_metadata_lookup(
     cfg: ConfigDep,
+    http: HttpDep,
     isbn: str = Query(..., description="Raw ISBN-10 or ISBN-13"),
 ) -> BookMetadata:
     """Normalize the input ISBN and race providers for metadata.
@@ -50,6 +51,7 @@ async def get_metadata_lookup(
             normalized,
             google_api_key=cfg.metadata.google_books_api_key,
             allow_amazon_fallback=cfg.metadata.amazon_uk_fallback,
+            http=http,
         )
     except LookupError as exc:
         raise HTTPException(
@@ -61,6 +63,7 @@ async def get_metadata_lookup(
 @router.get("/search")
 async def get_metadata_search(
     cfg: ConfigDep,
+    http: HttpDep,
     q: str = Query(..., min_length=1, description="Free-text title/author query"),
     limit: int = Query(10, ge=1, le=40, description="Max results (Google Books cap is 40)"),
 ) -> list[BookMetadataWithIsbn]:
@@ -71,4 +74,5 @@ async def get_metadata_search(
         q,
         limit=limit,
         google_api_key=cfg.metadata.google_books_api_key,
+        http=http,
     )

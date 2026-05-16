@@ -105,26 +105,42 @@ def _condition_from_title(public_title: str) -> Condition:
 
 
 class WobInlineSource(InlineSource):
-    def __init__(self, name: str = "wob", region: str = "UK", timeout_s: float = 30.0) -> None:
+    def __init__(
+        self,
+        name: str = "wob",
+        region: str = "UK",
+        timeout_s: float = 30.0,
+        *,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
         self.name = name
         self.region = region
         self.timeout_s = timeout_s
+        self._http = http
         self._user_agent = (
             "Mozilla/5.0 (compatible; BookAlerter/0.0; +https://github.com/local/book_alerter)"
         )
 
     async def fetch(self, book: Book) -> list[ObservationCandidate]:
         url = f"https://www.wob.com/en-gb/books/{book.isbn13}"
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept-Language": "en-GB,en;q=0.9",
+        }
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout_s,
-                follow_redirects=True,
-                headers={
-                    "User-Agent": self._user_agent,
-                    "Accept-Language": "en-GB,en;q=0.9",
-                },
-            ) as client:
-                resp = await client.get(url)
+            if self._http is not None:
+                # Lifespan-scoped shared client — reuse the connection pool.
+                # Per-call timeout/headers override the client defaults.
+                resp = await self._http.get(
+                    url, headers=headers, timeout=self.timeout_s,
+                )
+            else:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout_s,
+                    follow_redirects=True,
+                    headers=headers,
+                ) as client:
+                    resp = await client.get(url)
         except httpx.HTTPError as e:
             raise SourceError(self.name, f"http error at {url}: {e}") from e
 
