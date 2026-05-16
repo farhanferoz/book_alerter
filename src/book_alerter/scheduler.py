@@ -205,8 +205,10 @@ class Scheduler:
                             isbn=book.isbn13,
                             error=str(e),
                         )
+                        self._record_book_attempt(book.id, error=str(e))
                         return
                     self._persist(source_name, book, candidates)
+                    self._record_book_attempt(book.id, error=None)
                     affected_book_ids.append(book.id or 0)
                     succeeded += 1
 
@@ -324,6 +326,30 @@ class Scheduler:
                         is_duplicate_of=duplicate_of,
                     )
                 )
+            session.commit()
+
+    # Truncation cap for last_scrape_error — long Playwright tracebacks would
+    # otherwise bloat the Book row and dwarf the dashboard tooltip.
+    _ERROR_MSG_CAP = 500
+
+    def _record_book_attempt(self, book_id: int | None, *, error: str | None) -> None:
+        """Persist the per-book scrape-attempt outcome on the Book row.
+
+        Sets last_scrape_attempt_at unconditionally; clears last_scrape_error
+        on success or replaces it with the truncated error message on failure.
+        Whichever source finishes last for a given book wins — that's enough
+        signal for the FE to flag "something is broken right now".
+        """
+        if book_id is None:
+            return
+        truncated = error[: self._ERROR_MSG_CAP] if error is not None else None
+        with self._session_factory() as session:
+            book = session.get(Book, book_id)
+            if book is None:
+                return
+            book.last_scrape_attempt_at = datetime.now(UTC)
+            book.last_scrape_error = truncated
+            session.add(book)
             session.commit()
 
     def _apply_backoff(self, source_name: str) -> None:

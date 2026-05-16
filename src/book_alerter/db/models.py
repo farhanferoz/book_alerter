@@ -29,6 +29,11 @@ class Book(SQLModel, table=True):
     notes: str | None = None
     alert_kinds_disabled: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     muted_until: datetime | None = None
+    # Per-book scrape health surfaced on the dashboard. last_scrape_error is
+    # cleared on the next successful attempt; whichever source finishes last
+    # wins (last-write-wins is sufficient — the UI only signals "broken now").
+    last_scrape_attempt_at: datetime | None = None
+    last_scrape_error: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -73,17 +73,34 @@ export function buildBookColumns(): ColumnDef<Book>[] {
     id: "title",
     accessorFn: (b) => b.title,
     header: "Title",
-    cell: ({ row }) => (
-      <div className="min-w-[12rem]">
-        <Link
-          to={`/books/${row.original.id}`}
-          className="font-medium text-foreground hover:underline"
-        >
-          {row.original.title}
-        </Link>
-        <div className="text-xs text-muted-foreground">{row.original.author}</div>
-      </div>
-    ),
+    cell: ({ row }) => {
+      const b = row.original;
+      return (
+        <div className="min-w-[12rem]">
+          <div className="flex items-center gap-1.5">
+            <Link
+              to={`/books/${b.id}`}
+              className="font-medium text-foreground hover:underline"
+            >
+              {b.title}
+            </Link>
+            {b.last_scrape_error && (
+              // Inline red dot with the truncated error in the native tooltip.
+              // Hover for the message; clicking the row navigates to the
+              // detail page where the full error and last-attempt timestamp
+              // can be surfaced more richly later.
+              <span
+                role="img"
+                aria-label={`Scrape error: ${b.last_scrape_error}`}
+                title={`Last scrape error: ${b.last_scrape_error}`}
+                className="inline-block h-2 w-2 rounded-full bg-red-500"
+              />
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground">{b.author}</div>
+        </div>
+      );
+    },
   },
   {
     id: "best_price",

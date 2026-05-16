@@ -601,6 +601,10 @@ export interface components {
             alert_kinds_disabled?: string[];
             /** Muted Until */
             muted_until: string | null;
+            /** Last Scrape Attempt At */
+            last_scrape_attempt_at?: string | null;
+            /** Last Scrape Error */
+            last_scrape_error?: string | null;
             /**
              * Created At
              * Format: date-time

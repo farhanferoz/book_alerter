@@ -256,6 +256,10 @@ class BookOut(BaseModel):
     notes: str | None
     alert_kinds_disabled: list[str] = Field(default_factory=list)
     muted_until: datetime | None
+    # Per-book scrape health. last_scrape_error is populated by the scheduler
+    # when a source fails for this book and cleared on the next success.
+    last_scrape_attempt_at: datetime | None = None
+    last_scrape_error: str | None = None
     created_at: datetime
     updated_at: datetime
     stats: BookStatsOut
@@ -287,6 +291,8 @@ class BookOut(BaseModel):
             notes=book.notes,
             alert_kinds_disabled=list(book.alert_kinds_disabled or []),
             muted_until=book.muted_until,
+            last_scrape_attempt_at=book.last_scrape_attempt_at,
+            last_scrape_error=book.last_scrape_error,
             created_at=book.created_at,
             updated_at=book.updated_at,
             stats=BookStatsOut.from_dataclass(stats, book=book, reco=reco),
