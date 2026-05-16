@@ -1,8 +1,10 @@
-// Source breakdown — latest observation per `(source, condition)` group.
-//
-// Observations come back newest-first; we walk once, keeping the first row
-// we see per group key. That's the "latest per group" the spec calls for
-// without re-sorting.
+// Source breakdown — every distinct *price point* in the most-recent scrape
+// per `(source, condition)`. A single marketplace seller (e.g. World of
+// Books) can list multiple physical copies at different prices under a
+// single product URL, so URL-based dedup collapses them; keying on
+// `total_minor` surfaces all alive prices and lets the table reconcile
+// with the current-best card when the cheapest copy isn't the first row
+// in the response.
 
 import { useMemo } from "react";
 
@@ -29,13 +31,36 @@ import {
 // table only lists offers the user could actually transact on. Keepa still
 // drives the chart and percentile distribution via its own code paths.
 function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
-  const seen = new Map<string, PriceObservation>();
+  // Pass 1: find the most recent observed_at per (source, condition). ISO
+  // 8601 strings sort correctly with `>`.
+  const latestTs = new Map<string, string>();
   for (const o of observations) {
     if (o.source === "keepa") continue;
     const key = `${o.source}::${o.condition}`;
-    if (!seen.has(key)) seen.set(key, o);
+    const cur = latestTs.get(key);
+    if (cur === undefined || o.observed_at > cur) {
+      latestTs.set(key, o.observed_at);
+    }
   }
-  return [...seen.values()].sort((a, b) => a.source.localeCompare(b.source));
+  // Pass 2: keep every price point in the latest snapshot for its
+  // (source, condition). Two copies at identical prices collapse (same
+  // offer scraped twice); copies at different prices each get a row.
+  // Drops stale historical listings whose observed_at doesn't match.
+  const seen = new Map<string, PriceObservation>();
+  for (const o of observations) {
+    if (o.source === "keepa") continue;
+    const groupKey = `${o.source}::${o.condition}`;
+    if (o.observed_at !== latestTs.get(groupKey)) continue;
+    const rowKey = `${groupKey}::${o.total_minor}`;
+    if (!seen.has(rowKey)) seen.set(rowKey, o);
+  }
+  // Cheapest first within each source group so the row that matches the
+  // current-best card sits on top.
+  return [...seen.values()].sort((a, b) => {
+    const s = a.source.localeCompare(b.source);
+    if (s !== 0) return s;
+    return a.total_minor - b.total_minor;
+  });
 }
 
 export function SourceBreakdown({
@@ -52,7 +77,7 @@ export function SourceBreakdown({
           Source breakdown
         </h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          Latest observation per source × condition.
+          Every distinct price point from the latest scrape per source × condition.
         </p>
       </div>
       {rows.length === 0 ? (
