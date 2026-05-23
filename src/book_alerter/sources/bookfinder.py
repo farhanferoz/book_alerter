@@ -15,6 +15,7 @@ from book_alerter.db.models import Book, Condition
 from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
+    TrackedItem,
 )
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
@@ -111,7 +112,9 @@ class BookfinderInlineSource(InlineSource):
         }
         return "https://www.bookfinder.com/search/?" + urllib.parse.urlencode(params)
 
-    async def fetch(self, book: Book) -> list[ObservationCandidate]:
+    async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
+        assert isinstance(item, Book), f"{self.name} only handles books"
+        book = item
         url = self.search_url(book.isbn13)
         html = await self._render(async_playwright, url)
         return parse_offers(html, url)

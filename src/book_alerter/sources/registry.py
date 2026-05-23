@@ -3,7 +3,10 @@ from __future__ import annotations
 import httpx
 
 from book_alerter.config import Config
-from book_alerter.sources.amazon import AmazonUKInlineSource
+from book_alerter.sources.amazon import (
+    AmazonUKInlineSource,
+    AmazonUKProductInlineSource,
+)
 from book_alerter.sources.base import Source
 from book_alerter.sources.bookfinder import BookfinderInlineSource
 from book_alerter.sources.wob import WobInlineSource
@@ -12,6 +15,7 @@ _REGISTRY: dict[str, type[Source]] = {
     "wob": WobInlineSource,
     "bookfinder": BookfinderInlineSource,
     "amazon": AmazonUKInlineSource,
+    "amazon_uk_product": AmazonUKProductInlineSource,
 }
 
 
@@ -22,8 +26,8 @@ def build_sources(
 ) -> dict[str, Source]:
     """`http` is forwarded to httpx-based sources (currently only WOB) so
     the scheduler reuses the lifespan-scoped connection pool. Playwright-
-    based sources (Amazon, BookFinder) manage their own browser sessions
-    and ignore the kwarg."""
+    based sources (Amazon book + product, BookFinder) manage their own
+    browser sessions and ignore the kwarg."""
     out: dict[str, Source] = {}
     for name, sc in cfg.sources.items():
         if not sc.enabled:

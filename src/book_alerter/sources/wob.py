@@ -12,6 +12,7 @@ from book_alerter.sources.base import (
     Condition,
     ObservationCandidate,
     SourceError,
+    TrackedItem,
 )
 from book_alerter.sources.condition_normalizers import condition_from_token
 from book_alerter.sources.inline_source import InlineSource
@@ -168,7 +169,9 @@ class WobInlineSource(InlineSource):
             "Mozilla/5.0 (compatible; BookAlerter/0.0; +https://github.com/local/book_alerter)"
         )
 
-    async def fetch(self, book: Book) -> list[ObservationCandidate]:
+    async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
+        assert isinstance(item, Book), f"{self.name} only handles books"
+        book = item
         url = f"https://www.wob.com/en-gb/books/{book.isbn13}"
         headers = {
             "User-Agent": self._user_agent,

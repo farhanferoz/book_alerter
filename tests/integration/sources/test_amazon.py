@@ -41,17 +41,31 @@ def _hp_book() -> Book:
 
 
 def _install_fake_render_page(monkeypatch: pytest.MonkeyPatch, by_url: dict[str, str]) -> list[str]:
-    """Patch `_render_page` to return canned HTML keyed by url-substring; return the call log."""
+    """Patch `_render_amazon_page` to return canned HTML keyed by url-substring;
+    return the call log. Patches the module-level helper that both the book and
+    product sources route through, so a single patch covers both fetch paths.
+    """
     calls: list[str] = []
 
-    async def fake_render_page(self, context, url: str, *, wait_selector, wait_ms):
+    async def fake_render_amazon_page(
+        context,
+        url: str,
+        *,
+        wait_selector,
+        wait_ms,
+        navigation_timeout_s,
+        source_name,
+    ):
         calls.append(url)
         for marker, html in by_url.items():
             if marker in url:
                 return html
         raise AssertionError(f"unexpected url {url}")
 
-    monkeypatch.setattr(AmazonUKInlineSource, "_render_page", fake_render_page)
+    monkeypatch.setattr(
+        "book_alerter.sources.amazon._render_amazon_page",
+        fake_render_amazon_page,
+    )
     # Also bypass the real browser launch — `fetch` opens a chromium context;
     # we replace `async_playwright` with the fake factory so no binary is needed.
     monkeypatch.setattr(

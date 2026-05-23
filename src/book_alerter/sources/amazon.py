@@ -10,14 +10,20 @@ from playwright.async_api import (
 )
 from selectolax.parser import HTMLParser, Node
 
-from book_alerter.db.models import Book, Condition
+from book_alerter.db.models import Book, Condition, Product
+from book_alerter.enums import ItemKind
 from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
+    TrackedItem,
 )
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
-from book_alerter.sources.normalizers import amazon_uk_dp_url, asin_for_amazon_uk
+from book_alerter.sources.normalizers import (
+    amazon_uk_dp_url,
+    amazon_uk_product_dp_url,
+    asin_for_amazon_uk,
+)
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
 # that doesn't render JS in a real browser (verified 2026-05-14: headless
@@ -112,8 +118,10 @@ class AmazonUKInlineSource(InlineSource):
     """Amazon UK scraper backed by headless Chromium (Playwright).
 
     Renders both the dp and the offer-listing pages on every fetch and
-    merges the offers, deduping rows that appear on both. See module
-    docstring for protocol details.
+    merges the offers, deduping rows that appear on both. Books-only —
+    `AmazonUKProductInlineSource` handles products. Both share the lower-
+    level `_fetch_offers_for_asin` helper so DOM contract changes only need
+    to land in one place.
     """
 
     def __init__(
@@ -134,44 +142,21 @@ class AmazonUKInlineSource(InlineSource):
         return amazon_uk_dp_url(isbn13)
 
     def offer_listing_url(self, isbn13: str) -> str:
-        return f"https://www.amazon.co.uk/gp/offer-listing/{asin_for_amazon_uk(isbn13)}?condition=all"
+        return _offer_listing_url_for_asin(asin_for_amazon_uk(isbn13))
 
-    async def fetch(self, book: Book) -> list[ObservationCandidate]:
-        dp = self.dp_url(book.isbn13)
-        ol = self.offer_listing_url(book.isbn13)
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
-            try:
-                context = await browser.new_context(
-                    viewport={"width": 1366, "height": 768},
-                    locale="en-GB",
-                )
-                dp_html = await self._render_page(
-                    context,
-                    dp,
-                    wait_selector=(
-                        "#corePriceDisplay_desktop_feature_div, "
-                        "#corePrice_feature_div, "
-                        ".a-price .a-offscreen"
-                    ),
-                    # Buy-box renders fast — cap the wait so a buy-box-less
-                    # listing doesn't burn the full Playwright timeout.
-                    wait_ms=min(10_000, int(self.timeout_s * 1000)),
-                )
-                dp_offers = parse_dp(dp_html, dp)
-                ol_html = await self._render_page(
-                    context,
-                    ol,
-                    wait_selector="#aod-offer-list, .olpOfferList",
-                    wait_ms=int(self.timeout_s * 1000),
-                )
-                ol_offers = parse_offer_listing(ol_html, ol)
-                return _merge_offers([*dp_offers, *ol_offers])
-            finally:
-                await browser.close()
+    async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
+        # Books-only source. Defence in depth: scheduler already filters by
+        # item_kinds, but a misconfigured Source instance is the kind of
+        # thing we'd rather hit hard than silently no-op.
+        assert isinstance(item, Book), f"{self.name} only handles books"
+        # Books always track every condition Amazon publishes — the used
+        # market is the whole point of the book pipeline.
+        return await _fetch_offers_for_asin(
+            asin_for_amazon_uk(item.isbn13),
+            source_name=self.name,
+            timeout_s=self.timeout_s,
+            track_used=True,
+        )
 
     async def _render_page(
         self,
@@ -183,29 +168,160 @@ class AmazonUKInlineSource(InlineSource):
     ) -> str:
         """Open a page in `context`, navigate, return HTML after wait.
 
-        Selector-timeout is fine — capture content and let the parser decide
-        whether to fall back / report empty.
+        Kept as an instance method only because two tests poke it
+        directly; the AmazonProductSource uses the module-level
+        `_render_amazon_page` helper. Both call sites share the same
+        Playwright logic; do not let the two implementations drift.
         """
-        page = await context.new_page()
-        try:
-            await page.goto(
-                url, wait_until="domcontentloaded", timeout=self.timeout_s * 1000
+        return await _render_amazon_page(
+            context,
+            url,
+            wait_selector=wait_selector,
+            wait_ms=wait_ms,
+            navigation_timeout_s=self.timeout_s,
+            source_name=self.name,
+        )
+
+
+def _offer_listing_url_for_asin(asin: str) -> str:
+    return f"https://www.amazon.co.uk/gp/offer-listing/{asin}?condition=all"
+
+
+async def _render_amazon_page(
+    context,
+    url: str,
+    *,
+    wait_selector: str,
+    wait_ms: int,
+    navigation_timeout_s: float,
+    source_name: str,
+) -> str:
+    """Open `url` in a Playwright `context`, wait for `wait_selector`, return
+    rendered HTML. Selector-timeout is fine — capture content and let the
+    parser decide whether to fall back or report empty. Raises SourceError
+    on navigation timeout or persistent bot-challenge marker.
+    """
+    page = await context.new_page()
+    try:
+        await page.goto(
+            url, wait_until="domcontentloaded", timeout=navigation_timeout_s * 1000
+        )
+    except PlaywrightTimeoutError as e:
+        raise SourceError(source_name, f"navigation timed out: {e}") from e
+    try:
+        await page.wait_for_selector(wait_selector, timeout=wait_ms, state="attached")
+    except PlaywrightTimeoutError:
+        pass
+    html = await page.content()
+    for marker in BOT_MARKERS:
+        if marker in html:
+            raise SourceError(
+                source_name,
+                "Amazon bot-protection challenge persisted; "
+                "Playwright was unable to clear it",
             )
-        except PlaywrightTimeoutError as e:
-            raise SourceError(self.name, f"navigation timed out: {e}") from e
+    return html
+
+
+async def _fetch_offers_for_asin(
+    asin: str,
+    *,
+    source_name: str,
+    timeout_s: float,
+    track_used: bool,
+) -> list[ObservationCandidate]:
+    """Render Amazon UK dp + offer-listing for `asin`, merge + dedup.
+
+    `track_used=False` filters out non-NEW conditions before merging — used
+    by `AmazonUKProductInlineSource` because most non-book products have no
+    meaningful used market on Amazon. Books always pass `True`.
+
+    Shared between the book source and the product source so the Playwright
+    dance, bot-marker handling, and DOM contract live in one place.
+    """
+    dp_url = f"https://www.amazon.co.uk/dp/{asin}"
+    offer_url = _offer_listing_url_for_asin(asin)
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
         try:
-            await page.wait_for_selector(wait_selector, timeout=wait_ms, state="attached")
-        except PlaywrightTimeoutError:
-            pass
-        html = await page.content()
-        for marker in BOT_MARKERS:
-            if marker in html:
-                raise SourceError(
-                    self.name,
-                    "Amazon bot-protection challenge persisted; "
-                    "Playwright was unable to clear it",
-                )
-        return html
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                locale="en-GB",
+            )
+            dp_html = await _render_amazon_page(
+                context,
+                dp_url,
+                wait_selector=(
+                    "#corePriceDisplay_desktop_feature_div, "
+                    "#corePrice_feature_div, "
+                    ".a-price .a-offscreen"
+                ),
+                # Buy-box renders fast — cap the wait so a buy-box-less
+                # listing doesn't burn the full Playwright timeout.
+                wait_ms=min(10_000, int(timeout_s * 1000)),
+                navigation_timeout_s=timeout_s,
+                source_name=source_name,
+            )
+            dp_offers = parse_dp(dp_html, dp_url, source_name=source_name)
+            offer_html = await _render_amazon_page(
+                context,
+                offer_url,
+                wait_selector="#aod-offer-list, .olpOfferList",
+                wait_ms=int(timeout_s * 1000),
+                navigation_timeout_s=timeout_s,
+                source_name=source_name,
+            )
+            offer_listing_offers = parse_offer_listing(
+                offer_html, offer_url, source_name=source_name,
+            )
+            merged = _merge_offers([*dp_offers, *offer_listing_offers])
+            if not track_used:
+                merged = [o for o in merged if o.condition == Condition.NEW]
+            return merged
+        finally:
+            await browser.close()
+
+
+class AmazonUKProductInlineSource(InlineSource):
+    """Amazon UK scraper for non-book products. ASIN comes straight from
+    `Product.asin` (no ISBN conversion). Honours `Product.track_used` for
+    the per-row used-market opt-in.
+    """
+
+    name = "amazon_uk_product"
+    item_kinds = frozenset({ItemKind.PRODUCT})
+
+    def __init__(
+        self,
+        name: str = "amazon_uk_product",
+        region: str = "UK",
+        timeout_s: float = 30.0,
+    ) -> None:
+        if region.upper() != "UK":
+            raise ValueError(
+                f"AmazonUKProductInlineSource only supports region='UK' at MVP, got {region!r}"
+            )
+        self.name = name
+        self.region = region
+        self.timeout_s = timeout_s
+
+    def dp_url(self, asin: str) -> str:
+        return amazon_uk_product_dp_url(asin)
+
+    def offer_listing_url(self, asin: str) -> str:
+        return _offer_listing_url_for_asin(asin)
+
+    async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
+        assert isinstance(item, Product), f"{self.name} only handles products"
+        return await _fetch_offers_for_asin(
+            item.asin,
+            source_name=self.name,
+            timeout_s=self.timeout_s,
+            track_used=item.track_used,
+        )
 
 
 def _normalize_seller(seller: str | None) -> str:
@@ -290,11 +406,20 @@ def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
     return None
 
 
-def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
+def parse_dp(
+    html: str,
+    fallback_url: str,
+    *,
+    source_name: str = "amazon",
+) -> list[ObservationCandidate]:
     """Parse Amazon UK dp-page HTML into ObservationCandidates.
 
     Returns at most one offer (the buy-box). Empty list means no usable
     price was found — the caller should fall back to the offer-listing page.
+
+    `source_name` is used in the SourceError message only — both book and
+    product sources call this helper; default `"amazon"` keeps existing
+    tests that don't pass the kwarg passing.
 
     Price extraction tries two paths in order:
       1. selectolax CSS scrape of `.a-price .a-offscreen` under the
@@ -328,7 +453,7 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
         # we don't recognise" (raise) — see `_DP_PAGE_MARKERS` rationale.
         if not _matches_any_selector(tree, _DP_PAGE_MARKERS):
             raise SourceError(
-                "amazon",
+                source_name,
                 "dp page did not match any known Amazon UK layout "
                 "(no buy-box price, no #dp-container or #productTitle); "
                 "treating as anti-bot variant rather than reporting 0 offers",
@@ -341,7 +466,7 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
     return [
         ObservationCandidate(
             seller=seller,
-            condition="new",  # Amazon dp buy-box defaults to new
+            condition=Condition.NEW,  # Amazon dp buy-box defaults to new
             price_minor=price_minor,
             shipping_minor=shipping_minor,
             currency="GBP",
@@ -378,8 +503,18 @@ def _extract_priceamount_minor(tree: HTMLParser, html: str) -> int | None:
         return None
 
 
-def parse_offer_listing(html: str, fallback_url: str) -> list[ObservationCandidate]:
-    """Parse Amazon UK offer-listing-page HTML into ObservationCandidates."""
+def parse_offer_listing(
+    html: str,
+    fallback_url: str,
+    *,
+    source_name: str = "amazon",
+) -> list[ObservationCandidate]:
+    """Parse Amazon UK offer-listing-page HTML into ObservationCandidates.
+
+    `source_name` is used in the SourceError message only — both book and
+    product sources call this helper; default `"amazon"` keeps existing
+    tests that don't pass the kwarg passing.
+    """
     if not html:
         return []
     tree = HTMLParser(html)
@@ -400,7 +535,7 @@ def parse_offer_listing(html: str, fallback_url: str) -> list[ObservationCandida
         # almost certainly served an anti-bot or unrelated variant. Raise
         # rather than report 0; see `_OFFER_LISTING_PAGE_MARKERS` rationale.
         raise SourceError(
-            "amazon",
+            source_name,
             "offer-listing page did not match any known Amazon UK layout "
             "(no #aod-container / #aod-offer-list / #olpOfferList); "
             "treating as anti-bot variant rather than reporting 0 offers",
