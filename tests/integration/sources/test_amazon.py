@@ -123,11 +123,20 @@ def test_fetch_returns_dp_only_when_offer_listing_empty(
     """dp has a buy-box, offer-listing renders but has no #aod-offer rows.
     Merge returns the dp row untouched — guards the "Amazon-fulfilled
     new-only" path where the AOD page is empty."""
+    # The offer-listing page MUST carry the `#aod-container` marker even
+    # when empty — otherwise the parser correctly raises SourceError
+    # treating it as an unknown anti-bot variant. Real Amazon AOD pages
+    # always render the container shell regardless of whether any offer
+    # rows exist.
     calls = _install_fake_render_page(
         monkeypatch,
         {
             "/dp/": FIXTURE_DP.read_text(encoding="utf-8"),
-            "/gp/offer-listing/": "<html><body></body></html>",
+            "/gp/offer-listing/": (
+                '<html><body><div id="aod-container">'
+                '<div id="aod-offer-list"></div>'
+                "</div></body></html>"
+            ),
         },
     )
 

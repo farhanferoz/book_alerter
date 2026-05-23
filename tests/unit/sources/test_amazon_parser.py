@@ -10,8 +10,10 @@ fixtures should be regenerated and these tests revisited.
 
 from pathlib import Path
 
+import pytest
+
 from book_alerter.sources.amazon import _merge_offers, parse_dp, parse_offer_listing
-from book_alerter.sources.base import ObservationCandidate
+from book_alerter.sources.base import ObservationCandidate, SourceError
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "amazon"
 
@@ -109,10 +111,50 @@ def test_parse_offer_listing_shipping_free_is_zero() -> None:
 
 
 def test_empty_html_returns_empty_list() -> None:
+    """Truly empty input is degenerate and returns [] — only non-empty HTML
+    that doesn't match any known Amazon layout is treated as anti-bot."""
     assert parse_dp("", fallback_url="https://x.example/") == []
-    assert parse_dp("<html></html>", fallback_url="https://x.example/") == []
     assert parse_offer_listing("", fallback_url="https://x.example/") == []
-    assert parse_offer_listing("<html></html>", fallback_url="https://x.example/") == []
+
+
+def test_parse_dp_raises_on_unrecognized_page() -> None:
+    """A non-empty page that lacks both `#dp-container` and `#productTitle`
+    is almost certainly an anti-bot variant whose substring isn't in
+    BOT_MARKERS — raise rather than silently report 0 offers."""
+    with pytest.raises(SourceError, match="dp page did not match"):
+        parse_dp("<html><body><p>nope</p></body></html>", fallback_url="https://x")
+    with pytest.raises(SourceError, match="dp page did not match"):
+        parse_dp("<html></html>", fallback_url="https://x")
+
+
+def test_parse_offer_listing_raises_on_unrecognized_page() -> None:
+    """Same guarantee for the offer-listing path: missing both AOD and OLP
+    containers means we did not reach the expected Amazon layout."""
+    with pytest.raises(SourceError, match="offer-listing page did not match"):
+        parse_offer_listing("<html><body><p>nope</p></body></html>", fallback_url="https://x")
+    with pytest.raises(SourceError, match="offer-listing page did not match"):
+        parse_offer_listing("<html></html>", fallback_url="https://x")
+
+
+def test_parse_dp_returns_empty_when_recognized_page_has_no_price() -> None:
+    """The dp-no-price fixture has `#productTitle` but no price block —
+    that's a legitimate "out of stock / no buy-box" state, NOT an anti-bot
+    page. Must return [] (no raise)."""
+    html = _load("9780747532699-uk-dp-no-price.html")
+    assert parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699") == []
+
+
+def test_parse_offer_listing_returns_empty_when_recognized_page_has_no_rows() -> None:
+    """A page that has `#aod-container` (or any other listing marker) but
+    no `#aod-offer` rows is a genuine "no listings" state — return []
+    rather than raise."""
+    html = (
+        "<html><body>"
+        '<div id="aod-container">'
+        '<div id="aod-offer-list"></div>'
+        "</div></body></html>"
+    )
+    assert parse_offer_listing(html, fallback_url="https://x") == []
 
 
 def test_all_observations_use_valid_condition_enum() -> None:

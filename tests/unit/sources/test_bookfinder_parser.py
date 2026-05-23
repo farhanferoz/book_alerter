@@ -6,6 +6,9 @@ that drop offers, mis-grade conditions, or fail to dedupe should be caught here.
 
 from pathlib import Path
 
+import pytest
+
+from book_alerter.sources.base import SourceError
 from book_alerter.sources.bookfinder import parse_offers
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "bookfinder"
@@ -63,8 +66,32 @@ def test_biblio_offers_are_distinct_per_marketplace() -> None:
 
 
 def test_empty_html_returns_empty_list() -> None:
+    """Truly empty input is degenerate and returns [] — only non-empty HTML
+    that doesn't match the known search-page layout is treated as a WAF
+    variant we couldn't recognise."""
     assert parse_offers("", fallback_url="https://x.example/") == []
-    assert parse_offers("<html></html>", fallback_url="https://x.example/") == []
+
+
+def test_parse_offers_raises_on_unrecognized_page() -> None:
+    """A non-empty page that lacks the search-form / nav / title markers is
+    almost certainly an unknown WAF challenge variant whose substring isn't
+    in `awsWafCookieDomainList` / `gokuProps` — raise rather than silently
+    report 0 listings."""
+    with pytest.raises(SourceError, match="search-results page did not match"):
+        parse_offers("<html><body><p>nope</p></body></html>", fallback_url="https://x")
+    with pytest.raises(SourceError, match="search-results page did not match"):
+        parse_offers("<html></html>", fallback_url="https://x")
+
+
+def test_parse_offers_returns_empty_when_recognized_page_has_no_cards() -> None:
+    """A real Bookfinder page that genuinely has 0 listings still emits the
+    nav / search-form markers. That case is "no copies found," NOT WAF —
+    must return [] rather than raise."""
+    html = (
+        "<html><head><title>BookFinder.com: Search Results</title></head>"
+        '<body><input id="book-search-input-desktop" /></body></html>'
+    )
+    assert parse_offers(html, fallback_url="https://x") == []
 
 
 def test_free_shipping_card_without_usd_attrs_zeroes_shipping() -> None:

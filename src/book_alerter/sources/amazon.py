@@ -82,6 +82,31 @@ BOT_MARKERS: tuple[str, ...] = (
     "validateCaptcha",
 )
 
+# Positive selectors that confirm we're actually looking at the expected
+# Amazon UK page layout. Used by the parsers to distinguish "we parsed the
+# page and there really are no offers" from "Amazon served something we
+# don't recognise" — the latter must raise rather than silently report 0,
+# otherwise a new anti-bot variant (one whose substring isn't in BOT_MARKERS)
+# would look like a successful empty fetch.
+#
+# `#dp-container` and `#productTitle` together cover every dp-page variant
+# we've captured: the real-capture fixture, the synthetic dp/no-price
+# variant (productTitle present), and the synthetic delivery-block fixtures
+# (productTitle stripped, dp-container retained).
+_DP_PAGE_MARKERS: tuple[str, ...] = ("#dp-container", "#productTitle")
+# AOD is the modern offer-listing layout; OLP is the legacy fallback. Both
+# fixtures + real captures use the `aod-container` / `aod-offer-list` IDs.
+_OFFER_LISTING_PAGE_MARKERS: tuple[str, ...] = (
+    "#aod-container",
+    "#aod-offer-list",
+    "#olpOfferList",
+    "#olpProductInformation",
+)
+
+
+def _matches_any_selector(tree: HTMLParser, selectors: tuple[str, ...]) -> bool:
+    return any(tree.css_first(sel) is not None for sel in selectors)
+
 
 class AmazonUKInlineSource(InlineSource):
     """Amazon UK scraper backed by headless Chromium (Playwright).
@@ -298,6 +323,16 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
     if price_minor is None:
         price_minor = _extract_priceamount_minor(html)
     if price_minor is None:
+        # No buy-box price found. Distinguish "real Amazon dp page with no
+        # buy-box / unavailable" (return []) from "Amazon served something
+        # we don't recognise" (raise) — see `_DP_PAGE_MARKERS` rationale.
+        if not _matches_any_selector(tree, _DP_PAGE_MARKERS):
+            raise SourceError(
+                "amazon",
+                "dp page did not match any known Amazon UK layout "
+                "(no buy-box price, no #dp-container or #productTitle); "
+                "treating as anti-bot variant rather than reporting 0 offers",
+            )
         return []
 
     seller = _extract_dp_seller(tree)
@@ -343,6 +378,16 @@ def parse_offer_listing(html: str, fallback_url: str) -> list[ObservationCandida
         offer = _parse_offer_row(row, fallback_url)
         if offer is not None:
             offers.append(offer)
+    if not offers and not _matches_any_selector(tree, _OFFER_LISTING_PAGE_MARKERS):
+        # No rows found AND no recognised offer-listing container — Amazon
+        # almost certainly served an anti-bot or unrelated variant. Raise
+        # rather than report 0; see `_OFFER_LISTING_PAGE_MARKERS` rationale.
+        raise SourceError(
+            "amazon",
+            "offer-listing page did not match any known Amazon UK layout "
+            "(no #aod-container / #aod-offer-list / #olpOfferList); "
+            "treating as anti-bot variant rather than reporting 0 offers",
+        )
     return offers
 
 

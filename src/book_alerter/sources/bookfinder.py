@@ -45,6 +45,21 @@ _FREE_SHIPPING_RE = re.compile(r"free shipping", re.IGNORECASE)
 
 _CURRENCY_FROM_SYMBOL: dict[str, str] = {"£": "GBP", "$": "USD", "€": "EUR", "¥": "JPY"}
 
+# Positive selectors confirming we're looking at the expected Bookfinder
+# search-results layout rather than an unknown variant. Used by parse_offers
+# to distinguish "real page, just no matching listings" (return []) from
+# "AWS WAF served a challenge variant we don't recognise" (raise) — the
+# existing `awsWafCookieDomainList` / `gokuProps` markers in `_render`
+# only catch the specific WAF challenges we've seen so far. Without a
+# positive page check, any new WAF variant would silently report 0 offers.
+_SEARCH_PAGE_MARKERS: tuple[str, ...] = (
+    "#book-search-input-desktop",
+    "#book-search-criteria",
+    "#desktop-nav",
+)
+# Backup: the page <title> on every Bookfinder search-results render.
+_SEARCH_PAGE_TITLE_FRAGMENT = "BookFinder.com:"
+
 
 class BookfinderInlineSource(InlineSource):
     """Bookfinder.com scraper backed by headless Chromium (Playwright).
@@ -151,6 +166,8 @@ def parse_offers(html: str, fallback_url: str) -> list[ObservationCandidate]:
     Public so tests can call it against fixture HTML without a browser.
     Cards appearing twice (mobile/desktop layouts) are deduped by data-test-id.
     """
+    if not html:
+        return []
     tree = HTMLParser(html)
     seen: set[str] = set()
     offers: list[ObservationCandidate] = []
@@ -162,7 +179,25 @@ def parse_offers(html: str, fallback_url: str) -> list[ObservationCandidate]:
         offer = _parse_card(card, fallback_url)
         if offer is not None:
             offers.append(offer)
+    if not offers and not _is_recognized_search_page(tree, html):
+        # No cards AND no recognised page structure — bookfinder.com almost
+        # certainly served an unknown WAF challenge variant. Raise rather
+        # than silently report 0 listings; see `_SEARCH_PAGE_MARKERS`.
+        raise SourceError(
+            "bookfinder",
+            "search-results page did not match any known Bookfinder layout "
+            "(no nav / search-form / title) — treating as WAF variant rather "
+            "than reporting 0 offers",
+        )
     return offers
+
+
+def _is_recognized_search_page(tree: HTMLParser, html: str) -> bool:
+    """Return True if `tree` / `html` carry any of the stable markers we
+    know a real Bookfinder search-results page always emits."""
+    if any(tree.css_first(sel) is not None for sel in _SEARCH_PAGE_MARKERS):
+        return True
+    return _SEARCH_PAGE_TITLE_FRAGMENT in html
 
 
 def _parse_card(card: Node, fallback_url: str) -> ObservationCandidate | None:
