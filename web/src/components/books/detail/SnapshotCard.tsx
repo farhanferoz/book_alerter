@@ -20,6 +20,13 @@ export function SnapshotCard({ book }: { book: Book }) {
         <>
           <p className="mt-1 text-2xl font-semibold">
             {formatMoneyMinor(s.current_best_total_minor, book.currency)}
+            <span className="ml-2 align-middle text-xs font-normal text-muted-foreground">
+              {/* Disambiguates the figure: when shipping is null, the displayed
+                  "total" is actually item-only. Labelling it as such removes
+                  the user's need to mentally cross-reference SourceBreakdown
+                  and the chart's effective-total. */}
+              {s.current_best_shipping_minor != null ? "total" : "item only"}
+            </span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {displaySourceLabel(s.current_best_source, s.current_best_seller)}
@@ -29,7 +36,9 @@ export function SnapshotCard({ book }: { book: Book }) {
               ? " · free shipping"
               : s.current_best_shipping_minor != null
                 ? ` · incl. ${formatMoneyMinor(s.current_best_shipping_minor, book.currency)} shipping`
-                : " · shipping unknown"}
+                : s.shipping_estimate_minor != null
+                  ? ` · shipping not listed (ranked using ~${formatMoneyMinor(s.shipping_estimate_minor, book.currency)} estimate)`
+                  : " · shipping not listed"}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
             Last polled {formatRelativeTime(s.last_polled_at)}

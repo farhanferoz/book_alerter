@@ -101,7 +101,7 @@ export function BookDetail() {
 
       <KeepaChart bookId={book.id} />
 
-      <SourceBreakdown observations={observations} />
+      <SourceBreakdown book={book} observations={observations} />
 
       {/* Remount Settings whenever the book's updated_at changes so the form
           resets to the saved state without an effect. */}

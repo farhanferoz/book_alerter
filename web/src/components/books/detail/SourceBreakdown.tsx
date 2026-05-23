@@ -8,7 +8,7 @@
 
 import { useMemo } from "react";
 
-import type { PriceObservation } from "@/hooks/useBook";
+import type { Book, PriceObservation } from "@/hooks/useBook";
 import {
   Table,
   TableBody,
@@ -63,12 +63,57 @@ function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
   });
 }
 
+// Pin the row that backs the SnapshotCard's "Current best" — without this,
+// the latest-per-group filter can drop it when a newer scrape returned a
+// different cheapest offer, leaving the user staring at a snapshot price
+// they can't find anywhere in the table below.
+function findCurrentBestObservation(
+  book: Book,
+  observations: PriceObservation[],
+): PriceObservation | null {
+  const s = book.stats;
+  if (
+    s.current_best_url == null ||
+    s.current_best_source == null ||
+    s.current_best_total_minor == null
+  ) {
+    return null;
+  }
+  for (const o of observations) {
+    if (
+      o.url === s.current_best_url &&
+      o.source === s.current_best_source &&
+      o.condition === s.current_best_condition &&
+      o.seller === s.current_best_seller &&
+      o.total_minor === s.current_best_total_minor
+    ) {
+      return o;
+    }
+  }
+  return null;
+}
+
 export function SourceBreakdown({
+  book,
   observations,
 }: {
+  book: Book;
   observations: PriceObservation[];
 }) {
-  const rows = useMemo(() => latestPerGroup(observations), [observations]);
+  const rows = useMemo(() => {
+    const latest = latestPerGroup(observations);
+    const currentBest = findCurrentBestObservation(book, observations);
+    if (currentBest == null) return latest;
+    // If the snapshot row IS already in `latest`, no churn — just sort it
+    // first by leveraging the `id` match. Otherwise, prepend a copy so the
+    // user can see exactly which observation drives "Current best".
+    const alreadyShown = latest.some((o) => o.id === currentBest.id);
+    if (alreadyShown) return latest;
+    return [currentBest, ...latest];
+  }, [book, observations]);
+
+  const currentBestId =
+    findCurrentBestObservation(book, observations)?.id ?? null;
 
   return (
     <div className="rounded-md border border-border bg-card">
@@ -98,45 +143,61 @@ export function SourceBreakdown({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((o) => (
-              <TableRow key={o.id}>
-                <TableCell className="font-medium">
-                  <span className="uppercase">
-                    {displaySourceLabel(o.source, o.seller)}
-                  </span>
-                  {isBookfinderSourcedLabel(o.source) && (
-                    <div className="text-[10px] font-normal text-muted-foreground/70">
-                      via bookfinder
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {formatCondition(o.condition)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatMoneyMinor(o.price_minor, o.currency)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">
-                  {formatShippingMinor(o.shipping_minor, o.currency)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums font-medium">
-                  {formatMoneyMinor(o.total_minor, o.currency)}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {formatRelativeTime(o.observed_at)}
-                </TableCell>
-                <TableCell>
-                  <a
-                    href={o.url}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-primary hover:underline"
-                  >
-                    Open ↗
-                  </a>
-                </TableCell>
-              </TableRow>
-            ))}
+            {rows.map((o) => {
+              const isCurrentBest = o.id === currentBestId;
+              return (
+                <TableRow
+                  key={o.id}
+                  className={isCurrentBest ? "bg-primary/5" : undefined}
+                >
+                  <TableCell className="font-medium">
+                    <span className="uppercase">
+                      {displaySourceLabel(o.source, o.seller)}
+                    </span>
+                    {isBookfinderSourcedLabel(o.source) && (
+                      <div className="text-[10px] font-normal text-muted-foreground/70">
+                        via bookfinder
+                      </div>
+                    )}
+                    {isCurrentBest && (
+                      <div className="text-[10px] font-medium text-primary">
+                        Current best
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatCondition(o.condition)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoneyMinor(o.price_minor, o.currency)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                    {formatShippingMinor(o.shipping_minor, o.currency)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">
+                    {formatMoneyMinor(o.total_minor, o.currency)}
+                    {o.shipping_minor == null && (
+                      <span className="ml-1 align-middle text-[10px] font-normal text-muted-foreground">
+                        (item only)
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatRelativeTime(o.observed_at)}
+                  </TableCell>
+                  <TableCell>
+                    <a
+                      href={o.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-primary hover:underline"
+                    >
+                      Open ↗
+                    </a>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}

@@ -36,6 +36,9 @@ function niceTicks(min: number, max: number, target = 5): number[] {
 export function PercentileChart({ book }: { book: Book }) {
   const windows = book.stats.windows ?? {};
   const current = book.stats.current_effective_total_minor;
+  const shippingEstimate = book.stats.shipping_estimate_minor;
+  const usedImputedShipping =
+    book.stats.current_best_shipping_minor == null && shippingEstimate != null;
 
   const hasAnyData = WINDOW_KEYS.some((k) => windows[k]?.p5 != null);
   if (!hasAnyData) {
@@ -81,15 +84,22 @@ export function PercentileChart({ book }: { book: Book }) {
         </h2>
         {current != null && (
           <span className="text-xs text-muted-foreground">
-            Current{" "}
+            {usedImputedShipping ? "Effective" : "Current"}{" "}
             <span className="font-medium text-foreground">
               {formatMoneyMinor(current, book.currency)}
             </span>
+            {usedImputedShipping && (
+              <span className="ml-1">
+                (incl. ~{formatMoneyMinor(shippingEstimate, book.currency)} est. ship)
+              </span>
+            )}
           </span>
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         Box = p25–p75 · line in box = median · whiskers = p5/p95.
+        {usedImputedShipping &&
+          " Distribution uses shipping-imputed totals so offers with and without listed shipping rank consistently."}
       </p>
       <svg
         viewBox={`0 0 ${W} ${H}`}
