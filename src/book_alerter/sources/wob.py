@@ -4,6 +4,7 @@ import json
 import re
 
 import httpx
+from selectolax.parser import HTMLParser
 
 from book_alerter.db.models import Book
 from book_alerter.http_client import shared_or_fresh
@@ -26,26 +27,42 @@ from book_alerter.sources.inline_source import InlineSource
 # Variant availability is NOT in the `meta` blob — `var meta` happily lists
 # discontinued / out-of-stock SKUs with their last-known price. The user can't
 # actually buy those, so treating them as live offers produces phantom low
-# prices on the dashboard and false BUY signals.  The schema.org JSON-LD
+# prices on the dashboard and false BUY signals. The schema.org JSON-LD
 # block on the same page carries per-SKU `availability` (InStock / OutOfStock);
 # we cross-reference and drop any SKU that isn't InStock.
-_META_RE = re.compile(r"var\s+meta\s*=\s*(\{)", re.DOTALL)
-_LDJSON_RE = re.compile(
-    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-    re.DOTALL | re.IGNORECASE,
+#
+# Both blobs sit INSIDE `<script>` elements; we locate the elements via
+# selectolax (proper HTML parsing) and then parse the contents — that's
+# robust against Shopify template tweaks that change script attribute
+# ordering, whitespace, or HTML entity escapes that a flat regex would
+# trip over.
+_META_VAR_RE = re.compile(r"\bvar\s+meta\s*=\s*\{")
+
+# Positive page markers that confirm we landed on a real WoB product page
+# (rather than a maintenance page, a generic Shopify 404, or a CDN error
+# served with HTTP 200). Used to distinguish "real page, no listings" from
+# "page we can't recognise" — without this check, a layout reshuffle that
+# strips the meta blob would silently report 0 offers and bias percentiles.
+_PRODUCT_PAGE_MARKERS: tuple[str, ...] = (
+    'script[type="application/ld+json"]',
+    'meta[property="og:type"][content="product"]',
+    "#shopify-section-product-template",
 )
 
 
-def _extract_sku_availability(html: str) -> dict[str, bool]:
+def _extract_sku_availability(tree: HTMLParser) -> dict[str, bool]:
     """Return {sku: in_stock} from the page's schema.org Product offers.
 
     Missing / unparseable JSON-LD returns {} — callers should treat an
     unknown SKU as available rather than dropping every variant.
     """
     out: dict[str, bool] = {}
-    for raw in _LDJSON_RE.findall(html):
+    for script in tree.css('script[type="application/ld+json"]'):
+        text = (script.text() or "").strip()
+        if not text:
+            continue
         try:
-            data = json.loads(raw.strip())
+            data = json.loads(text)
         except json.JSONDecodeError:
             continue
         for item in (data if isinstance(data, list) else [data]):
@@ -67,17 +84,36 @@ def _extract_sku_availability(html: str) -> dict[str, bool]:
     return out
 
 
-def _extract_meta_json(html: str) -> dict | None:
-    """Find `var meta = {...};` and return the parsed object, or None."""
-    m = _META_RE.search(html)
-    if m is None:
-        return None
-    start = m.end() - 1
+def _extract_meta_json(tree: HTMLParser) -> dict | None:
+    """Return the parsed `var meta = {...};` object, or None.
+
+    Shopify emits this as a top-level statement inside an inline script
+    near the head of the page. We iterate script elements rather than
+    grepping the whole page text so a `</script>`-string embedded in
+    some unrelated inline JSON can't confuse the closing-tag boundary.
+    Bracket-matching is still needed because the meta blob's `}` closes
+    the JS variable assignment, not a structured DOM element.
+    """
+    for script in tree.css("script"):
+        text = script.text() or ""
+        m = _META_VAR_RE.search(text)
+        if m is None:
+            continue
+        start = m.end() - 1  # rewind onto the opening `{`
+        parsed = _parse_braced_json(text, start)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_braced_json(text: str, start: int) -> dict | None:
+    """Walk `text[start:]` and return the JSON object whose opening `{`
+    sits at `start`. Returns None on parse failure or unterminated input."""
     depth = 0
     in_str = False
     esc = False
-    for i in range(start, len(html)):
-        ch = html[i]
+    for i in range(start, len(text)):
+        ch = text[i]
         if esc:
             esc = False
             continue
@@ -94,12 +130,17 @@ def _extract_meta_json(html: str) -> dict | None:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                raw = html[start : i + 1]
                 try:
-                    return json.loads(raw)
+                    return json.loads(text[start : i + 1])
                 except json.JSONDecodeError:
                     return None
     return None
+
+
+def _is_recognized_product_page(tree: HTMLParser) -> bool:
+    """Return True if the page carries any marker we know WoB always emits
+    on a real product page render."""
+    return any(tree.css_first(sel) is not None for sel in _PRODUCT_PAGE_MARKERS)
 
 
 def _condition_from_title(public_title: str) -> Condition:
@@ -153,12 +194,26 @@ class WobInlineSource(InlineSource):
         return self._parse(resp.text, final_url)
 
     def _parse(self, html: str, url: str) -> list[ObservationCandidate]:
-        meta = _extract_meta_json(html)
+        tree = HTMLParser(html)
+        meta = _extract_meta_json(tree)
         if meta is None:
+            # No `var meta` blob found. Distinguish "real product page that
+            # genuinely has no variants" (unlikely on WoB; still possible
+            # for some metadata-only ISBNs) from "we landed on a page we
+            # don't recognise" (Shopify maintenance, CDN error served with
+            # 200, layout reshuffle). The former returns []; the latter
+            # must raise rather than silently bias percentiles upward.
+            if not _is_recognized_product_page(tree):
+                raise SourceError(
+                    self.name,
+                    f"WoB product page did not match any known layout at {url} "
+                    "(no `var meta`, no JSON-LD, no Shopify section markers); "
+                    "treating as unknown variant rather than reporting 0 offers",
+                )
             return []
         product = meta.get("product") or {}
         variants = product.get("variants") or []
-        availability = _extract_sku_availability(html)
+        availability = _extract_sku_availability(tree)
 
         offers: list[ObservationCandidate] = []
         for v in variants:
