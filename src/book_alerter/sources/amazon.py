@@ -321,7 +321,7 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
                 break
 
     if price_minor is None:
-        price_minor = _extract_priceamount_minor(html)
+        price_minor = _extract_priceamount_minor(tree, html)
     if price_minor is None:
         # No buy-box price found. Distinguish "real Amazon dp page with no
         # buy-box / unavailable" (return []) from "Amazon served something
@@ -350,9 +350,26 @@ def parse_dp(html: str, fallback_url: str) -> list[ObservationCandidate]:
     ]
 
 
-def _extract_priceamount_minor(html: str) -> int | None:
-    """Return the first `"priceAmount":<n>` value from `html` as pence, or None."""
-    m = _PRICE_AMOUNT_RE.search(html)
+def _extract_priceamount_minor(tree: HTMLParser, html: str) -> int | None:
+    """Return the buy-box `priceAmount` in pence, or None.
+
+    Scoping rationale: Amazon's pricing service serializes the buy-box
+    price into a `twister-plus-buying-options-price-data` div as JSON
+    keyed by `desktop_buybox_group_<N>`. Searching the FULL page HTML
+    with the priceAmount regex used to work by happy accident — the
+    buy-box JSON happened to appear before any other `"priceAmount"`
+    occurrence on every captured page. But Amazon also embeds priceAmount
+    in unrelated rails (frequently-bought-together, recommended titles,
+    seller-storefront cards) and there's no guarantee the buy-box block
+    stays first when Amazon reshuffles the DOM. Scope to the buy-box
+    data div when present so the regex can't drift onto an unrelated
+    price. If the div isn't found (older layout, A/B variant), fall
+    back to the page-wide search rather than silently dropping the
+    fallback price path entirely.
+    """
+    scope = tree.css_first("div.twister-plus-buying-options-price-data")
+    haystack = scope.text() if scope is not None else html
+    m = _PRICE_AMOUNT_RE.search(haystack)
     if m is None:
         return None
     try:

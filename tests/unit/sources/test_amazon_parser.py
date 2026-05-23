@@ -66,6 +66,51 @@ def test_parse_dp_returns_empty_when_no_price_block() -> None:
     assert offers == []
 
 
+def test_parse_dp_priceamount_fallback_prefers_buybox_scope() -> None:
+    """Defends against drift: if a `"priceAmount":XX` from an unrelated
+    rail (frequently-bought-together, recommended titles) ever appears
+    BEFORE the buy-box block in the raw HTML, the fallback regex must
+    still pick the buy-box price — not the rail price. The
+    `twister-plus-buying-options-price-data` div is the buy-box-specific
+    JSON container; scoping the regex to it prevents the drift.
+    """
+    # No DOM-side `.a-offscreen` price (CSS path returns None) so the
+    # fallback regex is what actually decides the answer. The stray
+    # `"priceAmount":99.99` ahead of the buy-box data div is what the
+    # un-scoped regex used to latch onto.
+    html = (
+        '<html><body>'
+        '<div id="dp-container">'
+        '<div id="productTitle">Some Book</div>'
+        '<script>{"frequentlyBoughtTogether":{"priceAmount":99.99}}</script>'
+        '<div class="a-section aok-hidden twister-plus-buying-options-price-data">'
+        '{"desktop_buybox_group_1":[{"displayPrice":"£12.34","priceAmount":12.34}]}'
+        '</div>'
+        '</div></body></html>'
+    )
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/X")
+    assert len(offers) == 1
+    assert offers[0].price_minor == 1234  # £12.34, the buy-box price
+
+
+def test_parse_dp_priceamount_fallback_when_buybox_div_missing() -> None:
+    """If the `twister-plus-buying-options-price-data` div is absent (older
+    layout / A/B variant), the regex falls back to the full HTML — better
+    to capture *some* price than to drop the path entirely. Covers the
+    backward-compatibility branch in `_extract_priceamount_minor`.
+    """
+    html = (
+        '<html><body>'
+        '<div id="dp-container">'
+        '<div id="productTitle">Some Book</div>'
+        '<script>{"priceAmount":7.50}</script>'
+        '</div></body></html>'
+    )
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/X")
+    assert len(offers) == 1
+    assert offers[0].price_minor == 750
+
+
 def test_parse_offer_listing_returns_all_rows() -> None:
     html = _load("9780747532699-uk-offer-listing.html")
     offers = parse_offer_listing(
