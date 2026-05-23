@@ -32,7 +32,14 @@ DEFAULT_CACHE_DIR = Path("data/keepa-cache")
 
 
 def cache_path(cache_dir: Path, isbn13: str, range_days: int) -> Path:
+    """Cache path for a book (ISBN-13 in, ASIN-derived cache key out)."""
     asin = asin_for_amazon_uk(isbn13)
+    return cache_path_for_asin(cache_dir, asin, range_days)
+
+
+def cache_path_for_asin(cache_dir: Path, asin: str, range_days: int) -> Path:
+    """Cache path keyed by ASIN directly — used by the product side where
+    `product.asin` is already the natural Keepa key."""
     return cache_dir / f"{asin}-r{range_days}.png"
 
 
@@ -54,17 +61,41 @@ def fetch_chart_png(
 ) -> bytes | None:
     """Return the PNG bytes for `isbn13`'s Amazon UK chart, fetching if needed.
 
+    Books use this entry point — it does ISBN-13 → ASIN conversion via
+    `asin_for_amazon_uk` and delegates to `fetch_chart_png_for_asin`. Products
+    skip the conversion and call `fetch_chart_png_for_asin` directly.
+    """
+    return fetch_chart_png_for_asin(
+        asin_for_amazon_uk(isbn13),
+        cache_dir,
+        range_days=range_days,
+        width=width,
+        height=height,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def fetch_chart_png_for_asin(
+    asin: str,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    *,
+    range_days: int = _DEFAULT_RANGE_DAYS,
+    width: int = _DEFAULT_WIDTH,
+    height: int = _DEFAULT_HEIGHT,
+    ttl_seconds: int = _CACHE_TTL_SECONDS,
+) -> bytes | None:
+    """Return the PNG bytes for `asin`'s Amazon UK chart, fetching if needed.
+
     Returns None for ASINs Keepa doesn't track — Keepa serves a sub-1KB
     placeholder for those rather than 404, so we treat any sub-1KB image as
     "no data". Cache writes are atomic (tmp + os.replace) so concurrent
     callers can race without corrupting the file.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_path(cache_dir, isbn13, range_days)
+    path = cache_path_for_asin(cache_dir, asin, range_days)
     if is_fresh(path, ttl_seconds):
         return path.read_bytes()
 
-    asin = asin_for_amazon_uk(isbn13)
     params = {
         "asin": asin,
         "domain": _KEEPA_DOMAIN_UK,

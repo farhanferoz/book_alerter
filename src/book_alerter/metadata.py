@@ -21,7 +21,11 @@ from pydantic import BaseModel
 from book_alerter.http_client import shared_or_fresh
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.amazon import BOT_MARKERS
-from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
+from book_alerter.sources.normalizers import (
+    amazon_uk_dp_url,
+    amazon_uk_product_dp_url,
+    to_isbn13,
+)
 
 log = get_logger(__name__)
 
@@ -45,6 +49,21 @@ class BookMetadataWithIsbn(BaseModel):
     title: str
     author: str
     cover_url: str | None = None
+
+
+class ProductMetadata(BaseModel):
+    """ASIN-keyed product metadata pulled from the Amazon UK dp page.
+
+    The product side of the metadata flow — used by `/api/metadata/asin-lookup`
+    so the Add-Product dialog can pre-fill title/image before the user clicks
+    save. Mirrors `BookMetadata` in spirit; the fields differ because product
+    pages don't carry an author byline and the title is the only required
+    field for the FE to render a usable preview.
+    """
+    asin: str
+    title: str
+    image_url: str | None = None
+    brand: str | None = None
 
 
 async def _fetch_openlibrary(
@@ -385,3 +404,113 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
     else:
         log.info("metadata.amazon_fallback.ok", url=url, title=result.title)
     return result
+
+
+# --- Amazon UK product metadata --------------------------------------------
+
+
+# Product-side brand selectors. `#bylineInfo` carries "Visit the X Store" or
+# "Brand: X" on most non-book product pages.
+_AMAZON_PRODUCT_BRAND_SELECTORS = (
+    "#bylineInfo",
+    "#brand",
+    ".po-brand .po-break-word",
+)
+
+
+def _parse_amazon_product_metadata(html: str, *, asin: str) -> ProductMetadata | None:
+    """Extract title/image/brand from an Amazon UK product dp page.
+
+    Title uses the same `#productTitle` selector as the book path. Image
+    falls back across the same cover selector cascade. Brand is product-
+    specific — bylineInfo or the side-panel brand row.
+
+    Returns None when the page didn't render a usable title (bot
+    interstitial, dp redirect, or unfamiliar template). Brand and image
+    are best-effort.
+    """
+    from selectolax.parser import HTMLParser
+
+    tree = HTMLParser(html)
+    title: str | None = None
+    for sel in _AMAZON_TITLE_SELECTORS:
+        node = tree.css_first(sel)
+        if node is not None:
+            t = node.text(strip=True)
+            if t:
+                title = t
+                break
+    if not title:
+        return None
+
+    image_url: str | None = None
+    for sel in _AMAZON_COVER_SELECTORS:
+        node = tree.css_first(sel)
+        if node is not None:
+            src = node.attributes.get("src") or node.attributes.get("data-old-hires")
+            if src:
+                image_url = src
+                break
+
+    brand: str | None = None
+    for sel in _AMAZON_PRODUCT_BRAND_SELECTORS:
+        node = tree.css_first(sel)
+        if node is not None:
+            b = node.text(strip=True)
+            # Strip leading template prefixes Amazon uses for the byline.
+            b = re.sub(r"^(Visit the\s+|Brand:\s*)", "", b)
+            # Strip trailing "Store" Amazon appends to the brand link.
+            b = re.sub(r"\s+Store$", "", b).strip()
+            if b and b.lower() != "amazon":
+                brand = b
+                break
+
+    return ProductMetadata(asin=asin, title=title, image_url=image_url, brand=brand)
+
+
+async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
+    """Playwright-rendered Amazon UK product dp scrape. Returns None on any
+    failure (bot challenge, navigation timeout, no title selector). Cost is
+    ~10-20s per call — caller should not invoke this in tight loops."""
+    from playwright.async_api import (
+        TimeoutError as PlaywrightTimeoutError,
+    )
+    from playwright.async_api import (
+        async_playwright,
+    )
+
+    url = amazon_uk_product_dp_url(asin)
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                context = await browser.new_context(
+                    viewport={"width": 1366, "height": 768},
+                    locale="en-GB",
+                )
+                page = await context.new_page()
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+                except PlaywrightTimeoutError:
+                    log.warning("metadata.asin_lookup.nav_timeout", url=url)
+                    return None
+                try:
+                    await page.wait_for_selector(
+                        "#productTitle", timeout=8_000, state="attached"
+                    )
+                except PlaywrightTimeoutError:
+                    log.info("metadata.asin_lookup.no_title_selector", url=url)
+                html = await page.content()
+            finally:
+                await browser.close()
+    except Exception as exc:
+        log.warning("metadata.asin_lookup.error", url=url, error=str(exc))
+        return None
+
+    if any(m in html for m in BOT_MARKERS):
+        log.info("metadata.asin_lookup.bot_blocked", url=url)
+        return None
+    return _parse_amazon_product_metadata(html, asin=asin)

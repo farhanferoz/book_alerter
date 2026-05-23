@@ -63,19 +63,37 @@ async def fetch_and_cache(
     *,
     http: httpx.AsyncClient | None = None,
 ) -> Path | None:
-    """Fetch `url` and write the response body to the on-disk cache.
+    """Fetch `url` and write the response body to the on-disk cache for a
+    book cover. Thin wrapper over `fetch_and_cache_url` — kept for the
+    existing books-side callers."""
+    return await fetch_and_cache_url(cover_path(isbn13), url, http=http, lock_key=isbn13)
 
-    Returns the path on success, `None` on any error (network failure,
-    non-200, empty body, or non-image bytes).
 
-    Concurrent calls for the same `isbn13` are serialized so we only
+async def fetch_and_cache_url(
+    path: Path,
+    url: str,
+    *,
+    http: httpx.AsyncClient | None = None,
+    lock_key: str | None = None,
+) -> Path | None:
+    """Fetch `url` and write the response body to `path` if it's a
+    recognised image. Returns the path on success, `None` on any error
+    (network failure, non-200, empty body, or non-image bytes).
+
+    Concurrent calls for the same `lock_key` are serialized so we only
     fetch upstream once even if many requests miss the cache at the
     same instant. After acquiring the lock we re-check `path.exists()`
-    — a previous waiter may have already populated the cache.
+    — a previous waiter may have already populated the cache. Passing
+    `lock_key=None` skips the lock (use only when the caller has its
+    own serialisation).
+
+    Generic over the path so the product-image proxy can reuse it for
+    `data/product-images/<asin>` without duplicating the lock + sniff +
+    atomic-rename machinery.
     """
-    lock = _locks.setdefault(isbn13, asyncio.Lock())
+    key = lock_key if lock_key is not None else str(path)
+    lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
-        path = cover_path(isbn13)
         if path.exists():
             return path
         try:
@@ -90,7 +108,7 @@ async def fetch_and_cache(
         # otherwise stick around forever causing broken-image renders.
         if sniff_mime(r.content) == "application/octet-stream":
             return None
-        COVER_DIR.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         # Write to a temp file in the same directory and rename — atomic on
         # POSIX so two racing writers can't tear each other's content.
         tmp = path.with_suffix(".tmp")

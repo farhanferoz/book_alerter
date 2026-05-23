@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from book_alerter.api import alerts, books, sources
+from book_alerter.api import alerts, books, products, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
 from book_alerter.api import notifications as notifications_routes
@@ -80,6 +80,7 @@ def api_client(engine_with_view, tmp_path: Path):
     app.state.scheduler = _StubScheduler()
     app.state.notifiers = {"stub": _StubNotifier()}
     app.include_router(books.router)
+    app.include_router(products.router)
     app.include_router(alerts.router)
     app.include_router(sources.router)
     app.include_router(config_routes.router)

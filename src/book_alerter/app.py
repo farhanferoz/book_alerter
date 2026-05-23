@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
-from book_alerter.api import alerts, books, covers, health, sources
+from book_alerter.api import alerts, books, covers, health, products, sources
 from book_alerter.api import config as config_routes
 from book_alerter.api import metadata as metadata_routes
 from book_alerter.api import notifications as notifications_routes
@@ -171,6 +171,7 @@ def create_app() -> FastAPI:
     for router in (
         health.router,
         books.router,
+        products.router,
         alerts.router,
         sources.router,
         config_routes.router,
