@@ -35,7 +35,6 @@ from sqlmodel import Session
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
 
-
 Signal = Literal["BUY", "WATCH", "WAIT", "TARGET_HIT", "INSUFFICIENT_DATA"]
 
 

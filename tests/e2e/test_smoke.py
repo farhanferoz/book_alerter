@@ -50,7 +50,7 @@ def _wait_for_health(timeout_s: float = 90.0) -> None:
             r = httpx.get(f"{BASE_URL}/api/health", timeout=2.0)
             if r.status_code == 200:
                 return
-        except Exception as e:  # noqa: BLE001 — health check is best-effort
+        except Exception as e:
             last_exc = e
         time.sleep(1.0)
     # Health never came up — dump logs to aid debugging then fail.

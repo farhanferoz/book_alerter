@@ -12,7 +12,6 @@ from book_alerter.config import AlertKind, RecommendationConfig
 from book_alerter.db.models import Book
 from book_alerter.stats import BookStats, Signal, compute_signal
 
-
 __all__ = ["AlertKind", "detect_alert_kinds"]
 
 

@@ -26,7 +26,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from freezegun import freeze_time
-from sqlmodel import Session, select
+from helpers import (
+    add_observation,
+    fresh_engine,
+    make_book,
+    make_recorder,
+    run_pipeline,
+    session_factory_for,
+    session_for,
+)
+from sqlmodel import select
 
 from book_alerter.config import (
     Config,
@@ -36,15 +45,6 @@ from book_alerter.config import (
 from book_alerter.db import models
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
-from helpers import (  # noqa: E402
-    add_observation,
-    fresh_engine,
-    make_book,
-    make_recorder,
-    run_pipeline,
-    session_factory_for,
-    session_for,
-)
 
 
 def _drive_to_double_alert(engine, *, isbn: str, target_minor: int,

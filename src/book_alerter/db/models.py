@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import Column, Index, JSON, String
+from sqlalchemy import JSON, Column, Index, String
 from sqlmodel import Field, SQLModel
-
 
 Condition = Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"]
 

@@ -31,6 +31,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from freezegun import freeze_time
+from helpers import (
+    add_observation,
+    fresh_engine,
+    make_book,
+    make_recorder,
+    run_pipeline,
+    session_factory_for,
+    session_for,
+)
+from sqlmodel import select
 
 from book_alerter.api import alerts as alerts_routes
 from book_alerter.api import books as books_routes
@@ -41,16 +51,6 @@ from book_alerter.config import Config, NotificationsConfig, RecommendationConfi
 from book_alerter.db import models
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
-from helpers import (  # noqa: E402
-    add_observation,
-    fresh_engine,
-    make_book,
-    make_recorder,
-    run_pipeline,
-    session_factory_for,
-    session_for,
-)
-from sqlmodel import select
 
 
 class _StubScheduler:
@@ -236,7 +236,7 @@ def _run_scenario() -> int:
     if active:
         aid = active[0].id
         resp = client.post(f"/api/alerts/{aid}/dismiss")
-        r.expect(resp.status_code == 200, f"POST /api/alerts/{{id}}/dismiss == 200")
+        r.expect(resp.status_code == 200, "POST /api/alerts/{id}/dismiss == 200")
         resp2 = client.get("/api/alerts?dismissed=false")
         new_count = len(resp2.json()["items"])
         r.expect(

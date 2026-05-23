@@ -8,7 +8,6 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
-
 _ENV_REF = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 
@@ -143,7 +142,7 @@ class Config(BaseModel):
     backup: BackupConfig = Field(default_factory=BackupConfig)
 
     @classmethod
-    def load(cls, path: Path) -> "Config":
+    def load(cls, path: Path) -> Config:
         if not path.exists():
             return cls()
         raw = yaml.safe_load(path.read_text()) or {}

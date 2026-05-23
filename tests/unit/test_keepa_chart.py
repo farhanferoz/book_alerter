@@ -17,10 +17,10 @@ from PIL import Image
 
 from book_alerter.keepa_chart import (
     ExtractedObservation,
-    _DateCalib,
-    _LinearCalib,
     _compact_daily,
+    _DateCalib,
     _enforce_monotonic_decreasing,
+    _LinearCalib,
     extract_observations,
     observed_at_to_datetime,
 )

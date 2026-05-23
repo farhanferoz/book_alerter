@@ -3,7 +3,6 @@ from alembic import op
 
 from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 
-
 revision = "0005_book_stats_view_shipping"
 down_revision = "0004_book_stats_view"
 branch_labels = None

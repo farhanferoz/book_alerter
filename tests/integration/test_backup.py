@@ -9,13 +9,13 @@ in-process tests without spinning up APScheduler's event loop.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from freezegun import freeze_time
 from sqlmodel import Session, SQLModel
 
-from book_alerter.db import models  # noqa: F401 — registers models on metadata
+from book_alerter.db import models
 from book_alerter.db.session import get_engine
 from book_alerter.scheduler import run_weekly_backup
 
@@ -24,7 +24,7 @@ def _seed_db(db_path):
     """Create a SQLite DB with schema + one Book row, then close the engine."""
     engine = get_engine(f"sqlite:///{db_path}")
     SQLModel.metadata.create_all(engine)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with Session(engine) as s:
         s.add(models.Book(
             isbn13="9780000000001", title="t", author="a",
@@ -70,7 +70,7 @@ def test_run_weekly_backup_retains_only_last_seven(tmp_path):
     _seed_db(db_path)
 
     # Simulate 8 weekly runs at Sunday 03:00 UTC, starting 2026-01-04 (a Sunday).
-    base = datetime(2026, 1, 4, 3, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 4, 3, 0, 0, tzinfo=UTC)
     created: list = []
     for week in range(8):
         when = base + timedelta(weeks=week)
@@ -106,7 +106,7 @@ def test_run_weekly_backup_retain_one(tmp_path):
     backup_dir = tmp_path / "backups"
     _seed_db(db_path)
 
-    base = datetime(2026, 1, 4, 3, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 4, 3, 0, 0, tzinfo=UTC)
     for week in range(3):
         with freeze_time(base + timedelta(weeks=week)):
             run_weekly_backup(db_path, backup_dir, retain=1)

@@ -8,11 +8,10 @@ SQLite file `tests/scenarios/.test.db` (gitignored) and reuse the real
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy.engine import Engine
@@ -22,7 +21,6 @@ from book_alerter.db import models
 from book_alerter.db.session import get_engine
 from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 from book_alerter.notifications.dispatcher import AlertPipeline
-
 
 SCENARIO_DIR = Path(__file__).parent
 SCENARIO_DB = SCENARIO_DIR / ".test.db"

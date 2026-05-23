@@ -3,7 +3,6 @@ from alembic import op
 
 from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 
-
 revision = "0008_book_stats_last_polled_at"
 down_revision = "0007_book_percentile_window"
 branch_labels = None

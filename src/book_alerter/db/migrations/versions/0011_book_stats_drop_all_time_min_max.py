@@ -8,7 +8,6 @@ from alembic import op
 
 from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
 
-
 revision = "0011_book_stats_drop_all_time_min_max"
 down_revision = "0010_book_stats_buyable_min_max"
 branch_labels = None

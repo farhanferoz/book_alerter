@@ -17,7 +17,6 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Request
 
-
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 
 

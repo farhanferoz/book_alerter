@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import io
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Iterable, Literal
+from typing import Literal
 
 import numpy as np
 from PIL import Image
@@ -168,7 +169,7 @@ def _ocr_region(
 # --- Calibration ------------------------------------------------------------
 
 
-def _calibrate_y_axis(words: list[_OcrWord]) -> "_LinearCalib | None":
+def _calibrate_y_axis(words: list[_OcrWord]) -> _LinearCalib | None:
     """Build a (pixel_y → price-pence) map from the £-prefixed y-axis labels.
 
     Tesseract occasionally drops a digit ("£22" → "£2") which would shift the
@@ -242,7 +243,7 @@ def _enforce_monotonic_decreasing(
     return survivors
 
 
-def _calibrate_x_axis(words: list[_OcrWord]) -> "_DateCalib | None":
+def _calibrate_x_axis(words: list[_OcrWord]) -> _DateCalib | None:
     """Build a (pixel_x → date) map from the bottom-axis month labels."""
     raw: list[tuple[float, str]] = []
     for w in words:
@@ -288,7 +289,7 @@ class _LinearCalib:
     max_price: int
 
     @classmethod
-    def fit(cls, points: list[tuple[float, int]]) -> "_LinearCalib":
+    def fit(cls, points: list[tuple[float, int]]) -> _LinearCalib:
         xs = np.array([p[0] for p in points], dtype=float)
         ys = np.array([p[1] for p in points], dtype=float)
         slope, intercept = np.polyfit(xs, ys, 1)
@@ -313,7 +314,7 @@ class _DateCalib:
     epoch: date
 
     @classmethod
-    def fit(cls, points: list[tuple[float, date]]) -> "_DateCalib":
+    def fit(cls, points: list[tuple[float, date]]) -> _DateCalib:
         epoch = points[0][1]
         xs = np.array([p[0] for p in points], dtype=float)
         ys = np.array([(p[1] - epoch).days for p in points], dtype=float)

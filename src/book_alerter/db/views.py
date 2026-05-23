@@ -2,7 +2,6 @@
 integration tests (SQLModel.metadata.create_all does not create views)."""
 from __future__ import annotations
 
-
 BOOK_STATS_VIEW_SQL = """
 CREATE VIEW book_stats AS
 WITH non_dupes AS (

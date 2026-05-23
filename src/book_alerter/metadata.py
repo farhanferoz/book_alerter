@@ -340,6 +340,8 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
     static fields) — caller treats that as "no metadata available"."""
     from playwright.async_api import (
         TimeoutError as PlaywrightTimeoutError,
+    )
+    from playwright.async_api import (
         async_playwright,
     )
 

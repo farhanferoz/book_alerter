@@ -9,7 +9,6 @@ broken right now").
 import sqlalchemy as sa
 from alembic import op
 
-
 revision = "0012_book_scrape_health"
 down_revision = "0011_book_stats_drop_all_time_min_max"
 branch_labels = None

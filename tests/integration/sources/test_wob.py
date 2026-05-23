@@ -1,8 +1,7 @@
 import asyncio
 
-from tests.integration.conftest import WOB_CARRIED_ISBN, WOB_MAYBE_NOT_CARRIED_ISBN
-
 from book_alerter.sources.wob import WobInlineSource
+from tests.integration.conftest import WOB_CARRIED_ISBN, WOB_MAYBE_NOT_CARRIED_ISBN
 
 
 def test_wob_extracts_at_least_one_offer_from_carried_isbn(transient_book, wob_vcr):

@@ -23,13 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from freezegun import freeze_time
-from sqlmodel import select
-
-from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
-from book_alerter.db import models
-from book_alerter.notifications.dispatcher import AlertPipeline
-from book_alerter.notifications.inapp import InAppNotifier
-from helpers import (  # noqa: E402
+from helpers import (
     add_observation,
     fresh_engine,
     make_book,
@@ -38,6 +32,12 @@ from helpers import (  # noqa: E402
     session_factory_for,
     session_for,
 )
+from sqlmodel import select
+
+from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
+from book_alerter.db import models
+from book_alerter.notifications.dispatcher import AlertPipeline
+from book_alerter.notifications.inapp import InAppNotifier
 
 
 def main() -> int:
