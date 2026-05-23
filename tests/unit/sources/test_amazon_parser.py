@@ -60,6 +60,25 @@ def test_parse_dp_paid_delivery_block_yields_numeric_shipping() -> None:
     assert offers[0].shipping_minor == 280
 
 
+def test_parse_dp_used_buybox_returns_used_condition() -> None:
+    """Regression for `parse_dp` hardcoding `condition=NEW`.
+
+    Live capture 2026-05-23 of ASIN 0241638194: Amazon's buy-box was
+    served by "Amazon Resale" with a Used – Like New copy at £28.60.
+    The previous implementation reported this as `condition=NEW`,
+    silently inflating the percentile distribution of "new" prices.
+    After the fix, `Amazon Resale` should resolve to a used grade.
+    """
+    html = _load("9780241638194-uk-dp-used-buybox-2026-05-23.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/0241638194")
+    assert len(offers) == 1
+    o = offers[0]
+    assert o.seller == "Amazon Resale"
+    assert o.condition == "used_vg", f"expected Used grade, got {o.condition!r}"
+    assert o.price_minor == 2860
+    assert o.shipping_minor == 0
+
+
 def test_parse_dp_returns_empty_when_no_price_block() -> None:
     html = _load("9780747532699-uk-dp-no-price.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
@@ -153,6 +172,78 @@ def test_parse_offer_listing_shipping_free_is_zero() -> None:
     )
     amazon_row = next(o for o in offers if o.seller == "Amazon")
     assert amazon_row.shipping_minor == 0
+
+
+def test_parse_offer_listing_real_capture_shipping_extracted_for_all_rows() -> None:
+    """Regression for the always-broken `#aod-offer-shipping` selector
+    that left 80% of marketplace offers with shipping_minor=None.
+
+    Real-Amazon-UK AOD HTML (captures from 2026-05-16 and 2026-05-23)
+    renders the delivery cost as `<span data-csa-c-delivery-price>`
+    inside `.aod-delivery-promise` — the legacy `#aod-offer-shipping`
+    selector matches zero of these. After the fix, every offer on the
+    real captures must yield a concrete `shipping_minor` (0 for FREE).
+    Failing this test means a parser regression has reintroduced the
+    NULL-shipping bug across the fleet.
+    """
+    for fname in (
+        "9780241638194-uk-offer-listing-real.html",
+        "9780241638194-uk-offer-listing-live-2026-05-23.html",
+    ):
+        html = _load(fname)
+        offers = parse_offer_listing(
+            html, fallback_url="https://www.amazon.co.uk/dp/0241638194"
+        )
+        assert offers, f"{fname} produced no offers"
+        nulls = [o for o in offers if o.shipping_minor is None]
+        assert not nulls, (
+            f"{fname}: {len(nulls)}/{len(offers)} offers have shipping_minor=None; "
+            f"first bad row seller={nulls[0].seller!r}"
+        )
+
+
+def test_parse_offer_listing_clickout_not_shipping_help() -> None:
+    """Regression for `_extract_clickout` returning Amazon's shipping-help
+    page (`/gp/help/customer/display.html?nodeId=GQ6B6RH72AX8D2TD`)
+    instead of the seller/offer page. The shipping-help anchor sits
+    first in every modern AOD row, so the previous "first anchor wins"
+    logic always picked it up. After the fix, no offer URL should
+    contain `/gp/help/customer/`.
+    """
+    for fname in (
+        "9780241638194-uk-offer-listing-real.html",
+        "9780241638194-uk-offer-listing-live-2026-05-23.html",
+    ):
+        html = _load(fname)
+        offers = parse_offer_listing(
+            html, fallback_url="https://www.amazon.co.uk/dp/0241638194"
+        )
+        bad = [o for o in offers if "/gp/help/customer/" in o.url]
+        assert not bad, (
+            f"{fname}: {len(bad)}/{len(offers)} offers point at the shipping-help "
+            f"page; first bad row seller={bad[0].seller!r} url={bad[0].url!r}"
+        )
+
+
+def test_parse_offer_listing_seller_anchors_resolve_to_marketplace_pages() -> None:
+    """Marketplace seller rows on real Amazon UK AOD link to
+    `/gp/aag/main?...seller=<id>` (the seller's storefront landing
+    page). After the clickout fix, those rows must resolve to a URL
+    matching that pattern — proves we are picking the soldBy anchor,
+    not any random anchor in the row.
+    """
+    html = _load("9780241638194-uk-offer-listing-real.html")
+    offers = parse_offer_listing(
+        html, fallback_url="https://www.amazon.co.uk/dp/0241638194"
+    )
+    # Pick any marketplace row (not the Amazon-direct one, which falls
+    # back to the dp URL since it has no soldBy <a>).
+    marketplace = [o for o in offers if o.seller not in {"Amazon", "Amazon Resale"}]
+    assert marketplace, "no marketplace rows in fixture"
+    for o in marketplace:
+        assert "seller=" in o.url and "/gp/aag/main" in o.url, (
+            f"marketplace seller {o.seller!r} resolved to unexpected url {o.url!r}"
+        )
 
 
 def test_empty_html_returns_empty_list() -> None:
