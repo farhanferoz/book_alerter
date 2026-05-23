@@ -125,7 +125,11 @@ def test_book_stats_view_excludes_stale_source_partition(tmp_path):
             text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
         ).mappings().first()
 
-    # The fresh £24.62 used_vg row must win, not the stale £28.60 new row.
+    # The fresh £24.62 used_vg row must win, not the stale £28.60 new row
+    # AND not the colliding £28.60 used_vg row at the same observed_at —
+    # the ROW_NUMBER tiebreaker must prefer the cheaper total within a
+    # partition.
     assert row["current_best_total_minor"] == 2462
     assert row["current_best_condition"] == "used_vg"
     assert row["current_best_seller"] == "Amazon Resale"
+    assert row["current_best_url"] == "https://example/warehouse-deals"

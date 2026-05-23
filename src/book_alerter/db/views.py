@@ -43,11 +43,17 @@ latest_scrape_per_source AS (
 -- have the cheaper offer dropped if the ROW_NUMBER tie-break didn't pick it.
 -- Only rows from each (book, source)'s most recent scrape are considered live.
 latest_per_offer AS (
+    -- Tiebreaker: when the same (source, condition, seller) partition has
+    -- multiple rows at the same observed_at (e.g. Amazon Resale offers
+    -- multiple copies of the same Used book at different prices, captured
+    -- both by parse_dp and the offer-listing parser within one scrape),
+    -- prefer the CHEAPEST total. Without this tiebreaker, ROW_NUMBER
+    -- picks non-deterministically and can pick the more expensive row.
     SELECT b.book_id, b.source, b.total_minor, b.price_minor, b.shipping_minor,
            b.condition, b.seller, b.url, b.observed_at,
            ROW_NUMBER() OVER (
                PARTITION BY b.book_id, b.source, b.condition, b.seller
-               ORDER BY b.observed_at DESC
+               ORDER BY b.observed_at DESC, b.total_minor ASC, b.id ASC
            ) AS rn
     FROM buyable b
     JOIN latest_scrape_per_source l
@@ -135,11 +141,12 @@ latest_scrape_per_source AS (
     GROUP BY product_id, source
 ),
 latest_per_offer AS (
+    -- Tiebreaker: see BOOK_STATS_VIEW_SQL rationale.
     SELECT b.product_id, b.source, b.total_minor, b.price_minor, b.shipping_minor,
            b.condition, b.seller, b.url, b.observed_at,
            ROW_NUMBER() OVER (
                PARTITION BY b.product_id, b.source, b.condition, b.seller
-               ORDER BY b.observed_at DESC
+               ORDER BY b.observed_at DESC, b.total_minor ASC, b.id ASC
            ) AS rn
     FROM buyable b
     JOIN latest_scrape_per_source l
