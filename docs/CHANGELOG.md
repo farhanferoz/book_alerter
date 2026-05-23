@@ -144,6 +144,52 @@ exactly. Verified end-to-end against a WAL-checkpointed copy of the
 production DB: all 9 books now report current_best = the actual
 MIN(total_minor) across fresh observations.
 
+Follow-up: SourceBreakdown highlight pinned the wrong row
+(commit `48aba42`)
+
+On book 4 (1929), the snapshot card said `WOB · used_vg · £16.00` but
+the source breakdown's "Current best" highlight landed on the £16.80
+row (same seller, same condition, different price — both copies on
+World of Books' product page). The FE's
+`findCurrentBestObservation` matched by
+`(url, source, condition, seller)` — both rows shared that tuple, so
+whichever appeared first in the array order got pinned. Removing
+`total_minor` from the match key in `603f34b` was an
+over-correction (the original concern, penny drift across scrapes,
+doesn't apply when both the snapshot and the observations array
+read from the same fresh view/table). Restored `total_minor` in the
+match; when the tuple genuinely fails to resolve (e.g. observations
+query hasn't refreshed yet after a refetch) the fallback is no-pin,
+strictly better than pinning a near-miss.
+
+Follow-up: history chart noisy after 3 May
+(commits `1253e44` + `d70d874`)
+
+Two compounding chart-render bugs surfaced after live scraping
+started producing dense marketplace data.
+
+1. **Per-scrape overwrite** (`1253e44`) — `buildSeries` did
+   `row[key] = o.total_minor`, so when one scrape produced 7-10
+   observations with the same `observed_at` and same
+   `(source · condition)` key (one per marketplace seller), the
+   loop overwrote with whichever seller came last in iteration
+   order. As seller order shuffled between scrapes, the rendered
+   line jumped randomly between sellers' prices. Pre-2026-05-03
+   the chart was smooth because the data was Keepa-backfill (one
+   row/day). Fix: aggregate by MIN(total) per `(ts, series_key)`
+   — same "cheapest at that moment" semantic the rest of the app
+   uses for `current_best`.
+2. **Too many series** (`d70d874`) — the chart rendered one line
+   per `(source · condition)` (e.g. `amazon · new`,
+   `amazon · used_g`, `amazon · used_vg`, `keepa · new`,
+   `keepa · used_g`, sometimes `wob · *` / `bookfinder · *`). 5+
+   overlapping lines in a small chart was "very busy &
+   confusing." Collapse to two condition families — `New`
+   (condition=new) and `Used` (condition in
+   {used_vg, used_g, used_acceptable}) — each MIN(total) across
+   every source/seller in that family. Matches Keepa's own chart
+   shape and reads cleanly side-by-side with it.
+
 ### Deferred-list cleanup pass
 
 One-commit refactor closing six items from the post-products deferred list
