@@ -61,9 +61,25 @@ const SERIES_COLORS = [
   "#65a30d", // lime-600
 ];
 
-function seriesKey(obs: { source: string; condition: string }): string {
-  return `${obs.source} · ${obs.condition}`;
+// Two-bucket condition family: "new" vs everything used. Mirrors Keepa's
+// chart shape (just `New` + `Used` lines), keeps the history readable.
+// Per-seller granularity is available below in the source breakdown.
+function conditionFamily(condition: string): "new" | "used" | null {
+  if (condition === "new") return "new";
+  if (
+    condition === "used_vg" ||
+    condition === "used_g" ||
+    condition === "used_acceptable"
+  ) {
+    return "used";
+  }
+  return null;
 }
+
+const SERIES_LABEL: Record<"new" | "used", string> = {
+  new: "New",
+  used: "Used",
+};
 
 type ChartRow = { ts: number } & Record<string, number | null>;
 
@@ -84,22 +100,21 @@ function buildSeries(observations: PriceObservation[], range: Range): {
   const seriesSet = new Set<string>();
   const byTs = new Map<number, ChartRow>();
   for (const o of filtered) {
-    const key = seriesKey(o);
+    const family = conditionFamily(o.condition);
+    if (family == null) continue;
+    const key = SERIES_LABEL[family];
     seriesSet.add(key);
     let row = byTs.get(o.ts);
     if (!row) {
       row = { ts: o.ts };
       byTs.set(o.ts, row);
     }
-    // A single Amazon scrape returns one observation per marketplace
-    // seller (7-10 rows per condition per scrape), all carrying the
-    // same `observed_at`. A naive `row[key] = o.total_minor` overwrites
-    // with whichever seller happened to be last in iteration order,
-    // making the rendered line jump randomly between sellers' prices
-    // and looking like noise. Aggregate by MIN(total) so each
-    // `(timestamp, source·condition)` point on the line is "the
-    // cheapest offer the scraper saw at that moment" — the same
-    // semantic the rest of the app uses for `current_best`.
+    // A single scrape returns multiple observations per (source × seller ×
+    // condition) — and we further collapse per-condition variants
+    // (used_vg + used_g + used_acceptable) into one "Used" family.
+    // Aggregate by MIN(total) so each point is "the cheapest live offer
+    // the scrapers saw at that moment in that family." Same semantic
+    // as `current_best`, and matches Keepa's New/Used line aesthetic.
     const prev = row[key];
     if (prev == null || o.total_minor < prev) {
       row[key] = o.total_minor;
@@ -108,7 +123,8 @@ function buildSeries(observations: PriceObservation[], range: Range): {
 
   return {
     rows: [...byTs.values()].sort((a, b) => a.ts - b.ts),
-    series: [...seriesSet].sort(),
+    // New first, Used second — stable legend / colour ordering.
+    series: ["New", "Used"].filter((s) => seriesSet.has(s)),
   };
 }
 
