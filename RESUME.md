@@ -2,10 +2,10 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix + real-HTML parser fix.** All plan phases 0–13 shipped. Post-MVP quality/perf pass landed on 2026-05-16: bounded windowed stats, lifespan-scoped httpx, per-book scrape error surfacing, BookStats wire-shape dedup, shipping-imputation marker, Monaco live theme, deep healthcheck, first-boot config seed, plus a `simplify` + `find-bugs` + `/second-opinion` cycle. **Late 2026-05-16**: Amazon source captures used grades end-to-end. The first live run against `9780241638194` (Gemini) exposed three more parser bugs against real Amazon HTML that the synthetic fixtures didn't cover — every offer recorded as £50 RRP, every offer flagged `condition=new`, seller leaked the "Sold by" label. Fixed via apex pricing template selectors + aria-label seller path + real-HTML-derived fixture (`9b1a74e`, simplify-pass `5f25bfd`). Polluted observations from the broken-parser run wiped (8 rows). End-to-end verified: Gemini's current best is now `£25.66 Used - Like New` from Amazon Resale. **Next action: first deploy to NAS.**
+**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix + real-HTML parser fix + pre-deploy quality/perf pass.** All plan phases 0–13 shipped. **2026-05-23 pre-deploy pass** landed 7 commits hardening correctness, performance, and scraper resilience: (1) per-source + per-book asyncio locks closing trigger-now-vs-cron and dispatcher dedup races; healthcheck now actually probes APScheduler liveness; `rebuild_runtime` builds the new runtime before tearing down the old; hard-delete cascades to all child tables; bookfinder rolls back to "unknown shipping" on rounding-amplified negative prices; alert message guards `p50 = 0` from ZeroDivisionError. (2) SQLite WAL/synchronous/busy_timeout/temp_store PRAGMAs on every connection; global shipping-median snapshot precomputed once per pipeline cycle instead of per book. (3) Cosmetic ruff backlog cleared end-to-end (zero findings). (4) **Bot-marker fragility fix**: Amazon + Bookfinder + WoB parsers now assert positive page markers before reporting 0 offers — a new anti-bot variant whose substring isn't in `BOT_MARKERS` now raises SourceError instead of silently biasing percentiles upward. (5) `_PRICE_AMOUNT_RE` Amazon fallback scoped to the `twister-plus-buying-options-price-data` div so the regex can't drift onto stray "frequently bought together" prices. (6) WoB JSON-LD + `var meta` extraction migrated from raw regex to selectolax DOM parsing. (7) Schema-enforced cascade: migration 0013 adds ON DELETE CASCADE to all book/alert FKs; `PRAGMA foreign_keys=ON` set per-connection; hand-cascade in `api/books.delete_book` removed. Every change live-validated against real books (id=1 / 4 / 7) — WoB/Amazon/Bookfinder still return their expected offer counts. **Next action: first deploy to NAS.**
 
-**Branch:** `master` (no worktree, linear chain). 20 commits beyond the prior MVP-complete head (`bd4ffa5`).
-**Last update:** 2026-05-16, live Amazon end-to-end verified — used grades capture cleanly. Branch is deploy-ready.
+**Branch:** `master` (no worktree, linear chain). 27 commits beyond the prior MVP-complete head (`bd4ffa5`).
+**Last update:** 2026-05-23, 7-commit pre-deploy pass (bot-marker fragility + buy-box scoping + WoB DOM migration + FK cascade migration). All tests green: 302 unit/integration + 6/6 scenarios + ruff clean + 0 FK violations.
 
 ## What ships
 
@@ -22,7 +22,7 @@ cd /home/ff235/dev/book_alerter
 
 # Layer 1: unit + integration (≤6 s)
 uv run pytest -q
-# expected: 285 passed, 3 skipped, 1 deselected
+# expected: 302 passed, 3 skipped, 1 deselected
 #   - 3 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1) + one VCR cassette gate
 #   - 1 deselected: e2e marker (opt-in only)
 
@@ -41,7 +41,7 @@ cd web && npx tsc --noEmit && npx eslint . && npm run build
 
 # Database
 uv run alembic current
-# expected: 0012_book_scrape_health (head)
+# expected: 0013_fk_cascade_on_book_delete (head)
 
 # First-time setup on a new machine
 uv run playwright install chromium
@@ -73,7 +73,7 @@ docker compose down
 
 ## What to do first
 
-1. **NAS deploy** (the next-session goal): bring the repo onto the target NAS, `id -u` / `id -g` on the host to get the right values for `PUID/PGID`, copy `.env.example` → `.env` and fill them (+ optional `GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`), ensure `./data` is owned by `PUID:PGID`, then `docker compose up -d`. First boot will apply migrations `0001..0012` against an empty SQLite and seed `data/config.yaml` from defaults; deep `/api/health` gates orchestrator readiness. Synology default UID/GID is `1026:100`; Unraid is `99:100`.
+1. **NAS deploy** (the next-session goal): bring the repo onto the target NAS, `id -u` / `id -g` on the host to get the right values for `PUID/PGID`, copy `.env.example` → `.env` and fill them (+ optional `GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`), ensure `./data` is owned by `PUID:PGID`, then `docker compose up -d`. First boot will apply migrations `0001..0013` against an empty SQLite and seed `data/config.yaml` from defaults; deep `/api/health` gates orchestrator readiness. Synology default UID/GID is `1026:100`; Unraid is `99:100`.
 2. **Browser smoke** — visit the deployed UI, add a book by ISBN, verify the dashboard renders the new fields (signal pill, mini-bars per window, imputed shipping marker, per-book red dot if a source fails).
 3. **Ntfy wiring** — set `NTFY_SERVER` + `NTFY_TOPIC` in `.env` (or via the Notifications settings tab), click "Send test". Channel won't be instantiated if topic is empty.
 4. **Live sources** — enable a source in Settings → Sources (default `config.yaml` ships `sources: {}` empty); WoB is the lowest-flake; Bookfinder and Amazon UK both Playwright-based with anti-bot exposure.
@@ -99,11 +99,28 @@ Carried follow-ups (deferred for first NAS deploy; revisit after production beha
 
 Deferrals new in 2026-05-16 review pass:
 
-- **TTL cache on `source_seller_global_shipping_medians`** — currently bounded to widest WINDOW_DAYS but still a full-table scan per dashboard render. ~30–90 MB peak materialisation at 100 books × 365 days. Within NAS budget today; if it bites in production, cache for ~60s. (Gemini second-opinion G-3, deferred.)
+- **TTL cache on `source_seller_global_shipping_medians`** — partial mitigation landed 2026-05-23 (snapshot precomputed once per pipeline cycle in `dispatcher.run`). Still a full-table scan per dashboard render; if it bites in production, cache for ~60s. (Gemini second-opinion G-3, partially addressed.)
 - **Per-source scrape health** — `last_scrape_error` is `Book`-row-grained with last-write-wins across sources, so a book with one failing source and one succeeding source will flicker between error/no-error on the dashboard depending on completion order. Documented design choice; revisit if real-world flicker becomes a UX issue. (Gemini second-opinion G-5b, accepted as design.)
 - **React.memo on MiniBars** — premature with 9 dashboard rows; revisit only if dashboard rendering becomes visibly janky.
 - **Bound per-book raw observation table** (not just stats reads) — the SQLite table grows unbounded; eventual prune job + retention policy is a natural follow-up once we know how many years of history a user actually wants.
 - **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it.
+
+Closed by the 2026-05-23 pre-deploy pass (no longer deferred):
+
+- ~~`Scheduler.running` not exposed — deep healthcheck always returned "no probe available"~~ — shipped in `ae2b581`: added `@property running` mirroring `self._sched.running` so a crashed APScheduler now trips the 503.
+- ~~`rebuild_runtime` could brick automation on a bad config~~ — shipped in `ae2b581`: now builds the new runtime BEFORE shutting down the old, so `PUT /api/config` with a malformed cron / unknown source name keeps the previous scheduler serving.
+- ~~Two source runs finishing within the dedup window could double-fire the same alert~~ — shipped in `ae2b581`: per-book `asyncio.Lock` in `AlertPipeline` serialises same-book overlap; distinct books still process in parallel. Same commit added the per-source lock in `Scheduler._run_source` so manual `trigger_now` can't race the cron-fired job.
+- ~~Hard-delete left orphan rows in PriceObservation / Alert / NotificationDelivery / BookSignalState~~ — shipped in `ae2b581` (initial hand-cascade) and superseded by `8708cbb` (migration 0013 + `PRAGMA foreign_keys=ON` + schema-enforced ON DELETE CASCADE; hand-cascade removed).
+- ~~Bookfinder could persist a negative item price after rounding amplification~~ — shipped in `ae2b581`: parser now rolls back to "unknown shipping split" when shipping ends up larger than the visible total.
+- ~~`p50 = 0` in alert message rendering raised ZeroDivisionError post-commit~~ — shipped in `ae2b581`: guard the `(p50 - current) / p50` divisor with `p50 > 0`, so a degenerate £0-observation history doesn't break the notify path silently.
+- ~~SQLite default journal serialised dashboard reads behind scraper writes~~ — shipped in `ffff236`: `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000` + `temp_store=MEMORY` PRAGMAs on every connection.
+- ~~`compute_book_stats` re-ran the global shipping-median scan per book~~ — shipped in `ffff236`: snapshot computed once per `AlertPipeline.run` and threaded into `_run_one`.
+- ~~Bot-marker fragility: Amazon + Bookfinder reported 0 offers silently when anti-bot served an unknown variant~~ — shipped in `908424d`: parsers now assert positive page markers (`#dp-container` / `#productTitle`, `#aod-container`, `#book-search-input-desktop`, etc.) before returning []; raise SourceError on unknown layouts. Extended to WoB in `aa3516f`.
+- ~~`_PRICE_AMOUNT_RE` could drift onto unrelated rails (frequently-bought-together, recommended titles)~~ — shipped in `fc29860`: fallback regex scoped to the `twister-plus-buying-options-price-data` div via selectolax; full-page search retained as last-ditch fallback for older layouts.
+- ~~WoB `_LDJSON_RE` + `_META_RE` regexes are brittle to template tweaks~~ — shipped in `aa3516f`: both extraction paths migrated to selectolax DOM lookups; positive-marker check added consistent with Amazon/Bookfinder.
+- ~~FK cascade lived in app code, not the schema~~ — shipped in `8708cbb`: migration 0013 adds ON DELETE CASCADE to four FKs (priceobservation/alert/notificationdelivery/booksignalstate → book/alert); `PRAGMA foreign_keys=ON` per-connection in `db/session.py`. Audit confirmed 0 orphans across all child tables; row counts preserved across migration.
+- ~~ruff backlog of 72 cosmetic findings~~ — shipped in `4c555ba` + `7394747`: auto-fixed where safe, hand-wrapped 5 legit E501s, configured per-file ignores for Alembic-generated migrations + test-setup semicolon idioms + intentional typography (en-dashes for ranges, `×` for multiplication, `∨` for logical-or in math comments). `ruff check ./src ./tests` now reports zero findings.
+
 Closed by the 2026-05-16 review pass (no longer deferred):
 
 - ~~Long-lived `httpx.AsyncClient` could lift into FastAPI lifespan~~ — shipped in `dcab912` (B3).
