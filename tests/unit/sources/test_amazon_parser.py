@@ -60,6 +60,51 @@ def test_parse_dp_paid_delivery_block_yields_numeric_shipping() -> None:
     assert offers[0].shipping_minor == 280
 
 
+def test_extract_dp_condition_non_resale_seller_defaults_to_new() -> None:
+    """Substring "warehouse" appearing in a legitimate marketplace name
+    must NOT trigger the Used classification — only the literal
+    Amazon-owned resale brands should."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_condition
+
+    tree = HTMLParser("<html><body></body></html>")
+    assert _extract_dp_condition(tree, "Warehouse Books Ltd") == "new"
+    assert _extract_dp_condition(tree, "Wholesale Resale Group") == "new"
+    assert _extract_dp_condition(tree, "Amazon") == "new"
+    assert _extract_dp_condition(tree, "BookCurl") == "new"
+
+
+def test_extract_dp_condition_amazon_resale_with_no_caption_defaults_to_used_vg() -> None:
+    """Captureless edge case: when Amazon serves "Amazon Resale" but the
+    grade caption is missing (rare A/B variant), fall back to USED_VG
+    rather than NEW so the percentile distribution stays consistent."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_condition
+
+    tree = HTMLParser("<html><body></body></html>")
+    assert _extract_dp_condition(tree, "Amazon Resale") == "used_vg"
+    assert _extract_dp_condition(tree, " amazon warehouse ") == "used_vg"
+
+
+def test_extract_dp_condition_amazon_resale_with_new_caption_text_still_used() -> None:
+    """If the caption text reads as NEW for any reason (HTML drift,
+    A/B test), we've already decided this is a Resale row by
+    seller-name match — reporting NEW would be contradictory. Stay on
+    the USED_VG default."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_condition
+
+    html = (
+        '<div id="usedAccordionCaption_feature_div">'
+        '<span class="a-text-bold">New</span></div>'
+    )
+    tree = HTMLParser(html)
+    assert _extract_dp_condition(tree, "Amazon Resale") == "used_vg"
+
+
 def test_parse_dp_used_buybox_returns_used_condition() -> None:
     """Regression for `parse_dp` hardcoding `condition=NEW`.
 

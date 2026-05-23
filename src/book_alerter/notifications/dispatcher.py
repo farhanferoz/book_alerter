@@ -274,26 +274,12 @@ class AlertPipeline:
         kind: AlertKind,
         stats: BookStats,
     ) -> str:
-        """Render the user-facing alert message.
+        """Render the alert message.
 
-        Format (UK-anchored):
-
-            [<KIND>] <title> — total <X.YY> <CCY> (item A.AA + B.BB ship),
-            <P>% below <Wd> median <M.MM>
-
-        Three deliberate clarifications over the original format:
-
-        - **`total`** prefix — `current_best_total_minor` is item+shipping
-          but the original message just said "<price> GBP" and recipients
-          had to guess whether shipping was included. Surfacing
-          `total` (and the item / shipping breakdown when known) removes
-          that ambiguity.
-        - **`<P>% below median`** instead of `(was median X, +P%)` — the
-          old sign convention (`pct = (p50 - current) / p50`) made "below
-          median" read as a positive percentage, which most readers parse
-          as "above median". Rephrasing fixes the sign confusion.
-        - **`<Wd>`** spells the percentile window (e.g. `90d`) so the
-          recipient knows what historical period the median refers to.
+        Uses prose ("below"/"above"/"at median") rather than a signed
+        percentage — the prior `(was median X, +P%)` format made
+        "below median" read as a positive number, which most readers
+        parsed as ABOVE median. See commit `0051dea`.
         """
         assert stats.current_best_total_minor is not None
         current = stats.current_best_total_minor
@@ -327,15 +313,18 @@ class AlertPipeline:
         # the user gets the DB row but no notification — silently broken.
         if p50 is not None and p50 > 0:
             pct = 100 * (p50 - current) / p50
-            window_days = stats.percentile_window_days
-            window_str = f"{window_days}d"
-            if pct >= 0:
-                delta = (
-                    f", {pct:.0f}% below {window_str} median {p50 / 100:.2f}"
-                )
+            window_str = f"{stats.percentile_window_days}d"
+            # Threshold "at median" when the absolute delta rounds to 0% —
+            # otherwise the formatter prints "0% above" / "0% below" which
+            # contradicts the sign the reader infers from the rest of the
+            # number.
+            if abs(pct) < 0.5:
+                delta = f", at {window_str} median {p50 / 100:.2f}"
             else:
+                direction = "below" if pct > 0 else "above"
                 delta = (
-                    f", {-pct:.0f}% above {window_str} median {p50 / 100:.2f}"
+                    f", {abs(pct):.0f}% {direction} "
+                    f"{window_str} median {p50 / 100:.2f}"
                 )
         return (
             f"[{kind.upper()}] {item.title} — "

@@ -639,7 +639,22 @@ def _parse_gbp_to_minor(text: str) -> int | None:
         return None
 
 
-_DELIVERY_PRICE_GBP_RE = re.compile(r"£\s*([0-9]+(?:[.,][0-9]+)?)")
+# Restrict to 0-2 decimal places — Amazon UK only emits 2-decimal prices and
+# accepting unbounded decimals would let "£12.3456" round to a £12.35 imposter.
+_DELIVERY_PRICE_GBP_RE = re.compile(r"£\s*([0-9]+(?:[.,][0-9]{1,2})?)")
+
+
+def _parse_delivery_text(raw: str) -> int | None:
+    """"FREE" → 0; "£X.XX" → pence; everything else → None."""
+    text = raw.strip()
+    if not text:
+        return None
+    if "free" in text.lower():
+        return 0
+    m = _DELIVERY_PRICE_GBP_RE.search(text)
+    if m:
+        return int(round(float(m.group(1).replace(",", ".")) * 100))
+    return None
 
 
 def _extract_shipping_minor(row: Node) -> int | None:
@@ -654,36 +669,17 @@ def _extract_shipping_minor(row: Node) -> int | None:
     where the data attribute is missing but the human-readable promise
     still says "FREE delivery" or "£X.XX delivery".
     """
-    # Modern: `data-csa-c-delivery-price` attribute.
     sp = row.css_first("[data-csa-c-delivery-price]")
     if sp is not None:
-        raw = (sp.attributes.get("data-csa-c-delivery-price") or "").strip()
-        if raw:
-            if raw.upper() == "FREE":
-                return 0
-            m = _DELIVERY_PRICE_GBP_RE.search(raw)
-            if m:
-                return int(round(float(m.group(1).replace(",", ".")) * 100))
-    # Legacy: explicit `#aod-offer-shipping` slot.
-    legacy = row.css_first("#aod-offer-shipping")
-    if legacy is not None:
-        text = (legacy.text() or "").strip()
-        if text:
-            if "free" in text.lower():
-                return 0
-            return _parse_gbp_to_minor(text)
-    # Fallback: scan the delivery-promise text — only catches the
-    # "free" / "£X.XX delivery" wording, leaves None on hydration
-    # skeletons.
-    promise = row.css_first(".aod-delivery-promise")
-    if promise is not None:
-        text = (promise.text() or "").strip()
-        if text:
-            if "free" in text.lower():
-                return 0
-            m = _DELIVERY_PRICE_GBP_RE.search(text)
-            if m:
-                return int(round(float(m.group(1).replace(",", ".")) * 100))
+        v = _parse_delivery_text(sp.attributes.get("data-csa-c-delivery-price") or "")
+        if v is not None:
+            return v
+    for sel in ("#aod-offer-shipping", ".aod-delivery-promise"):
+        node = row.css_first(sel)
+        if node is not None:
+            v = _parse_delivery_text(node.text() or "")
+            if v is not None:
+                return v
     return None
 
 
@@ -738,6 +734,7 @@ def _extract_offer_seller(row: Node) -> str:
 
 _CLICKOUT_REJECT_SUBSTRS = (
     "/gp/help/customer/",   # shipping / delivery help pages
+    "/gp/help/seller/",     # seller-info help drawer (Amazon-direct AOD row)
     "/gp/aag/details",      # seller-details modal (shipping rates breakdown)
 )
 
@@ -785,9 +782,14 @@ def _extract_dp_seller(tree: HTMLParser) -> str:
 # Amazon's own resale brands sell USED stock; their appearance in the dp
 # buy-box `#merchant-info` is the most reliable signal that the displayed
 # price corresponds to a Used (not New) offer. Marketplace Used buy-boxes
-# do exist but are rare on Amazon UK and we conservatively report them
-# as NEW until/unless a future capture forces a more nuanced detection.
-_AMAZON_USED_BRAND_PATTERNS = ("resale", "warehouse")
+# do exist but are rare on Amazon UK and we conservatively report them as
+# NEW until/unless a future capture forces a more nuanced detection.
+#
+# Exact match (not substring) — names like "Warehouse Books Ltd" or
+# "Wholesale Resale Group" would otherwise be mis-classified as Used.
+_AMAZON_USED_BRANDS = frozenset({"amazon resale", "amazon warehouse"})
+
+_USED_GRADES = frozenset({Condition.USED_VG, Condition.USED_G, Condition.USED_ACCEPTABLE})
 
 
 def _extract_dp_condition(tree: HTMLParser, seller: str) -> Condition:
@@ -804,16 +806,20 @@ def _extract_dp_condition(tree: HTMLParser, seller: str) -> Condition:
 
     All other sellers (including marketplace ones) default to `NEW`.
     """
-    if any(p in seller.lower() for p in _AMAZON_USED_BRAND_PATTERNS):
-        caption = tree.css_first("#usedAccordionCaption_feature_div .a-text-bold")
-        if caption is not None:
-            text = (caption.text() or "").strip()
-            if text:
-                grade = condition_from_grade_text(text)
-                if grade != Condition.UNKNOWN:
-                    return grade
-        return Condition.USED_VG
-    return Condition.NEW
+    if seller.strip().lower() not in _AMAZON_USED_BRANDS:
+        return Condition.NEW
+    caption = tree.css_first("#usedAccordionCaption_feature_div .a-text-bold")
+    if caption is not None:
+        text = (caption.text() or "").strip()
+        if text:
+            grade = condition_from_grade_text(text)
+            # Only accept used grades — if the caption text reads as NEW or
+            # UNKNOWN (Amazon HTML drift, A/B test) we've already decided this
+            # is a Resale row by seller-name match, so reporting NEW would be
+            # contradictory. Fall through to the USED_VG default.
+            if grade in _USED_GRADES:
+                return grade
+    return Condition.USED_VG
 
 
 def _node_text(node: Node | None) -> str:

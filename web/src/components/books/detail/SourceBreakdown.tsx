@@ -67,16 +67,18 @@ function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
 // the latest-per-group filter can drop it when a newer scrape returned a
 // different cheapest offer, leaving the user staring at a snapshot price
 // they can't find anywhere in the table below.
+//
+// Match by (url + source + condition + seller) only — NOT total_minor.
+// total_minor on the live observation can drift by a penny between scrapes
+// while `current_best_*` still references the prior snapshot, and a
+// total-equality requirement would silently re-introduce the exact "no
+// matching row" failure this function exists to prevent.
 function findCurrentBestObservation(
   book: Book,
   observations: PriceObservation[],
 ): PriceObservation | null {
   const s = book.stats;
-  if (
-    s.current_best_url == null ||
-    s.current_best_source == null ||
-    s.current_best_total_minor == null
-  ) {
+  if (s.current_best_url == null || s.current_best_source == null) {
     return null;
   }
   for (const o of observations) {
@@ -84,8 +86,7 @@ function findCurrentBestObservation(
       o.url === s.current_best_url &&
       o.source === s.current_best_source &&
       o.condition === s.current_best_condition &&
-      o.seller === s.current_best_seller &&
-      o.total_minor === s.current_best_total_minor
+      o.seller === s.current_best_seller
     ) {
       return o;
     }
@@ -100,20 +101,21 @@ export function SourceBreakdown({
   book: Book;
   observations: PriceObservation[];
 }) {
-  const rows = useMemo(() => {
+  // Single memoized pass: derive both `rows` and `currentBestId` together
+  // so they cannot disagree about which observation is "Current best"
+  // across re-renders.
+  const { rows, currentBestId } = useMemo(() => {
     const latest = latestPerGroup(observations);
     const currentBest = findCurrentBestObservation(book, observations);
-    if (currentBest == null) return latest;
-    // If the snapshot row IS already in `latest`, no churn — just sort it
-    // first by leveraging the `id` match. Otherwise, prepend a copy so the
-    // user can see exactly which observation drives "Current best".
+    if (currentBest == null) {
+      return { rows: latest, currentBestId: null };
+    }
     const alreadyShown = latest.some((o) => o.id === currentBest.id);
-    if (alreadyShown) return latest;
-    return [currentBest, ...latest];
+    return {
+      rows: alreadyShown ? latest : [currentBest, ...latest],
+      currentBestId: currentBest.id,
+    };
   }, [book, observations]);
-
-  const currentBestId =
-    findCurrentBestObservation(book, observations)?.id ?? null;
 
   return (
     <div className="rounded-md border border-border bg-card">

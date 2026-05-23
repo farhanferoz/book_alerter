@@ -98,6 +98,27 @@ def test_message_no_delta_when_p50_unavailable() -> None:
     assert msg == "[NEW_LOW] Test Book — total 12.70 GBP (item 10.20 + 2.50 ship)"
 
 
+def test_message_at_median_when_pct_rounds_to_zero() -> None:
+    """When current and median differ by less than 0.5%, "0% above" /
+    "0% below" contradicts the small sign and confuses readers. Phrase
+    it as "at <window> median" instead."""
+    # current == p50 exactly
+    s = _stats(current=2000, item_minor=2000, ship_minor=0, p50_90d=2000)
+    msg = _format(s)
+    assert ", at 90d median 20.00" in msg
+    assert "below" not in msg and "above" not in msg
+
+    # current 0.2% above median
+    s = _stats(current=2004, item_minor=2004, ship_minor=0, p50_90d=2000)
+    msg = _format(s)
+    assert ", at 90d median 20.00" in msg
+
+    # current 0.2% below median
+    s = _stats(current=1996, item_minor=1996, ship_minor=0, p50_90d=2000)
+    msg = _format(s)
+    assert ", at 90d median 20.00" in msg
+
+
 def test_message_omits_breakdown_when_shipping_unknown() -> None:
     """Defensive: alerts shouldn't fire on shipping-unknown rows (the
     book_stats view filters those out before signals compute), but the
