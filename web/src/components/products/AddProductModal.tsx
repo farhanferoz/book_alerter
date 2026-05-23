@@ -9,6 +9,7 @@
 // fills title / image / brand → user confirms → POST /api/products.
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiPost, ApiError } from "@/api/client";
@@ -53,6 +54,50 @@ function looksLikeAsinOrUrl(raw: string): boolean {
   if (!s) return false;
   if (/^[A-Z0-9]{10}$/i.test(s)) return true;
   return /amazon|\bdp\b|gp\/product/i.test(s);
+}
+
+// Pull the duplicate product's id out of a 409 ApiError body. Backend returns
+// `{detail: {message, product_id, asin}}`; narrow defensively. Symmetric with
+// `duplicateBookIdFromError` in `components/books/AddBookModal.tsx` — kept
+// inline here rather than extracted because the books / products surfaces
+// don't share a common error file yet and the dedup target would be one
+// helper.
+function duplicateProductIdFromError(err: ApiError | null | undefined): number | null {
+  if (!err || err.status !== 409) return null;
+  const body = err.body;
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object") return null;
+  const id = (detail as { product_id?: unknown }).product_id;
+  return typeof id === "number" ? id : null;
+}
+
+function CreateProductError({
+  error,
+  onDone,
+}: {
+  error: ApiError | null | undefined;
+  onDone: () => void;
+}) {
+  if (!error) return null;
+  if (error.status === 409) {
+    const id = duplicateProductIdFromError(error);
+    return (
+      <p className="text-xs text-destructive">
+        Already tracked.{" "}
+        {id !== null && (
+          <Link to={`/products/${id}`} onClick={onDone} className="underline">
+            View product
+          </Link>
+        )}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-destructive">
+      Failed to add product: {formatErrorMessage(error)}
+    </p>
+  );
 }
 
 function useCreateProduct(onSuccess: (p: ProductOut) => void) {
@@ -162,13 +207,7 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
-        {create.isError && (
-          <p className="text-xs text-destructive">
-            {create.error.status === 409
-              ? "Already tracked."
-              : `Failed to add product: ${formatErrorMessage(create.error)}`}
-          </p>
-        )}
+        <CreateProductError error={create.error} onDone={onDone} />
       </div>
 
       <DialogFooter>

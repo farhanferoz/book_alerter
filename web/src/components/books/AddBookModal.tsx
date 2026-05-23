@@ -92,7 +92,13 @@ function duplicateBookIdFromError(err: ApiError | null | undefined): number | nu
   return typeof id === "number" ? id : null;
 }
 
-function CreateBookError({ error }: { error: ApiError | null | undefined }) {
+function CreateBookError({
+  error,
+  onDone,
+}: {
+  error: ApiError | null | undefined;
+  onDone: () => void;
+}) {
   if (!error) return null;
   if (error.status === 409) {
     const id = duplicateBookIdFromError(error);
@@ -100,7 +106,10 @@ function CreateBookError({ error }: { error: ApiError | null | undefined }) {
       <p className="text-xs text-destructive">
         Already tracked.{" "}
         {id !== null && (
-          <Link to={`/books/${id}`} className="underline">
+          // `onClick={onDone}` closes the modal before React Router navigates.
+          // Without it, the dialog only un-mounts via the route change, which
+          // can leave a brief overlay flash on slower devices.
+          <Link to={`/books/${id}`} onClick={onDone} className="underline">
             View book
           </Link>
         )}
@@ -300,7 +309,7 @@ function AddBookByIsbn({ onDone }: { onDone: () => void }) {
         </div>
       </div>
 
-      <CreateBookError error={create.error} />
+      <CreateBookError error={create.error} onDone={onDone} />
 
       <DialogFooter>
         <Button
@@ -450,7 +459,7 @@ function AddBookBySearch({ onDone }: { onDone: () => void }) {
         </ul>
       )}
 
-      <CreateBookError error={create.error} />
+      <CreateBookError error={create.error} onDone={onDone} />
 
       <DialogFooter>
         <Button

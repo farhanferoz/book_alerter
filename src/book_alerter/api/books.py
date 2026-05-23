@@ -155,7 +155,7 @@ class BookStatsOut(BaseModel):
     def from_dataclass(
         cls,
         s: BookStats,
-        book: models.Book | None = None,
+        book: models.Book | models.Product | None = None,
         reco: RecommendationConfig | None = None,
     ) -> BookStatsOut:
         signal = (

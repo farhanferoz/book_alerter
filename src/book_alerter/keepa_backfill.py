@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from sqlmodel import Session, select
 
@@ -29,9 +28,9 @@ class KeepaBackfillSchema:
     Amazon UK dp URL stored on each PriceObservation/ProductObservation row.
     """
 
-    item_model: type[Any]              # models.Book | models.Product
-    observation_model: type[Any]       # models.PriceObservation | models.ProductObservation
-    fk_attr: str                       # "book_id" | "product_id"
+    item_model: type[models.Book] | type[models.Product]
+    observation_model: type[models.PriceObservation] | type[models.ProductObservation]
+    fk_attr: str  # "book_id" | "product_id"
     fetch_png: Callable[[str], bytes | None]
     dp_url_for: Callable[[str], str]
 
