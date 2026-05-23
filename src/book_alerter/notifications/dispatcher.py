@@ -274,15 +274,52 @@ class AlertPipeline:
         kind: AlertKind,
         stats: BookStats,
     ) -> str:
+        """Render the user-facing alert message.
+
+        Format (UK-anchored):
+
+            [<KIND>] <title> — total <X.YY> <CCY> (item A.AA + B.BB ship),
+            <P>% below <Wd> median <M.MM>
+
+        Three deliberate clarifications over the original format:
+
+        - **`total`** prefix — `current_best_total_minor` is item+shipping
+          but the original message just said "<price> GBP" and recipients
+          had to guess whether shipping was included. Surfacing
+          `total` (and the item / shipping breakdown when known) removes
+          that ambiguity.
+        - **`<P>% below median`** instead of `(was median X, +P%)` — the
+          old sign convention (`pct = (p50 - current) / p50`) made "below
+          median" read as a positive percentage, which most readers parse
+          as "above median". Rephrasing fixes the sign confusion.
+        - **`<Wd>`** spells the percentile window (e.g. `90d`) so the
+          recipient knows what historical period the median refers to.
+        """
         assert stats.current_best_total_minor is not None
         current = stats.current_best_total_minor
+        item_minor = stats.current_best_price_minor
+        ship_minor = stats.current_best_shipping_minor
+        ccy = item.currency
+        if item_minor is not None and ship_minor is not None:
+            if ship_minor == 0:
+                breakdown = f" (item {item_minor / 100:.2f}, free ship)"
+            else:
+                breakdown = (
+                    f" (item {item_minor / 100:.2f} + "
+                    f"{ship_minor / 100:.2f} ship)"
+                )
+        else:
+            # current_best_* came from a non-buyable row (shipping unknown);
+            # alerts shouldn't normally fire on these but stay defensive.
+            breakdown = ""
+
         cfg_label = label_for_days(stats.percentile_window_days)
+        delta = ""
         p50 = (
             stats.windows[cfg_label].p50
             if cfg_label is not None and cfg_label in stats.windows
             else None
         )
-        delta = ""
         # `p50 > 0` guards a real degenerate case: when every historical
         # observation totals £0 (free copies, parser quirk), p50 is 0 and
         # the `(p50 - current) / p50` divisor blows up. The alert row has
@@ -290,10 +327,19 @@ class AlertPipeline:
         # the user gets the DB row but no notification — silently broken.
         if p50 is not None and p50 > 0:
             pct = 100 * (p50 - current) / p50
-            delta = f" (was median {p50 / 100:.2f}, {pct:+.0f}%)"
+            window_days = stats.percentile_window_days
+            window_str = f"{window_days}d"
+            if pct >= 0:
+                delta = (
+                    f", {pct:.0f}% below {window_str} median {p50 / 100:.2f}"
+                )
+            else:
+                delta = (
+                    f", {-pct:.0f}% above {window_str} median {p50 / 100:.2f}"
+                )
         return (
-            f"[{kind.upper()}] {item.title} —"
-            f" {current / 100:.2f} {item.currency}{delta}"
+            f"[{kind.upper()}] {item.title} — "
+            f"total {current / 100:.2f} {ccy}{breakdown}{delta}"
         )
 
     async def _deliver(
