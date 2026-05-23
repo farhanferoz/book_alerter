@@ -16,12 +16,12 @@
 // which is what users expect (typed text doesn't vanish when you peek at the
 // other tab).
 //
-// 409 behaviour: backend returns the detail string only (no book id), so we
-// show "Already tracked." inline. Wiring a link to the existing row needs a
-// backend change (return id on conflict, or look it up via `/api/books`); both
-// are out of scope for 11.1.
+// 409 behaviour: backend returns `{detail: {message, book_id, isbn13}}`. We
+// surface the message inline and link to the existing row's detail page so the
+// user can jump straight there.
 
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiGet, apiPost, ApiError } from "@/api/client";
@@ -78,10 +78,48 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
+// Pull the duplicate book's id out of a 409 ApiError body. The handler
+// returns `{detail: {message, book_id, isbn13}}`; FastAPI wraps user-supplied
+// detail values verbatim, so we narrow defensively rather than trusting the
+// shape.
+function duplicateBookIdFromError(err: ApiError | null | undefined): number | null {
+  if (!err || err.status !== 409) return null;
+  const body = err.body;
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object") return null;
+  const id = (detail as { book_id?: unknown }).book_id;
+  return typeof id === "number" ? id : null;
+}
+
+function CreateBookError({ error }: { error: ApiError | null | undefined }) {
+  if (!error) return null;
+  if (error.status === 409) {
+    const id = duplicateBookIdFromError(error);
+    return (
+      <p className="text-xs text-destructive">
+        Already tracked.{" "}
+        {id !== null && (
+          <Link to={`/books/${id}`} className="underline">
+            View book
+          </Link>
+        )}
+      </p>
+    );
+  }
+  if (error.status === 422) {
+    return (
+      <p className="text-xs text-destructive">
+        Invalid book details. Check ISBN, title, and author.
+      </p>
+    );
+  }
+  return <p className="text-xs text-destructive">Save failed ({error.status}).</p>;
+}
+
 // Shared create-book mutation. Both panels invalidate `["books"]` and close
 // the dialog on success. The 409 / 422 surfacing is left to the caller via
-// the returned `error` (with `ApiError.status`) — the messages differ per
-// panel only slightly today, but extracting them would obscure intent.
+// the returned `error` (with `ApiError.status`).
 function useCreateBook(onSuccess: () => void) {
   const qc = useQueryClient();
   return useMutation<BookOut, ApiError, BookCreate>({
@@ -188,15 +226,6 @@ function AddBookByIsbn({ onDone }: { onDone: () => void }) {
     return "Lookup failed — you can still confirm manually.";
   };
 
-  const createErrorMessage = (): string | null => {
-    if (!create.error) return null;
-    if (create.error.status === 409) return "Already tracked.";
-    if (create.error.status === 422) {
-      return "Invalid book details. Check ISBN, title, and author.";
-    }
-    return `Save failed (${create.error.status}).`;
-  };
-
   const submitDisabled =
     !valid ||
     !titleValue.trim() ||
@@ -271,9 +300,7 @@ function AddBookByIsbn({ onDone }: { onDone: () => void }) {
         </div>
       </div>
 
-      {createErrorMessage() && (
-        <p className="text-xs text-destructive">{createErrorMessage()}</p>
-      )}
+      <CreateBookError error={create.error} />
 
       <DialogFooter>
         <Button
@@ -332,15 +359,6 @@ function AddBookBySearch({ onDone }: { onDone: () => void }) {
       cover_url: hit.cover_url ?? null,
       format: "any",
     });
-  };
-
-  const createErrorMessage = (): string | null => {
-    if (!create.error) return null;
-    if (create.error.status === 409) return "Already tracked.";
-    if (create.error.status === 422) {
-      return "Invalid book details (backend rejected).";
-    }
-    return `Save failed (${create.error.status}).`;
   };
 
   // `search_books` server-side already drops items missing isbn/title/author,
@@ -432,9 +450,7 @@ function AddBookBySearch({ onDone }: { onDone: () => void }) {
         </ul>
       )}
 
-      {createErrorMessage() && (
-        <p className="text-xs text-destructive">{createErrorMessage()}</p>
-      )}
+      <CreateBookError error={create.error} />
 
       <DialogFooter>
         <Button

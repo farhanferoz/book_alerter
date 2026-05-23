@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProducts, type Product } from "@/hooks/useProducts";
+import { formatMoneyMinor } from "@/lib/format";
 import { formatErrorMessage } from "@/lib/utils";
 
 import { AddProductModal } from "@/components/products/AddProductModal";
@@ -47,11 +48,6 @@ function ErrorCard({ error }: { error: unknown }) {
   );
 }
 
-function priceCell(minor: number | null | undefined, currency: string): string {
-  if (minor == null) return "—";
-  return `${currency} ${(minor / 100).toFixed(2)}`;
-}
-
 function ProductRow({ product }: { product: Product }) {
   return (
     <tr className="border-b border-border last:border-b-0 hover:bg-accent/30">
@@ -84,7 +80,7 @@ function ProductRow({ product }: { product: Product }) {
         </div>
       </td>
       <td className="p-3 align-middle text-right tabular-nums">
-        {priceCell(
+        {formatMoneyMinor(
           product.stats.current_best_total_minor,
           product.currency,
         )}

@@ -41,8 +41,14 @@ def test_post_books_duplicate_isbn_returns_409(api_client):
     payload = {"isbn": "9780241638194", "title": "T", "author": "A"}
     r1 = api_client.post("/api/books", json=payload)
     assert r1.status_code == 201
+    existing_id = r1.json()["id"]
     r2 = api_client.post("/api/books", json=payload)
     assert r2.status_code == 409
+    detail = r2.json()["detail"]
+    # FE consumes book_id to render a "View book" link in the Add-book modal
+    # error state, so pin the contract here.
+    assert detail["book_id"] == existing_id
+    assert detail["isbn13"] == "9780241638194"
 
 
 def test_post_books_invalid_isbn_returns_422(api_client):

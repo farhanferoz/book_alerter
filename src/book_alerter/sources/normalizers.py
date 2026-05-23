@@ -41,7 +41,10 @@ def to_asin(raw: str) -> str:
     - "https://www.amazon.de/gp/product/B07XYZ1234/"
     - "amazon.co.uk/dp/B07XYZ1234"
     - "/dp/B07XYZ1234"
-    - "https://amzn.eu/d/abcXYZ12" — short-link form (10 chars after /d/)
+
+    `amzn.eu/d/<code>` short-links are NOT supported — they need an HTTP
+    redirect to resolve to a real ASIN, which is out of scope for this
+    pure-format helper.
 
     Returns the uppercase ASIN. Raises ValueError on garbage.
 

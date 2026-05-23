@@ -5,6 +5,7 @@ import random
 import sqlite3
 import traceback
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,39 @@ from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 
 log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _KindRouting:
+    """Per-kind table+column dispatch for the scheduler's iteration loop.
+
+    Centralises the if/else on `ItemKind` that previously appeared in both
+    `_run_kind_for_source` (which item table to query, which natural-key
+    field to log) and `_persist` (which observation table to write, which
+    FK column to filter on). Adding a third kind = add a third entry to
+    `_KIND_ROUTING`.
+    """
+
+    item_model: type[Book | Product]
+    identifier_attr: str        # "isbn13" | "asin"
+    observation_model: type[PriceObservation | ProductObservation]
+    item_fk_attr: str           # "book_id" | "product_id"
+
+
+_KIND_ROUTING: dict[ItemKind, _KindRouting] = {
+    ItemKind.BOOK: _KindRouting(
+        item_model=Book,
+        identifier_attr="isbn13",
+        observation_model=PriceObservation,
+        item_fk_attr="book_id",
+    ),
+    ItemKind.PRODUCT: _KindRouting(
+        item_model=Product,
+        identifier_attr="asin",
+        observation_model=ProductObservation,
+        item_fk_attr="product_id",
+    ),
+}
 
 
 def run_weekly_backup(
@@ -357,14 +391,9 @@ class Scheduler:
         """Per-kind iteration: query the right item table, fetch each item,
         persist observations, return (affected_ids, attempted, succeeded).
         """
-        item_model: type[Book | Product]
-        identifier_attr: str
-        if kind == ItemKind.BOOK:
-            item_model = Book
-            identifier_attr = "isbn13"
-        else:
-            item_model = Product
-            identifier_attr = "asin"
+        routing = _KIND_ROUTING[kind]
+        item_model = routing.item_model
+        identifier_attr = routing.identifier_attr
 
         with self._session_factory() as session:
             items = session.exec(
@@ -451,17 +480,10 @@ class Scheduler:
         last_scrape_error in the SAME session so a per-item scrape costs
         one DB commit, not two.
         """
-        observation_model: type[PriceObservation | ProductObservation]
-        item_model: type[Book | Product]
-        item_fk_attr: str
-        if kind == ItemKind.BOOK:
-            observation_model = PriceObservation
-            item_model = Book
-            item_fk_attr = "book_id"
-        else:
-            observation_model = ProductObservation
-            item_model = Product
-            item_fk_attr = "product_id"
+        routing = _KIND_ROUTING[kind]
+        observation_model = routing.observation_model
+        item_model = routing.item_model
+        item_fk_attr = routing.item_fk_attr
 
         now = datetime.now(UTC)
         with self._session_factory() as session:

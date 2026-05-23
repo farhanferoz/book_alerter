@@ -128,6 +128,14 @@ class BookStats:
             return None
         return _percentile_at_sorted(self.sorted_totals, pct)
 
+    @property
+    def item_id(self) -> int:
+        """Item-kind-agnostic alias for `book_id`. The dataclass field is
+        named `book_id` for historical (books-first) reasons; both books and
+        products populate it with the relevant primary key. New callers
+        should prefer `item_id` so the product side reads cleanly."""
+        return self.book_id
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no DB access) — unit-testable in isolation.

@@ -2,10 +2,10 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2/3 reviewed × 3 + pre-deploy quality/perf pass + PRODUCTS FEATURE shipped.** All book-side plan phases 0–13 shipped; the 2026-05-23 products plan (`docs/superpowers/plans/2026-05-23-products-implementation.md`) is end-to-end complete with tier-3 review fixes landed. The app now tracks non-book Amazon products (ASIN-keyed) end-to-end alongside books: scrape via `AmazonUKProductInlineSource`, persist to parallel tables (`Product` / `ProductObservation` / `ProductAlert` / `ProductSignalState`), share the alert/notifier/dispatcher machinery via `_AlertModels` parameterisation, surface via `/api/products/*` + `/products` FE routes, polymorphic `NotificationDelivery` (CHECK-enforced exactly-one of `alert_id` / `product_alert_id`). Tier-3 review caught and fixed two scheduler isolation bugs (per-kind + per-item exception leaks), a refetch fan-out scoping bug (was firing book-only sources on product refetches), and an SSRF gap on the user-supplied `product.image_url`. **Next action: first deploy to NAS** (unchanged — products are additive; existing deploy steps work as-is).
+**Status:** **MVP COMPLETE + Tier-2/3 reviewed × 3 + pre-deploy quality/perf pass + PRODUCTS FEATURE shipped + deferred-list cleanup.** All book-side plan phases 0–13 shipped; the 2026-05-23 products plan is end-to-end complete with tier-3 review fixes landed; a follow-up cleanup pass closed six small deferred items and discarded six non-actionable ones. The app now tracks non-book Amazon products (ASIN-keyed) end-to-end alongside books: scrape via `AmazonUKProductInlineSource`, persist to parallel tables (`Product` / `ProductObservation` / `ProductAlert` / `ProductSignalState`), share the alert/notifier/dispatcher machinery via `_AlertModels` parameterisation, surface via `/api/products/*` + `/products` FE routes, polymorphic `NotificationDelivery` (CHECK-enforced exactly-one of `alert_id` / `product_alert_id`). **Next action: first deploy to NAS** (unchanged — products are additive; existing deploy steps work as-is).
 
-**Branch:** `master` (no worktree, linear chain). 36 commits beyond the prior MVP-complete head (`bd4ffa5`): 27 pre-products + 9 products.
-**Last update:** 2026-05-23, 9-commit products feature add. All tests green: **395 unit/integration + 7/7 scenarios + ruff clean + ty clean + FE TS+ESLint+build clean + 0 FK violations + alembic head `0016_product_stats_view`**.
+**Branch:** `master` (no worktree, linear chain). 37 commits beyond the prior MVP-complete head (`bd4ffa5`): 27 pre-products + 9 products + 1 cleanup.
+**Last update:** 2026-05-23, deferred-list cleanup pass. All tests green: **395 unit/integration + 7/7 scenarios + ruff clean + ty clean + FE TS+ESLint+build clean + 0 FK violations + alembic head `0016_product_stats_view`**.
 
 ## What ships
 
@@ -96,24 +96,35 @@ Triage of the end-to-end scenario findings (see CHANGELOG "Scenario findings —
 - **Dedup uses wall clock, not `observed_at`**. Correct user-facing behavior; comment added to `_filter_dedup` (commit `f1970f7`). Scenarios needing distinct same-kind alerts across the window must use `freeze_time` (scenario 2 demonstrates).
 - **Mute skips `BookSignalState` writes**. By design — preserves pre-mute prev state so `new_low` can still fire on mute-lift when there was a prior all-time min. Edge case (mute brand-new book before any observation) loses `new_low` capability on lift; not a realistic flow.
 
-Carried follow-ups (deferred for first NAS deploy; revisit after production behaviour observed):
+Active deferred follow-ups (genuinely big or genuinely require a decision):
 
 - **Source-ABC `prepare()`/`cleanup()` hooks** for per-scheduler-run shared Chromium browser (currently per-fetch shared); + **`PlaywrightInlineSource` base** to dedup the `_render` skeleton between bookfinder.py and amazon.py. Single follow-up PR scoped together. (Phase 8.3 simplify deferred.)
 - **Telegram + Pushover notifier slots reserved** but unimplemented. `.env.example` has the env vars; `NotificationsConfig.channels` has no Pydantic types yet. Adding requires Pydantic models + dispatcher wiring + FE channel cards. (Working agreement: ntfy only at MVP.)
-- **shadcn base color is `neutral`** (default); plan called for `slate`. Hand-edit `components.json` + re-init if/when the design decision matters. (Phase 9.1 deviation.)
-- **`monaco-editor → dompurify`** 2 transitive moderate-severity audit findings. Address with `npm audit fix` or a newer `monaco-editor` pin once `@monaco-editor/react` bumps. (Phase 11.5 deferred.)
-- **`openapi-typescript@7` peer-deps `typescript@^5`** but project is on TS6; installed with `--legacy-peer-deps`. Revisit if upstream widens its peer constraint. (Phase 9.2 carried.)
-- **`gen:api` requires a running backend** — could add a `scripts/dump-openapi.py` that writes `/openapi.json` to disk for offline regen. (Phase 9.2 deferred.)
-- **`POST /api/books` on duplicate ISBN** returns 409 with `detail` string only — doesn't include the existing book's ID. FE shows "Already tracked" without a link-out. Minor backend tweak (add `book_id` to the detail). (Phase 10.2 deviation.)
-- **N+1 queries**: `compute_book_stats` in `GET /api/books` (medians hoisted to one scan per request via `source_seller_global_shipping_medians`, but per-book scan + cascade still happens N times); `_last_run_for` in `GET /api/sources`. On a small NAS dataset (≤200 books) this is fine but a `JOIN`+aggregation rewrite is the natural follow-up. (Pre-Phase 8 carried.)
+- **`monaco-editor → dompurify`** 2 transitive moderate-severity audit findings. Wait for `@monaco-editor/react` to bump `monaco`. (Phase 11.5 deferred.)
+- **N+1 queries**: `compute_book_stats` in `GET /api/books` (medians hoisted to one scan per request, but per-book scan + cascade still happens N times); `_last_run_for` in `GET /api/sources`. On a small NAS dataset (≤200 books) this is fine but a `JOIN`+aggregation rewrite is the natural follow-up. (Pre-Phase 8 carried.)
+- **TTL cache on `source_seller_global_shipping_medians`** — partial mitigation landed 2026-05-23 (snapshot precomputed once per pipeline cycle in `dispatcher.run`). Still a full-table scan per dashboard render; if it bites in production, cache for ~60s. (Gemini G-3, partially addressed.)
+- **Bound per-book raw observation table retention** — SQLite table grows unbounded; needs a prune job + retention policy decision (how many years of history does a user actually want?). Same applies to `ProductObservation`.
+- **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it. Decide whether to actually wire Sentry on the NAS posture first.
+- **`Signal = Literal[...]`** in `stats.py` still a Literal; migrate to `StrEnum` per the project enum-preferred rule. Bigger refactor (touches every alert-pipeline call site); not on the critical path.
+- **`BookStats.book_id` full field rename to `item_id`** — partial fix landed 2026-05-23 (item_id `@property` + wire-format mirror). Full rename touches the book FE + tests; deferred until justifying the churn.
 
-Deferrals new in 2026-05-16 review pass:
+Closed by the 2026-05-23 deferred-list cleanup pass (no longer deferred):
 
-- **TTL cache on `source_seller_global_shipping_medians`** — partial mitigation landed 2026-05-23 (snapshot precomputed once per pipeline cycle in `dispatcher.run`). Still a full-table scan per dashboard render; if it bites in production, cache for ~60s. (Gemini second-opinion G-3, partially addressed.)
-- **Per-source scrape health** — `last_scrape_error` is `Book`-row-grained with last-write-wins across sources, so a book with one failing source and one succeeding source will flicker between error/no-error on the dashboard depending on completion order. Documented design choice; revisit if real-world flicker becomes a UX issue. (Gemini second-opinion G-5b, accepted as design.)
-- **React.memo on MiniBars** — premature with 9 dashboard rows; revisit only if dashboard rendering becomes visibly janky.
-- **Bound per-book raw observation table** (not just stats reads) — the SQLite table grows unbounded; eventual prune job + retention policy is a natural follow-up once we know how many years of history a user actually wants.
-- **Sentry DSN wiring** — `.env.example` has the slot but nothing reads it.
+- ~~`_keepa_backfill_blocking` near-duplicate in `api/books.py` + `api/products.py`~~ — shipped in `keepa_backfill.py`: single `backfill_blocking(item_id, identifier, session_factory, *, schema)` impl, two thin per-router wrappers. Route function name `keepa_backfill` renamed to `trigger_keepa_backfill` to free the module name at module scope.
+- ~~Scheduler kind-routing if/else dispatch in `_run_kind_for_source` + `_persist`~~ — shipped: module-level `_KIND_ROUTING: dict[ItemKind, _KindRouting]` table. Adding a third kind = add a third entry.
+- ~~`BookStats.book_id` field-name leak into product API responses~~ — partial fix shipped: `item_id` `@property` + `BookStatsOut.item_id` wire field (additive, both fields populated). Full rename still deferred above.
+- ~~`POST /api/books` 409 FE handling~~ — backend already returned `{detail: {message, book_id, isbn13}}`; FE Add-book modal now surfaces a `<Link to="/books/{id}">View book</Link>` via the new `CreateBookError` component. Regression test pins the contract.
+- ~~FE `ProductsDashboard` / `ProductDetail` use local `priceCell` + `fmtDateTime`~~ — both now read from `web/src/lib/format.ts` (`formatMoneyMinor` + `formatDateTime`).
+- ~~`to_asin` docstring drift~~ — dropped the `amzn.eu/d/<code>` short-link example.
+
+Discarded (removed from this list; rationale logged in CHANGELOG):
+
+- shadcn base color `neutral` vs `slate` (cosmetic, re-initable anytime).
+- Per-source / per-product scrape-health flicker (documented last-write-wins design).
+- `React.memo` on `MiniBars` (premature; 9 dashboard rows).
+- `openapi-typescript@7` peer-deps mismatch (upstream-blocked).
+- `gen:api` requires running backend (YAGNI to add a dump script).
+- Amazon source rate-limit on doubled scrape volume (no prod data to size against).
 
 Closed by the 2026-05-23 pre-deploy pass (no longer deferred):
 
@@ -130,18 +141,6 @@ Closed by the 2026-05-23 pre-deploy pass (no longer deferred):
 - ~~WoB `_LDJSON_RE` + `_META_RE` regexes are brittle to template tweaks~~ — shipped in `aa3516f`: both extraction paths migrated to selectolax DOM lookups; positive-marker check added consistent with Amazon/Bookfinder.
 - ~~FK cascade lived in app code, not the schema~~ — shipped in `8708cbb`: migration 0013 adds ON DELETE CASCADE to four FKs (priceobservation/alert/notificationdelivery/booksignalstate → book/alert); `PRAGMA foreign_keys=ON` per-connection in `db/session.py`. Audit confirmed 0 orphans across all child tables; row counts preserved across migration.
 - ~~ruff backlog of 72 cosmetic findings~~ — shipped in `4c555ba` + `7394747`: auto-fixed where safe, hand-wrapped 5 legit E501s, configured per-file ignores for Alembic-generated migrations + test-setup semicolon idioms + intentional typography (en-dashes for ranges, `×` for multiplication, `∨` for logical-or in math comments). `ruff check ./src ./tests` now reports zero findings.
-
-Deferrals new in 2026-05-23 products tier-3 review pass:
-
-- **Keepa backfill duplication** — `_keepa_backfill_blocking` in `api/books.py` and `api/products.py` are near-line-for-line clones (model class + helper-fn substitution). Tier-3 simplify reviewer flagged as a candidate for extraction into a single `_keepa_backfill_for_schema(item_id, identifier, *, session_factory, schema, fetch_png, dp_url_for)` parameterised on `_ItemSchema`. Worth doing; deferred to avoid mixing with the bug-fix commit.
-- **Scheduler kind routing dispatch in `_run_kind_for_source`** — two if/else blocks switch on `ItemKind` to pick `(item_model, identifier_attr, observation_model, item_fk_attr)`. Could be absorbed into `_ItemSchema` or a new `_KindRouting` keyed by `ItemKind`. Worth doing; the third dispatch-on-kind site after stats + dispatcher.
-- **`Signal` Literal → `StrEnum`** — `Signal = Literal["BUY","WATCH","WAIT","TARGET_HIT","INSUFFICIENT_DATA"]` in `stats.py` is still a Literal. Migrate to `StrEnum` in `enums.py` per the project enum-preferred rule. Bigger refactor (touches every alert-pipeline call site); not on the critical path.
-- **`BookStats.book_id` field rename to `item_id`** — wire-format field name leaks into product API responses via `BookStatsOut.book_id`. Plan-deferred. Add `@property def book_id` shim if renaming for the FE clients.
-- **FE `ProductsDashboard` / `ProductDetail` use local `priceCell` + `fmtDateTime` helpers** instead of the shared `formatMoneyMinor` / `formatDateTime` in `web/src/lib/format.ts`. Reach for the shared helpers when adding the next FE iteration.
-- **`to_asin` docstring drift** — the `amzn.eu/d/<code>` short-link example in the docstring describes behaviour the regex doesn't support (10-char ASIN exact match; amzn.eu short codes are 8-9 chars and need an HTTP redirect to resolve). Either drop the example or implement the resolution. Docstring noise; behaviour unchanged.
-- **`refetch_book` source filtering by kind** — symmetric to the product-side fix that prompted this section. Book refetches now correctly skip product-only sources via the shared `_run_refetch` helper, so this is **closed** but worth flagging that the fix touched both endpoints.
-- **Amazon source rate-limit on the doubled scrape volume** — adding products means each scheduler cycle hits Amazon for `N_books + N_products` ASINs. Per-source `max_consecutive_errors` gate already exists; consider a per-source-per-kind concurrency cap if anti-bot tightens.
-- **Per-product scrape health vs per-book** — same last-write-wins flicker design as books (doc'd in the books deferred list above). Applies symmetrically to products.
 
 Closed by the 2026-05-23 products tier-3 review pass (no longer deferred):
 
@@ -241,6 +240,8 @@ _None._ All blockers from Phase 1 resolved.
 
 ### Products-specific key files (added 2026-05-23)
 
+- `src/book_alerter/keepa_backfill.py` — schema-parameterised `backfill_blocking` (single impl for books + products). `BOOK_SCHEMA` / `PRODUCT_SCHEMA` bind the per-kind plumbing.
+- `src/book_alerter/scheduler.py` — `_KIND_ROUTING: dict[ItemKind, _KindRouting]` table replaces the per-kind if/else dispatch in `_run_kind_for_source` + `_persist`.
 - `src/book_alerter/enums.py` — single home for shared StrEnums.
 - `src/book_alerter/db/models.py` — Book + Product stacks side-by-side; polymorphic `NotificationDelivery` with `__table_args__` CHECK constraint.
 - `src/book_alerter/db/views.py` — `BOOK_STATS_VIEW_SQL` + `PRODUCT_STATS_VIEW_SQL` (mirror views kept as separate strings, not generated).

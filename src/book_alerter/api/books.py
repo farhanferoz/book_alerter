@@ -30,12 +30,12 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, 
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from book_alerter import keepa, keepa_chart
+from book_alerter import keepa, keepa_backfill
 from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
 from book_alerter.enums import ItemStatus
-from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
+from book_alerter.sources.normalizers import to_isbn13
 from book_alerter.stats import (
     WINDOW_DAYS,
     BookStats,
@@ -117,8 +117,13 @@ class BookStatsOut(BaseModel):
     """Wire mirror of `book_alerter.stats.BookStats`.
 
     Excludes `sorted_totals` (internal percentile cache).
+
+    `book_id` and `item_id` carry the same value (the underlying dataclass
+    field is named `book_id` for historical reasons). New product callers
+    should read `item_id`; existing book callers keep reading `book_id`.
     """
     book_id: int
+    item_id: int
     current_best_total_minor: int | None
     current_best_price_minor: int | None
     current_best_shipping_minor: int | None
@@ -160,6 +165,7 @@ class BookStatsOut(BaseModel):
         )
         return cls(
             book_id=s.book_id,
+            item_id=s.item_id,
             current_best_total_minor=s.current_best_total_minor,
             current_best_price_minor=s.current_best_price_minor,
             current_best_shipping_minor=s.current_best_shipping_minor,
@@ -597,72 +603,17 @@ def _keepa_backfill_blocking(
     isbn13: str,
     session_factory,
 ) -> int:
-    """Fetch Keepa PNG, extract observations, persist. Returns rows inserted.
-
-    Idempotent: skips if any source='keepa' row already exists for the book.
-    Splits sessions around the OCR call so the DB connection isn't pinned
-    across the ~3-5s extraction.
-
-    Shipping is left NULL — Keepa's chart PNG only renders item prices and
-    we will not fabricate a number. Downstream comparisons against current
-    scraped totals (which DO include shipping when the page advertises it)
-    are therefore unfair on the historical side; the UI surfaces NULL as
-    em-dash so the gap is visible rather than papered over.
+    """Thin wrapper around `keepa_backfill.backfill_blocking` with the book
+    schema bound in. Kept as a named symbol so existing `background_tasks.
+    add_task(...)` call sites and tests that monkeypatch this don't break.
     """
-    with session_factory() as session:
-        # If the book was hard-deleted between the BackgroundTasks dispatch
-        # and now, bail — otherwise we'd insert PriceObservation rows whose
-        # `book_id` FK points at nothing (the cascade-delete in delete_book
-        # has no way to wait for in-flight backfills).
-        if session.get(models.Book, book_id) is None:
-            return 0
-        existing = session.exec(
-            select(models.PriceObservation)
-            .where(
-                models.PriceObservation.book_id == book_id,
-                models.PriceObservation.source == "keepa",
-            )
-            .limit(1)
-        ).first()
-        if existing is not None:
-            return 0
-
-    png = keepa.fetch_chart_png(isbn13)
-    if png is None:
-        return 0
-
-    extractions = keepa_chart.extract_observations(png)
-    if not extractions:
-        return 0
-
-    amazon_url = amazon_uk_dp_url(isbn13)
-
-    inserted = 0
-    with session_factory() as session:
-        for ext in extractions:
-            seller, condition = keepa_chart.SERIES_TO_SELLER_CONDITION[ext.series]
-            session.add(
-                models.PriceObservation(
-                    book_id=book_id,
-                    source="keepa",
-                    seller=seller,
-                    condition=condition,
-                    price_minor=ext.price_minor,
-                    currency="GBP",
-                    shipping_minor=None,
-                    total_minor=ext.price_minor,
-                    url=amazon_url,
-                    observed_at=keepa_chart.observed_at_to_datetime(ext.observed_at),
-                    raw={"series": ext.series, "from": "keepa_chart_png"},
-                )
-            )
-            inserted += 1
-        session.commit()
-    return inserted
+    return keepa_backfill.backfill_blocking(
+        book_id, isbn13, session_factory, schema=keepa_backfill.BOOK_SCHEMA,
+    )
 
 
 @router.post("/{book_id}/keepa-backfill")
-async def keepa_backfill(
+async def trigger_keepa_backfill(
     book_id: int,
     session: SessionDep,
 ) -> dict:

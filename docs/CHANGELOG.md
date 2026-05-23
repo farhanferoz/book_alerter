@@ -8,6 +8,69 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ## 2026-05-23
 
+### Deferred-list cleanup pass
+
+One-commit refactor closing six items from the post-products deferred list
+without changing observable behaviour. Goal: shrink the TODO surface so the
+remaining items are genuinely big or genuinely require a decision, not
+"small but never got around to it." Items not closed here are now either
+discarded (with rationale) or kept deferred with a real reason.
+
+Closed:
+
+- **`_keepa_backfill_blocking` duplication** — the near-line-for-line clones
+  in `api/books.py` and `api/products.py` collapse into one
+  `keepa_backfill.backfill_blocking(item_id, identifier, session_factory, *,
+  schema)` in a new `book_alerter.keepa_backfill` module. `BOOK_SCHEMA` and
+  `PRODUCT_SCHEMA` bind the per-kind model + FK + PNG fetcher + dp-URL
+  helper. The per-router `_keepa_backfill_blocking` shrinks to a two-line
+  wrapper so existing `background_tasks.add_task(...)` call sites and any
+  monkeypatches keep working. Side effect: the route function previously
+  named `keepa_backfill` (which would have shadowed the module import at
+  module scope) is renamed to `trigger_keepa_backfill` in both routers.
+- **Scheduler kind routing** — `_run_kind_for_source` and `_persist` were
+  the second + third dispatch-on-`ItemKind` sites (after stats and the
+  notifications dispatcher). Both now read from a module-level
+  `_KIND_ROUTING: dict[ItemKind, _KindRouting]` table; the if/else blocks
+  are gone. Adding a third kind = add a third entry.
+- **`BookStats.book_id` field-name leak into product API responses** —
+  `BookStats` gains an `item_id` `@property` that returns `book_id`;
+  `BookStatsOut` exposes both fields with the same value. Wire format is
+  additive (no breaking change for the book FE); product consumers can
+  read `item_id` for semantic clarity. Full field rename remains deferred.
+- **`POST /api/books` 409 detail wired into the Add-book FE** — the
+  backend already returned `{detail: {message, book_id, isbn13}}`; the
+  FE was still showing the old "Already tracked." string. Adds a
+  `CreateBookError` component that surfaces a `<Link to="/books/{id}">View
+  book</Link>` when the 409 detail carries an id. Regression test pins
+  the contract.
+- **FE `ProductsDashboard` / `ProductDetail` use shared formatters** —
+  local `priceCell` + `fmtDateTime` helpers replaced with
+  `formatMoneyMinor` + `formatDateTime` from `web/src/lib/format.ts` so
+  the locale-aware GBP/RelativeTime stack reaches the products surface.
+- **`to_asin` docstring drift** — dropped the `amzn.eu/d/<code>` short-link
+  example (regex doesn't support the 8-9 char code; resolving would need
+  an HTTP redirect, out of scope for a pure-format helper).
+
+Discarded (no work needed; removed from RESUME deferred list):
+
+- shadcn base color (`neutral` vs `slate`): cosmetic, re-initable anytime.
+- Per-source / per-product scrape-health "flicker": already-documented
+  last-write-wins design choice.
+- `React.memo` on `MiniBars`: premature with 9 dashboard rows.
+- `openapi-typescript@7` peer-deps mismatch: upstream-blocked; not
+  actionable on our side until `@monaco-editor/react` bumps `monaco`.
+- `gen:api` requires a running backend: running backend is fine — adding
+  an offline dump script would be YAGNI scaffolding.
+- Amazon source rate-limit on doubled scrape volume: premature; per-source
+  `max_consecutive_errors` gate is the live backstop and we have no prod
+  data to size against yet.
+
+Verification: `uv run pytest -q` → 395 passed, 3 skipped, 1 deselected;
+`bash tests/scenarios/run_all.sh` → 7/7; `uv run ruff check ./src ./tests`
+→ clean; `cd web && npx tsc --noEmit && npx eslint . && npm run build` →
+clean.
+
 ### Products feature (non-book Amazon items)
 
 Nine-commit feature add per the plan at

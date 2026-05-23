@@ -21,39 +21,26 @@ import {
   type Product,
   type ProductObservation,
 } from "@/hooks/useProduct";
+import { formatDateTime, formatMoneyMinor } from "@/lib/format";
 import { formatErrorMessage } from "@/lib/utils";
 
 type ProductPatch = components["schemas"]["ProductPatch"];
 
-function priceCell(minor: number | null | undefined, currency: string): string {
-  if (minor == null) return "—";
-  return `${currency} ${(minor / 100).toFixed(2)}`;
-}
-
-function fmtDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
 function ObservationRow({ obs }: { obs: ProductObservation }) {
   return (
     <tr className="border-b border-border last:border-b-0">
-      <td className="p-2 text-xs">{fmtDateTime(obs.observed_at)}</td>
+      <td className="p-2 text-xs">{formatDateTime(obs.observed_at)}</td>
       <td className="p-2 text-xs">{obs.source}</td>
       <td className="p-2 text-xs">{obs.seller ?? "—"}</td>
       <td className="p-2 text-xs">{obs.condition}</td>
       <td className="p-2 text-xs text-right tabular-nums">
-        {priceCell(obs.price_minor, obs.currency)}
+        {formatMoneyMinor(obs.price_minor, obs.currency)}
       </td>
       <td className="p-2 text-xs text-right tabular-nums">
-        {priceCell(obs.shipping_minor, obs.currency)}
+        {formatMoneyMinor(obs.shipping_minor, obs.currency)}
       </td>
       <td className="p-2 text-xs text-right tabular-nums font-medium">
-        {priceCell(obs.total_minor, obs.currency)}
+        {formatMoneyMinor(obs.total_minor, obs.currency)}
       </td>
     </tr>
   );
@@ -183,11 +170,11 @@ export function ProductDetail() {
             {p.brand ?? <em>no brand</em>} · ASIN {p.asin} · status {p.status}
           </p>
           <p className="mt-2 text-2xl font-medium tabular-nums">
-            {priceCell(p.stats.current_best_total_minor, p.currency)}
+            {formatMoneyMinor(p.stats.current_best_total_minor, p.currency)}
           </p>
           <p className="text-xs text-muted-foreground">
             Best across {p.stats.observation_count} observations · last seen{" "}
-            {fmtDateTime(p.stats.last_polled_at)}
+            {formatDateTime(p.stats.last_polled_at)}
           </p>
         </div>
         <div className="space-y-2">
@@ -238,7 +225,7 @@ export function ProductDetail() {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Current: {priceCell(p.target_price_minor, p.currency)}
+            Current: {formatMoneyMinor(p.target_price_minor, p.currency)}
           </p>
         </form>
 

@@ -28,7 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, 
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from book_alerter import keepa, keepa_chart
+from book_alerter import keepa, keepa_backfill
 from book_alerter.api.books import (
     BookStatsOut,  # shape is item-agnostic
     _run_refetch,
@@ -41,7 +41,7 @@ from book_alerter.config import RecommendationConfig
 from book_alerter.covers import fetch_and_cache_url, sniff_mime
 from book_alerter.db import models
 from book_alerter.enums import ItemKind, ItemStatus
-from book_alerter.sources.normalizers import amazon_uk_product_dp_url, to_asin
+from book_alerter.sources.normalizers import to_asin
 from book_alerter.stats import (
     _PRODUCT_SCHEMA,
     BookStats,
@@ -420,66 +420,17 @@ def _keepa_backfill_blocking(
     asin: str,
     session_factory,
 ) -> int:
-    """Fetch Keepa PNG for the product, extract observations, persist as
-    ProductObservation rows. Idempotent — skips if any source='keepa' row
-    already exists for this product.
-
-    Symmetric with the books-side `_keepa_backfill_blocking` in api/books.py.
-    Splits sessions around the OCR call so the DB connection isn't pinned
-    across the ~3-5s extraction.
+    """Thin wrapper around `keepa_backfill.backfill_blocking` with the product
+    schema bound in. Kept as a named symbol so existing `background_tasks.
+    add_task(...)` call sites and tests that monkeypatch this don't break.
     """
-    with session_factory() as session:
-        # If the product was hard-deleted between the BackgroundTasks dispatch
-        # and now, bail — otherwise we'd insert ProductObservation rows whose
-        # `product_id` FK points at nothing (cascade-delete in delete_product
-        # has no way to wait for in-flight backfills).
-        if session.get(models.Product, product_id) is None:
-            return 0
-        existing = session.exec(
-            select(models.ProductObservation).where(
-                models.ProductObservation.product_id == product_id,
-                models.ProductObservation.source == "keepa",
-            ).limit(1)
-        ).first()
-        if existing is not None:
-            return 0
-
-    png = keepa.fetch_chart_png_for_asin(asin)
-    if png is None:
-        return 0
-
-    extractions = keepa_chart.extract_observations(png)
-    if not extractions:
-        return 0
-
-    amazon_url = amazon_uk_product_dp_url(asin)
-
-    inserted = 0
-    with session_factory() as session:
-        for ext in extractions:
-            seller, condition = keepa_chart.SERIES_TO_SELLER_CONDITION[ext.series]
-            session.add(
-                models.ProductObservation(
-                    product_id=product_id,
-                    source="keepa",
-                    seller=seller,
-                    condition=condition,
-                    price_minor=ext.price_minor,
-                    currency="GBP",
-                    shipping_minor=None,
-                    total_minor=ext.price_minor,
-                    url=amazon_url,
-                    observed_at=keepa_chart.observed_at_to_datetime(ext.observed_at),
-                    raw={"series": ext.series, "from": "keepa_chart_png"},
-                ),
-            )
-            inserted += 1
-        session.commit()
-    return inserted
+    return keepa_backfill.backfill_blocking(
+        product_id, asin, session_factory, schema=keepa_backfill.PRODUCT_SCHEMA,
+    )
 
 
 @router.post("/{product_id}/keepa-backfill")
-async def keepa_backfill(
+async def trigger_keepa_backfill(
     product_id: int,
     session: SessionDep,
 ) -> dict:
