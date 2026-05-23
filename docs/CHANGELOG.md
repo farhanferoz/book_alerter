@@ -8,6 +8,107 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ## 2026-05-23
 
+### NAS deployment + production-bug sweep
+
+First end-to-end deploy of `book_alerter` to the QNAP NAS over Tailscale,
+followed by a six-commit bug sweep covering every issue the live
+deployment surfaced. Five rounds of review (initial fix + tier-2 simplify
++ find-bugs + /second-opinion + the resulting polish round).
+
+Deployment
+
+- GitHub repo created at `farhanferoz/book_alerter` (public). `gh repo
+  create` from the working tree. Branch retained as `master` per user
+  preference.
+- `.github/workflows/build.yml`: on push to `master` + `workflow_dispatch`,
+  build `linux/amd64` image (TS-453D is J4125) and push to
+  `ghcr.io/farhanferoz/book_alerter` with `:latest` + short + long SHA
+  tags. GHA cache for layer reuse.
+- `docker-compose.nas.yml`: pulls the GHCR image (no NAS-side build),
+  maps `/share/CACHEDEV1_DATA/Container/book_alerter/data` into the
+  container, publishes 8090:8000 (avoids QNAP qfinder on 8085), env_file
+  pinned with `required: true`. Synced to the QNAP via SSH stdin (sftp
+  subsystem is disabled by default; `scp` fails with "subsystem request
+  failed").
+- NAS-side: SSH enabled on port 2200 with key auth from this workstation
+  via Tailscale (`100.115.46.9`). The ssh public key persists at
+  `/share/CACHEDEV1_DATA/homes/ff235/.ssh/authorized_keys` which IS on
+  the persistent data pool (verified — caveat: `/etc/ssh/sshd_config` is
+  on overlay-RAM but is regenerated from the QTS config DB on each boot
+  so our key-in-home setup is unaffected).
+- Data migration: dev DB at `/home/ff235/dev/book_alerter/data/book_alerter.db`
+  shipped to the NAS verbatim (sha256 verified end-to-end via
+  `cat ... | ssh ...` pipe). 9 books, 6697 priceobservation rows, 8 alerts
+  carried across; empty NAS-baseline DB preserved at
+  `data/book_alerter.db.empty-baseline` for rollback. Same schema head
+  on both sides (`0016_product_stats_view`) so no migration deltas.
+- Public-repo + anonymous GHCR pull → no NAS-side token to provision.
+  Secrets (`GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`, `NTFY_SERVER`) stored as
+  GitHub repo secrets + the resolved values in `/share/CACHEDEV1_DATA/
+  Container/book_alerter/.env` (mode 600 on disk).
+- `config.yaml` pre-seeded with env-ref ntfy + Google Books wiring so
+  first boot is functional without UI-touching (the convention documented
+  in `.env.example`).
+- ntfy push verified end-to-end against the new topic `book-alerter-
+  ff235-02c4cf00` (random suffix; not enumerable on public ntfy.sh).
+
+Default-source change (independent of the bug sweep)
+
+- `Config.sources` default flipped from `{}` to all 4 known sources
+  enabled (`wob`, `bookfinder`, `amazon`, `amazon_uk_product`). A fresh
+  deploy with `sources: {}` is a no-op price tracker — the scheduler
+  has nothing to scrape, no signals can ever fire. Opt-in design made
+  sense when adding sources was rare; with 4 stable sources in tree the
+  default-on stance matches user expectation. Existing configs that
+  explicitly list `sources:` keep working unchanged. Commit `89be2d6`.
+
+Production bugs found + fixed (6 commits)
+
+| # | Bug | Root cause | Commit |
+|---|---|---|---|
+| P1 | Amazon offer-row shipping NULL on 80% of marketplace rows | `_extract_shipping_minor` selector `#aod-offer-shipping` doesn't exist in modern Amazon UK AOD HTML (which uses `[data-csa-c-delivery-price]` + `.aod-delivery-promise`). Always broken since the source's first commit; the synthetic test fixture was hand-crafted around the obsolete selector, hiding the divergence. | `f24668b` |
+| P2 | Amazon offer URLs all pointed at `amazon.co.uk/gp/help/customer/display.html` | `_extract_clickout` returned the first `<a href>` in the row — that's the "Details about delivery costs" help anchor on every modern AOD row. Prefer `#aod-offer-soldBy a[href]`; reject substrs `/gp/help/customer/`, `/gp/help/seller/`, `/gp/aag/details`. | `f24668b` |
+| P3 | `parse_dp` hardcoded `condition=NEW` even on Amazon Resale (Used) buy-box | When Amazon's resale brand serves the buy-box, the displayed price is for a used copy and a `#usedAccordionCaption_feature_div .a-text-bold` caption ("Used – Like New" etc.) names the grade. Detect resale via exact-match against `{"amazon resale", "amazon warehouse"}` (substring "warehouse" would mis-classify a "Warehouse Books Ltd"). | `f24668b` |
+| F4 | Every datetime in the API came back as naive UTC; FE `new Date(iso)` parses as local; every "X ago" / formatted timestamp shifted by user's TZ offset | Add `api._serializers.UtcDateTime` Annotated alias; apply to every datetime field on every *Out model. Cursor strings in `next_before` use `to_z_iso(...)` directly. Input models keep raw `datetime` — Pydantic accepts Z-suffixed and naive on parse. | `6081788` |
+| A1 | Alert messages `(was median X, +P%)` read as "above median" when actually meaning "below" | Reframe as `"P% below 90d median X"` (prose direction, never sign). Symmetric "above" phrasing for the rare overshoot. Threshold `at <window> median` when `round(abs(pct)) == 0` so the rendered precision can never contradict the printed direction. | `0051dea` + `603f34b` + `ce06036` |
+| A2 | Alert price unlabelled (item vs total) | Prefix figure with `total` and append `(item X + Y ship)` or `(item X, free ship)` when shipping is known. Defensive empty fallback when alert fires on a shipping-unknown row (rare). | `0051dea` |
+| F1 | Header / chart / source-breakdown all showed different £ for the same offer with no labels | `SnapshotCard` tags the figure inline with `total` or `item only` and surfaces the cascade-imputed shipping estimate in the subtitle. `PercentileChart` labels its badge `Effective £X.XX (incl. ~£Y est. ship)` whenever the displayed value uses an imputed estimate. | `742e9c3` |
+| F3 | `SourceBreakdown` filter dropped the row driving "current best" when a newer scrape lacked that seller | Find the matching observation by `url + source + condition + seller` (NOT `total_minor` — the live row's total can drift by a penny while the stats snapshot still references the prior value), always prepend it at position 0, highlight with a "Current best" badge + faint background. | `742e9c3` + `603f34b` + `ce06036` |
+| F5 | Total column = Item column when shipping=NULL with no indicator | Append `(item only)` to any Total cell whose `shipping_minor` is null so the figure isn't silently mis-read as including shipping. | `742e9c3` |
+
+Tier-2 review pass (per CLAUDE.md `tiered-review` skill)
+
+- `simplify` (agent A): folded duplicate `_extract_shipping_minor` arms
+  into `_parse_delivery_text`; collapsed symmetric pct branches in
+  `_format_message`; trimmed docstring per CLAUDE.md WHAT-vs-WHY rule.
+- `find-bugs` (agent B): 10 findings, all actionable taken:
+  `findCurrentBestObservation` ran twice per render (stale-state hazard
+  in concurrent React); substring `"resale"` over-matched legitimate
+  sellers; current-best match required `total_minor` (fragile); pct ≈ 0
+  mislabelled "0% above"; clickout fallback didn't reject
+  `/gp/help/seller/`; delivery regex accepted unbounded decimals; resale
+  + NEW caption text was contradictory. All landed in `603f34b` + tests.
+- `/second-opinion` (agy / Gemini 3.5 Pro on the 5-commit branch
+  diff): 4 true positives missed by the earlier pass — `abs(pct) < 0.5`
+  let `pct == 0.5` fall through to "0% below" via `f"{0.5:.0f}"` →
+  "0"; conditional "Free over £25" matched the substring `"free"` and
+  dropped real shipping charges; delivery regex truncated thousand-
+  separator prices (`£1,234.56` → 123 pence); `SourceBreakdown`
+  current-best row sometimes pinned at top, sometimes left in sort
+  order. All four fixed in `ce06036` with direct unit tests for
+  `_parse_delivery_text` covering empty / free / numeric / thousand-
+  separator inputs + conditional-free regression.
+- `fp-check`: all applied findings have regression tests pinning the
+  buggy behaviour. Three findings declined (leading-dot prices in
+  delivery regex — speculative, no Amazon HTML emits them; `to_z_iso`
+  naive-as-UTC assumption — project convention, OK as-is; enum literals
+  on pre-existing tests — out of diff scope).
+
+Test count: 416 passed, 3 skipped, 1 deselected. +12 new tests
+spanning the parser fixture changes, dispatcher message wording,
+Z-suffix serializer behaviour, `_parse_delivery_text` shape, and
+`_extract_dp_condition` corner cases.
+
 ### Deferred-list cleanup pass
 
 One-commit refactor closing six items from the post-products deferred list
