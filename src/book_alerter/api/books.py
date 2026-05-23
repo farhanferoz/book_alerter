@@ -438,35 +438,10 @@ def delete_book(
     if hard:
         stats = _stats_for(book, session, cfg)
         out = BookOut.from_book(book, stats, reco=cfg.recommendation)
-        # SQLite isn't running with `PRAGMA foreign_keys=ON` (intentional —
-        # the schema's FKs are declared but never set to CASCADE, so turning
-        # the pragma on would reject inserts that pre-date later migrations).
-        # That means a hard-delete here would leave PriceObservation, Alert,
-        # NotificationDelivery, and BookSignalState rows pointing at a
-        # vanished Book — orphans the dashboard renders as missing-book
-        # alerts. Cascade them by hand in the same transaction.
-        alert_ids = session.exec(
-            select(models.Alert.id).where(models.Alert.book_id == book.id)
-        ).all()
-        if alert_ids:
-            session.exec(
-                models.NotificationDelivery.__table__.delete().where(
-                    models.NotificationDelivery.alert_id.in_(alert_ids)  # type: ignore[union-attr]
-                )
-            )
-        session.exec(
-            models.Alert.__table__.delete().where(models.Alert.book_id == book.id)
-        )
-        session.exec(
-            models.PriceObservation.__table__.delete().where(
-                models.PriceObservation.book_id == book.id
-            )
-        )
-        session.exec(
-            models.BookSignalState.__table__.delete().where(
-                models.BookSignalState.book_id == book.id
-            )
-        )
+        # Cascade is now schema-enforced (migration 0013 + foreign_keys
+        # pragma in db/session.py). The book delete fans out automatically
+        # to PriceObservation, Alert, NotificationDelivery, and
+        # BookSignalState — no hand-cascade needed.
         session.delete(book)
         session.commit()
         return out

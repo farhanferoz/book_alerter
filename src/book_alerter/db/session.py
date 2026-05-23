@@ -15,8 +15,24 @@ def get_database_url() -> str:
     return os.environ.get("BOOK_ALERTER_DATABASE_URL", _DEFAULT_URL)
 
 
-def _configure_sqlite_connection(dbapi_conn, _connection_record) -> None:
-    """Apply SQLite PRAGMAs on every new connection.
+def _enable_foreign_keys(dbapi_conn, _connection_record) -> None:
+    """Turn on FK enforcement for every SQLite connection.
+
+    SQLite ships with `PRAGMA foreign_keys=OFF` by default — the FK
+    constraints declared in the schema (including the ON DELETE CASCADE
+    relationships set up in migration 0013) are SILENT unless this pragma
+    is on. We want it on everywhere: live app, tests, scripts. Cheap to
+    apply, no on-disk impact, so no need to skip `:memory:`.
+    """
+    cur = dbapi_conn.cursor()
+    try:
+        cur.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cur.close()
+
+
+def _configure_sqlite_disk_connection(dbapi_conn, _connection_record) -> None:
+    """Apply on-disk-only PRAGMAs to every new SQLite connection.
 
     - ``journal_mode=WAL`` lets readers (dashboard GETs) proceed while a
       scraper writes — without it, the default DELETE journal serializes
@@ -31,8 +47,8 @@ def _configure_sqlite_connection(dbapi_conn, _connection_record) -> None:
       backup VACUUM + scrape writes.
     - ``temp_store=MEMORY`` keeps the percentile-scan sort tmps off disk.
 
-    Skipped for ``:memory:`` connections (no on-disk journal anyway), which
-    keeps the in-memory test suite from emitting redundant PRAGMA chatter.
+    Skipped for ``:memory:`` URLs (no on-disk journal anyway). FK
+    enforcement is set up separately, regardless of URL.
     """
     cur = dbapi_conn.cursor()
     try:
@@ -51,8 +67,10 @@ def get_engine(url: str | None = None) -> Engine:
         echo=False,
         connect_args={"check_same_thread": False},
     )
-    if resolved.startswith("sqlite") and ":memory:" not in resolved:
-        event.listen(engine, "connect", _configure_sqlite_connection)
+    if resolved.startswith("sqlite"):
+        event.listen(engine, "connect", _enable_foreign_keys)
+        if ":memory:" not in resolved:
+            event.listen(engine, "connect", _configure_sqlite_disk_connection)
     return engine
 
 

@@ -160,6 +160,57 @@ def test_delete_book_hard_removes_row(api_client, engine_with_view):
         assert s.get(models.Book, bid) is None
 
 
+def test_delete_book_hard_cascades_to_child_tables(api_client, engine_with_view):
+    """A hard-delete must remove the book's PriceObservation / Alert /
+    NotificationDelivery / BookSignalState rows in the same transaction.
+    The cascade is now enforced by the schema (migration 0013 + the
+    `PRAGMA foreign_keys=ON` set in `db/session.py`), replacing the
+    hand-cascade that used to live in `delete_book`. Without this
+    enforcement, orphan child rows would have the dashboard render
+    "missing-book" entries.
+    """
+    created = api_client.post(
+        "/api/books",
+        json={"isbn": "9780241638194", "title": "T", "author": "A"},
+    ).json()
+    bid = created["id"]
+
+    # Seed each child table directly with at least one row pointing at this
+    # book / its alerts, exercising every cascade path declared in 0013.
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        obs = models.PriceObservation(
+            book_id=bid, source="amazon", condition="new",
+            price_minor=1000, currency="GBP", total_minor=1000,
+            url="https://x", observed_at=now, raw={},
+        )
+        alert = models.Alert(
+            book_id=bid, kind="target_hit", price_minor=1000, currency="GBP",
+            source="amazon", condition="new", message="m", fired_at=now,
+            delivered_via=[],
+        )
+        state = models.BookSignalState(book_id=bid, last_signal="BUY")
+        s.add_all([obs, alert, state])
+        s.commit()
+        s.refresh(alert)
+        delivery = models.NotificationDelivery(
+            alert_id=alert.id, channel="ntfy", sent_at=now, status="sent",
+        )
+        s.add(delivery)
+        s.commit()
+        obs_id, alert_id, delivery_id = obs.id, alert.id, delivery.id
+
+    resp = api_client.delete(f"/api/books/{bid}?hard=true")
+    assert resp.status_code == 200
+
+    with Session(engine_with_view) as s:
+        assert s.get(models.Book, bid) is None
+        assert s.get(models.PriceObservation, obs_id) is None
+        assert s.get(models.Alert, alert_id) is None
+        assert s.get(models.NotificationDelivery, delivery_id) is None
+        assert s.get(models.BookSignalState, bid) is None
+
+
 def test_get_books_excludes_archived_by_default(api_client):
     created = api_client.post(
         "/api/books",

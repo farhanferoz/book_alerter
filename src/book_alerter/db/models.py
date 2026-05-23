@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import JSON, Column, Index, String
+from sqlalchemy import JSON, Column, ForeignKey, Index, Integer, String
 from sqlmodel import Field, SQLModel
 
 Condition = Literal["new", "used_vg", "used_g", "used_acceptable", "unknown"]
@@ -38,7 +38,17 @@ class Book(SQLModel, table=True):
 
 class PriceObservation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    book_id: int = Field(foreign_key="book.id", index=True)
+    # ondelete=CASCADE so dropping a Book takes its observation history with
+    # it. Enforced once PRAGMA foreign_keys=ON (set per-connection in
+    # `db/session.py`); see migration 0013.
+    book_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("book.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+    )
     source: str
     seller: str | None = None
     condition: Condition = Field(sa_column=Column(String, nullable=False))
@@ -73,7 +83,14 @@ class SourceRun(SQLModel, table=True):
 
 class Alert(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    book_id: int = Field(foreign_key="book.id", index=True)
+    book_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("book.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+    )
     kind: Literal["new_low", "target_hit", "percentile_cross"] = Field(
         sa_column=Column(String, nullable=False)
     )
@@ -89,7 +106,14 @@ class Alert(SQLModel, table=True):
 
 class NotificationDelivery(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    alert_id: int = Field(foreign_key="alert.id", index=True)
+    alert_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("alert.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+    )
     channel: str
     sent_at: datetime
     status: Literal["sent", "error"] = Field(sa_column=Column(String, nullable=False))
@@ -99,7 +123,13 @@ class NotificationDelivery(SQLModel, table=True):
 class BookSignalState(SQLModel, table=True):
     """Persists the last-evaluated signal + all-time-min per book so the alert
     pipeline can detect transitions without expensive recomputation."""
-    book_id: int = Field(primary_key=True, foreign_key="book.id")
+    book_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("book.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
     last_signal: str | None = None
     last_all_time_min_total_minor: int | None = None
     last_evaluated_at: datetime | None = None
