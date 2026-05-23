@@ -21,7 +21,14 @@ from book_alerter.db.models import (
     NotificationDelivery,
 )
 from book_alerter.notifications.base import Notifier
-from book_alerter.stats import BookStats, Signal, compute_book_stats, label_for_days
+from book_alerter.stats import (
+    BookStats,
+    Signal,
+    SellerClass,
+    compute_book_stats,
+    label_for_days,
+    source_seller_global_shipping_medians,
+)
 
 
 def _in_quiet_hours(now_local: datetime, qh: QuietHours | None) -> bool:
@@ -61,13 +68,29 @@ class AlertPipeline:
         return lock
 
     async def run(self, book_ids: list[int]) -> None:
+        # Compute the global shipping medians once per pipeline call.
+        # `compute_book_stats` otherwise re-runs this full-table scan for
+        # every book — with ~3 sources × hourly cron that's a lot of wasted
+        # SQLite reads on the locked DB. The medians are read-only across
+        # the cycle, so a single snapshot is correct.
+        with self.session_factory() as session:
+            medians = source_seller_global_shipping_medians(
+                session,
+                min_observations=self.cfg.recommendation.min_global_median_observations,
+            )
         for bid in book_ids:
             lock = self._lock_for(bid)
             async with lock:
                 with self.session_factory() as session:
-                    await self._run_one(session, bid)
+                    await self._run_one(session, bid, medians=medians)
 
-    async def _run_one(self, session: Session, bid: int) -> None:
+    async def _run_one(
+        self,
+        session: Session,
+        bid: int,
+        *,
+        medians: dict[tuple[str, SellerClass], int] | None = None,
+    ) -> None:
         book = session.get(Book, bid)
         if book is None:
             return
@@ -86,6 +109,7 @@ class AlertPipeline:
             bid,
             session,
             window,
+            source_seller_global_medians=medians,
             default_shipping_minor=self.cfg.recommendation.default_shipping_minor,
             min_global_median_observations=self.cfg.recommendation.min_global_median_observations,
         )
