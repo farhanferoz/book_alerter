@@ -5,6 +5,8 @@ import { AppShell } from "@/layout/AppShell";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alerts } from "@/pages/Alerts";
 import { Dashboard } from "@/pages/Dashboard";
+import { ProductsDashboard } from "@/pages/ProductsDashboard";
+import { ProductDetail } from "@/pages/ProductDetail";
 import { Settings } from "@/pages/Settings";
 import { SettingsSources } from "@/pages/settings/Sources";
 import { SettingsRecommendation } from "@/pages/settings/Recommendation";
@@ -42,6 +44,8 @@ function App() {
             </Suspense>
           }
         />
+        <Route path="products" element={<ProductsDashboard />} />
+        <Route path="products/:id" element={<ProductDetail />} />
         <Route path="alerts" element={<Alerts />} />
         <Route path="settings" element={<Settings />}>
           <Route index element={<Navigate replace to="/settings/sources" />} />

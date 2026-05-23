@@ -23,7 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import type { Book } from "@/hooks/useBook";
 
-type RefetchResult = components["schemas"]["RefetchResult"];
+type RefetchResult = components["schemas"]["book_alerter__api__books__RefetchResult"];
 
 type ConfirmKind = "bought" | "archived" | "delete" | null;
 

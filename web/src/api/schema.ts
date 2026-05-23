@@ -174,6 +174,150 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Products */
+        get: operations["list_products_api_products_get"];
+        put?: never;
+        /** Create Product */
+        post: operations["create_product_api_products_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/products/{product_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Product */
+        get: operations["get_product_api_products__product_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Product */
+        delete: operations["delete_product_api_products__product_id__delete"];
+        options?: never;
+        head?: never;
+        /** Patch Product */
+        patch: operations["patch_product_api_products__product_id__patch"];
+        trace?: never;
+    };
+    "/api/products/{product_id}/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Product Observations
+         * @description Paginated price history for a product (newest-first). Mirror of the
+         *     book observations endpoint — same dedup-aware filter, same cursor shape.
+         */
+        get: operations["list_product_observations_api_products__product_id__observations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/products/{product_id}/refetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refetch Product
+         * @description Trigger an immediate scrape across every product-serving source.
+         *
+         *     Identical fan-out shape to `POST /api/books/{id}/refetch`: enabled
+         *     sources go to `triggered`; disabled or backoff-gated sources go to
+         *     `skipped` with a reason.
+         */
+        post: operations["refetch_product_api_products__product_id__refetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/products/{product_id}/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Product Stats
+         * @description Return the full stats bundle for a product (zero-obs case included).
+         */
+        get: operations["get_product_stats_api_products__product_id__stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/products/{product_id}/keepa-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keepa Backfill
+         * @description Trigger a one-shot Keepa backfill for this product. Idempotent —
+         *     returns inserted=0 if a previous backfill already populated this product.
+         */
+        post: operations["keepa_backfill_api_products__product_id__keepa_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/products/{product_id}/keepa-chart.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Keepa Chart
+         * @description Proxy the Keepa price-history PNG with a 24h server-side cache.
+         *     Same flow as the books endpoint, ASIN-keyed.
+         */
+        get: operations["get_keepa_chart_api_products__product_id__keepa_chart_png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/alerts": {
         parameters: {
             query?: never;
@@ -433,6 +577,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metadata/asin-lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Asin Lookup
+         * @description Normalise input → ASIN → Playwright dp scrape → product metadata.
+         *
+         *     Used by the Add-Product dialog to pre-fill title + image + brand. 422
+         *     on garbage input, 502 on render failure (so the FE can surface a
+         *     user-actionable error instead of a generic 500).
+         */
+        post: operations["post_asin_lookup_api_metadata_asin_lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notifications/{channel}/test": {
         parameters: {
             query?: never;
@@ -509,6 +677,11 @@ export interface components {
             items: components["schemas"]["AlertOut"][];
             /** Next Before */
             next_before: string | null;
+        };
+        /** AsinLookupRequest */
+        AsinLookupRequest: {
+            /** Input */
+            input: string;
         };
         /** BookCreate */
         BookCreate: {
@@ -803,21 +976,156 @@ export interface components {
              */
             observed_at: string;
         };
+        /** ProductCreate */
+        ProductCreate: {
+            /** Asin Or Url */
+            asin_or_url: string;
+            /** Title */
+            title: string;
+            /** Image Url */
+            image_url?: string | null;
+            /** Brand */
+            brand?: string | null;
+            /** Target Price Minor */
+            target_price_minor?: number | null;
+            /** Percentile Threshold */
+            percentile_threshold?: number | null;
+            /** Percentile Window Days */
+            percentile_window_days?: number | null;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Track Used
+             * @default false
+             */
+            track_used: boolean;
+        };
         /**
-         * RefetchResult
-         * @description Result of `POST /api/books/{id}/refetch`.
+         * ProductMetadata
+         * @description ASIN-keyed product metadata pulled from the Amazon UK dp page.
          *
-         *     Fans out across every configured source. `triggered` lists sources whose
-         *     `scheduler.trigger_now` returned a real `run_id`. `skipped` records sources
-         *     that were intentionally not triggered: `reason="disabled"` for sources with
-         *     `enabled=False` in config, `reason="backoff_active"` when the scheduler
-         *     returned `0` (backoff gate). Empty `cfg.sources` yields two empty lists.
+         *     The product side of the metadata flow — used by `/api/metadata/asin-lookup`
+         *     so the Add-Product dialog can pre-fill title/image before the user clicks
+         *     save. Mirrors `BookMetadata` in spirit; the fields differ because product
+         *     pages don't carry an author byline and the title is the only required
+         *     field for the FE to render a usable preview.
          */
-        RefetchResult: {
-            /** Triggered */
-            triggered: components["schemas"]["RefetchTriggered"][];
-            /** Skipped */
-            skipped: components["schemas"]["RefetchSkipped"][];
+        ProductMetadata: {
+            /** Asin */
+            asin: string;
+            /** Title */
+            title: string;
+            /** Image Url */
+            image_url?: string | null;
+            /** Brand */
+            brand?: string | null;
+        };
+        /** ProductObservationOut */
+        ProductObservationOut: {
+            /** Id */
+            id: number;
+            /** Product Id */
+            product_id: number;
+            /** Source */
+            source: string;
+            /** Seller */
+            seller: string | null;
+            /** Condition */
+            condition: string;
+            /** Price Minor */
+            price_minor: number;
+            /** Currency */
+            currency: string;
+            /** Shipping Minor */
+            shipping_minor: number | null;
+            /** Total Minor */
+            total_minor: number;
+            /** Url */
+            url: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+        };
+        /** ProductObservationsPage */
+        ProductObservationsPage: {
+            /** Items */
+            items: components["schemas"]["ProductObservationOut"][];
+            /** Next Before */
+            next_before: string | null;
+        };
+        /** ProductOut */
+        ProductOut: {
+            /** Id */
+            id: number;
+            /** Asin */
+            asin: string;
+            /** Title */
+            title: string;
+            /** Image Url */
+            image_url: string | null;
+            /** Brand */
+            brand: string | null;
+            /** Region */
+            region: string;
+            /** Currency */
+            currency: string;
+            /** Target Price Minor */
+            target_price_minor: number | null;
+            /** Percentile Threshold */
+            percentile_threshold: number | null;
+            /** Percentile Window Days */
+            percentile_window_days: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "archived" | "bought";
+            /** Bought Price Minor */
+            bought_price_minor: number | null;
+            /** Notes */
+            notes: string | null;
+            /** Alert Kinds Disabled */
+            alert_kinds_disabled?: string[];
+            /** Muted Until */
+            muted_until: string | null;
+            /** Track Used */
+            track_used: boolean;
+            /** Last Scrape Attempt At */
+            last_scrape_attempt_at?: string | null;
+            /** Last Scrape Error */
+            last_scrape_error?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            stats: components["schemas"]["BookStatsOut"];
+        };
+        /** ProductPatch */
+        ProductPatch: {
+            /** Target Price Minor */
+            target_price_minor?: number | null;
+            /** Percentile Threshold */
+            percentile_threshold?: number | null;
+            /** Percentile Window Days */
+            percentile_window_days?: number | null;
+            /** Status */
+            status?: ("active" | "archived" | "bought") | null;
+            /** Muted Until */
+            muted_until?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Alert Kinds Disabled */
+            alert_kinds_disabled?: string[] | null;
+            /** Track Used */
+            track_used?: boolean | null;
         };
         /** RefetchSkipped */
         RefetchSkipped: {
@@ -961,6 +1269,29 @@ export interface components {
             p75: number | null;
             /** P95 */
             p95: number | null;
+        };
+        /**
+         * RefetchResult
+         * @description Result of `POST /api/books/{id}/refetch`.
+         *
+         *     Fans out across every configured source. `triggered` lists sources whose
+         *     `scheduler.trigger_now` returned a real `run_id`. `skipped` records sources
+         *     that were intentionally not triggered: `reason="disabled"` for sources with
+         *     `enabled=False` in config, `reason="backoff_active"` when the scheduler
+         *     returned `0` (backoff gate). Empty `cfg.sources` yields two empty lists.
+         */
+        book_alerter__api__books__RefetchResult: {
+            /** Triggered */
+            triggered: components["schemas"]["RefetchTriggered"][];
+            /** Skipped */
+            skipped: components["schemas"]["RefetchSkipped"][];
+        };
+        /** RefetchResult */
+        book_alerter__api__products__RefetchResult: {
+            /** Triggered */
+            triggered: components["schemas"]["RefetchTriggered"][];
+            /** Skipped */
+            skipped: components["schemas"]["RefetchSkipped"][];
         };
     };
     responses: never;
@@ -1208,7 +1539,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RefetchResult"];
+                    "application/json": components["schemas"]["book_alerter__api__books__RefetchResult"];
                 };
             };
             /** @description Validation Error */
@@ -1292,6 +1623,330 @@ export interface operations {
             header?: never;
             path: {
                 book_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_products_api_products_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_product_api_products_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_product_api_products__product_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_product_api_products__product_id__delete: {
+        parameters: {
+            query?: {
+                hard?: boolean;
+            };
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_product_api_products__product_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_product_observations_api_products__product_id__observations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before?: string | null;
+                source?: string | null;
+            };
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductObservationsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refetch_product_api_products__product_id__refetch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["book_alerter__api__products__RefetchResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_product_stats_api_products__product_id__stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookStatsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    keepa_backfill_api_products__product_id__keepa_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_keepa_chart_api_products__product_id__keepa_chart_png_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: number;
             };
             cookie?: never;
         };
@@ -1651,6 +2306,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BookMetadataWithIsbn"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_asin_lookup_api_metadata_asin_lookup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AsinLookupRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductMetadata"];
                 };
             };
             /** @description Validation Error */

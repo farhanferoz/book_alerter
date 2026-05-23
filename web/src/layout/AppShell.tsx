@@ -90,7 +90,10 @@ export function AppShell() {
           <span className="text-sm font-semibold tracking-tight">Book Alerter</span>
           <nav className="flex items-center gap-1">
             <NavLink to="/" end className={navLinkClass}>
-              Dashboard
+              Books
+            </NavLink>
+            <NavLink to="/products" className={navLinkClass}>
+              Products
             </NavLink>
             <NavLink to="/alerts" className={navLinkClass}>
               Alerts
