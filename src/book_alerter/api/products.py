@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
@@ -28,11 +29,18 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_chart
-from book_alerter.api.books import BookStatsOut  # shape is item-agnostic
-from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
+from book_alerter.api.books import (
+    BookStatsOut,  # shape is item-agnostic
+    _run_refetch,
+)
+from book_alerter.api.books import (
+    RefetchResult as BookRefetchResult,
+)
+from book_alerter.api.deps import ConfigDep, HttpDep, SchedulerDep, SessionDep
 from book_alerter.config import RecommendationConfig
+from book_alerter.covers import fetch_and_cache_url, sniff_mime
 from book_alerter.db import models
-from book_alerter.enums import Condition, ItemStatus
+from book_alerter.enums import ItemKind, ItemStatus
 from book_alerter.sources.normalizers import amazon_uk_product_dp_url, to_asin
 from book_alerter.stats import (
     _PRODUCT_SCHEMA,
@@ -40,6 +48,8 @@ from book_alerter.stats import (
     compute_product_stats,
     source_seller_global_shipping_medians,
 )
+
+PRODUCT_IMAGE_CACHE_DIR = Path("data/product-images")
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -367,53 +377,25 @@ def list_product_observations(
     return ProductObservationsPage(items=items, next_before=next_before)
 
 
-class RefetchTriggered(BaseModel):
-    source: str
-    run_id: int
-
-
-class RefetchSkipped(BaseModel):
-    source: str
-    reason: Literal["disabled", "backoff_active"]
-
-
-class RefetchResult(BaseModel):
-    triggered: list[RefetchTriggered]
-    skipped: list[RefetchSkipped]
-
-
-@router.post("/{product_id}/refetch", response_model=RefetchResult)
+@router.post("/{product_id}/refetch", response_model=BookRefetchResult)
 async def refetch_product(
     product_id: int,
     session: SessionDep,
     cfg: ConfigDep,
     scheduler: SchedulerDep,
-) -> RefetchResult:
-    """Trigger an immediate scrape across every product-serving source.
+) -> BookRefetchResult:
+    """Trigger an immediate scrape across every PRODUCT-serving source.
 
-    Identical fan-out shape to `POST /api/books/{id}/refetch`: enabled
-    sources go to `triggered`; disabled or backoff-gated sources go to
-    `skipped` with a reason.
+    Shares the books-side `_run_refetch` helper — same triggered/skipped
+    shape, filtered to sources whose `item_kinds` includes PRODUCT so a
+    book-only source (wob, bookfinder) is correctly marked
+    `kind_unsupported` rather than firing a no-op cycle.
     """
     if session.get(models.Product, product_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="product not found"
         )
-    triggered: list[RefetchTriggered] = []
-    skipped: list[RefetchSkipped] = []
-    enabled_names = [n for n, sc in cfg.sources.items() if sc.enabled]
-    for n, sc in cfg.sources.items():
-        if not sc.enabled:
-            skipped.append(RefetchSkipped(source=n, reason="disabled"))
-    run_ids = await asyncio.gather(
-        *(scheduler.trigger_now(n) for n in enabled_names)
-    )
-    for n, run_id in zip(enabled_names, run_ids, strict=True):
-        if run_id == 0:
-            skipped.append(RefetchSkipped(source=n, reason="backoff_active"))
-        else:
-            triggered.append(RefetchTriggered(source=n, run_id=run_id))
-    return RefetchResult(triggered=triggered, skipped=skipped)
+    return await _run_refetch(cfg, scheduler, kind=ItemKind.PRODUCT)
 
 
 @router.get("/{product_id}/stats", response_model=BookStatsOut)
@@ -540,25 +522,30 @@ async def get_keepa_chart(product_id: int, session: SessionDep) -> Response:
 async def get_product_image(
     product_id: int,
     session: SessionDep,
-    http: HttpDep,  # forward ref to keep imports tidy
+    http: HttpDep,
 ) -> Response:
     """Same-origin proxy for the upstream Amazon product image. Mirrors the
     cover-image endpoint for books but keyed on product_id rather than
     ISBN-13. The image bytes are cached on disk under
-    `data/product-images/<asin>` and re-fetched lazily on cache miss."""
+    `data/product-images/<asin>` and re-fetched lazily on cache miss.
+
+    `product.image_url` is set during `create_product` from the user-paste
+    flow OR the asin-lookup metadata. We require https:// + an Amazon CDN
+    host to prevent SSRF — a freely-pasted internal URL ("http://169.254.169.254/...")
+    would otherwise let the server fetch internal infrastructure on the user's
+    behalf. Single-user NAS posture mitigates the impact, but the input is
+    user-controllable so the validation belongs here regardless.
+    """
     product = session.get(models.Product, product_id)
     if product is None or not product.image_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not _is_safe_image_url(product.image_url):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     path = _product_image_cache_path(product.asin)
     if not path.exists():
-        # Reuse the same fetch helper books use; covers.py is generic over
-        # the on-disk path + upstream URL.
-        from book_alerter.covers import fetch_and_cache_url
-
         result = await fetch_and_cache_url(path, product.image_url, http=http)
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    from book_alerter.covers import sniff_mime
 
     data = path.read_bytes()
     return Response(
@@ -570,19 +557,37 @@ async def get_product_image(
 
 def _product_image_cache_path(asin: str) -> Path:
     """Disk path for the cached product image. Lives under
-    `data/product-images/<asin>` parallel to `data/covers/<isbn13>`."""
-    from pathlib import Path as _Path
+    `data/product-images/<asin>` parallel to `data/covers/<isbn13>`.
 
-    base = _Path("data/product-images")
-    base.mkdir(parents=True, exist_ok=True)
-    return base / asin
+    No side effects — `fetch_and_cache_url` creates the parent directory at
+    write time, so this stays a pure path-builder.
+    """
+    return PRODUCT_IMAGE_CACHE_DIR / asin
 
 
-# Late-bound imports for the image endpoint — keeps the top-of-file lean
-# and ensures the `Path` import lands once Mypy/ty resolve the forward refs.
-from pathlib import Path  # noqa: E402
+_ALLOWED_IMAGE_HOSTS: tuple[str, ...] = (
+    "m.media-amazon.com",
+    "images-na.ssl-images-amazon.com",
+    "images-eu.ssl-images-amazon.com",
+    "images-amazon.com",
+    "ssl-images-amazon.com",
+)
 
-from book_alerter.api.deps import HttpDep  # noqa: E402
 
-# Suppress unused-import warnings from the imports that exist for typing only.
-_ = (Condition, Path, HttpDep)
+def _is_safe_image_url(url: str) -> bool:
+    """SSRF guard for the user-supplied `product.image_url`. Accepts https://
+    URLs whose host is on Amazon's CDN allowlist. Anything else (cloud
+    metadata IPs, internal services, http://, file:// — though httpx doesn't
+    support file:// natively, defence in depth) is rejected."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _ALLOWED_IMAGE_HOSTS)

@@ -232,9 +232,19 @@ def test_refetch_product_fans_out_to_enabled_sources(api_client) -> None:
     # Configure sources so the fan-out has something to dispatch to.
     cfg = api_client.app.state.config
     from book_alerter.config import SourceConfig
+    from book_alerter.enums import ItemKind
 
-    cfg.sources["amazon_uk_product"] = SourceConfig(enabled=True)
-    cfg.sources["disabled_one"] = SourceConfig(enabled=False)
+    cfg.sources["amazon_uk_product"] = SourceConfig(
+        enabled=True, item_kinds=[ItemKind.PRODUCT],
+    )
+    cfg.sources["disabled_one"] = SourceConfig(
+        enabled=False, item_kinds=[ItemKind.PRODUCT],
+    )
+    # Book-only source should NOT be fired by a product refetch (filtered
+    # out as kind_unsupported per the refetch-scoping fix).
+    cfg.sources["wob"] = SourceConfig(
+        enabled=True, item_kinds=[ItemKind.BOOK],
+    )
 
     r = api_client.post(f"/api/products/{pid}/refetch")
     assert r.status_code == 200
@@ -242,7 +252,11 @@ def test_refetch_product_fans_out_to_enabled_sources(api_client) -> None:
     triggered_names = {t["source"] for t in body["triggered"]}
     skipped = {s["source"]: s["reason"] for s in body["skipped"]}
     assert "amazon_uk_product" in triggered_names
+    assert "wob" not in triggered_names, (
+        "book-only source must NOT be triggered by a product refetch"
+    )
     assert skipped.get("disabled_one") == "disabled"
+    assert skipped.get("wob") == "kind_unsupported"
 
 
 def test_refetch_product_404_on_missing(api_client) -> None:

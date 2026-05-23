@@ -22,7 +22,7 @@ from book_alerter.db.models import (
     ProductObservation,
     SourceRun,
 )
-from book_alerter.enums import ItemKind
+from book_alerter.enums import ItemKind, ItemStatus
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 
@@ -242,11 +242,28 @@ class Scheduler:
         attempted_total = 0
         succeeded_total = 0
         affected_by_kind: dict[ItemKind, list[int]] = {}
+        kind_exceptions: list[tuple[ItemKind, Exception]] = []
         try:
             for kind in kinds_to_run:
-                ids, attempted, succeeded = await self._run_kind_for_source(
-                    source_name, src, sc, kind,
-                )
+                try:
+                    ids, attempted, succeeded = await self._run_kind_for_source(
+                        source_name, src, sc, kind,
+                    )
+                except Exception as e:
+                    # Per-kind isolation: a crash inside one kind's iteration
+                    # must NOT swallow the alert pipelines of sibling kinds
+                    # whose observations already committed. Record the failure
+                    # and continue; the SourceRun row reflects partial /
+                    # error based on `succeeded_total` below.
+                    log.error(
+                        "source.kind.exception",
+                        source=source_name,
+                        kind=kind.value,
+                        error=str(e),
+                        tb=traceback.format_exc(),
+                    )
+                    kind_exceptions.append((kind, e))
+                    continue
                 affected_by_kind[kind] = ids
                 attempted_total += attempted
                 succeeded_total += succeeded
@@ -256,7 +273,21 @@ class Scheduler:
                 run.finished_at = datetime.now(UTC)
                 run.books_attempted = attempted_total
                 run.books_succeeded = succeeded_total
-                if attempted_total == 0:
+                if kind_exceptions and succeeded_total == 0:
+                    # Every kind that didn't crash also had zero successes
+                    # (or no kinds ran clean) — treat as error.
+                    run.status = "error"
+                    run.error_message = "; ".join(
+                        f"[{k.value}] {e}" for k, e in kind_exceptions
+                    )
+                    run.error_traceback = traceback.format_exc()
+                elif kind_exceptions:
+                    # At least one kind succeeded; others crashed.
+                    run.status = "partial"
+                    run.error_message = "; ".join(
+                        f"[{k.value}] {e}" for k, e in kind_exceptions
+                    )
+                elif attempted_total == 0:
                     run.status = "success"  # zero items is success, not partial
                 elif succeeded_total == attempted_total:
                     run.status = "success"
@@ -266,7 +297,7 @@ class Scheduler:
                     run.status = "error"
                 session.commit()
 
-            if succeeded_total > 0 or attempted_total == 0:
+            if succeeded_total > 0 or (attempted_total == 0 and not kind_exceptions):
                 self._consecutive_errors[source_name] = 0
                 self._backoff_until.pop(source_name, None)
             else:
@@ -337,7 +368,7 @@ class Scheduler:
 
         with self._session_factory() as session:
             items = session.exec(
-                select(item_model).where(item_model.status == "active")
+                select(item_model).where(item_model.status == ItemStatus.ACTIVE)
             ).all()
         attempted = len(items)
         succeeded = 0
@@ -363,12 +394,40 @@ class Scheduler:
                     )
                     self._record_item_failure(item_model, item.id, str(e))
                     return
-                self._persist(source_name, kind, item, candidates)
+                except Exception as e:
+                    # Anything else (Playwright assertion errors, sqlite
+                    # OperationalError mid-fetch, unexpected source bugs) is
+                    # charged to this item rather than aborting the whole
+                    # kind's iteration via asyncio.gather propagation. The
+                    # `gather` below catches via `return_exceptions=True` for
+                    # defence-in-depth, but per-item recording is the right
+                    # place to mark scrape health.
+                    log.exception(
+                        "source.item.unexpected",
+                        source=source_name,
+                        kind=kind.value,
+                        identifier=getattr(item, identifier_attr, None),
+                    )
+                    self._record_item_failure(item_model, item.id, str(e))
+                    return
+                try:
+                    self._persist(source_name, kind, item, candidates)
+                except Exception as e:
+                    # Same rationale: a persist error on one item shouldn't
+                    # take down the rest of the batch.
+                    log.exception(
+                        "source.item.persist_failed",
+                        source=source_name,
+                        kind=kind.value,
+                        identifier=getattr(item, identifier_attr, None),
+                    )
+                    self._record_item_failure(item_model, item.id, str(e))
+                    return
                 if item.id is not None:
                     affected_ids.append(item.id)
                 succeeded += 1
 
-        await asyncio.gather(*[_one(i) for i in items])
+        await asyncio.gather(*[_one(i) for i in items], return_exceptions=True)
         return affected_ids, attempted, succeeded
 
     def _persist(

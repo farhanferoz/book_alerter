@@ -301,16 +301,10 @@ def source_seller_global_shipping_medians(
     }
 
 
-def product_source_seller_global_shipping_medians(
-    session: Session,
-    min_observations: int = 10,
-) -> dict[tuple[str, SellerClass], int]:
-    """Convenience wrapper around `source_seller_global_shipping_medians`
-    with `schema=_PRODUCT_SCHEMA` so product callers don't import the
-    private schema sentinel."""
-    return source_seller_global_shipping_medians(
-        session, min_observations, schema=_PRODUCT_SCHEMA,
-    )
+# `Stats` is the item-kind-agnostic alias for the dataclass — books and
+# products both populate this shape. The `book_id` field stays as-is for
+# back-compat; new consumers should think of it as "item id" semantically.
+Stats = BookStats
 
 
 # ---------------------------------------------------------------------------

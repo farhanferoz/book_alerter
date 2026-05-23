@@ -173,6 +173,108 @@ async def test_scheduler_skips_kinds_outside_source_capability(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_isolates_per_item_unexpected_exception(
+    sqlite_engine, make_book, make_product,
+) -> None:
+    """Regression test for per-item exception isolation.
+
+    If a source raises a non-SourceError (e.g. RuntimeError, a Playwright
+    assert) on one item, the iteration must charge that single item via
+    `_record_item_failure` and continue scraping the rest. Before the fix
+    `_one` only caught `(TimeoutError, SourceError)` and a stray exception
+    propagated through `asyncio.gather` and aborted the entire kind.
+
+    Setup: a source that serves both kinds; the book succeeds, the product
+    raises RuntimeError. Asserts that:
+    - book observation lands
+    - product is charged with `last_scrape_error`
+    - SourceRun is `partial` (1 of 2 attempted succeeded)
+    - book alert pipeline STILL fires for the seeded book id
+    """
+    with Session(sqlite_engine) as s:
+        book = make_book(s, isbn13="9780000000123")
+        product = make_product(s, asin="B07KFAIL001")
+        seeded_book_id = book.id
+        seeded_product_id = product.id
+
+    class _MultiKindCrasher(Source):
+        name = "multi"
+        item_kinds = frozenset({ItemKind.BOOK, ItemKind.PRODUCT})
+
+        async def fetch(self, item) -> list[ObservationCandidate]:
+            if isinstance(item, models.Product):
+                raise RuntimeError("unexpected boom on the product path")
+            return [
+                ObservationCandidate(
+                    seller="Amazon",
+                    condition=Condition.NEW,
+                    price_minor=799,
+                    shipping_minor=0,
+                    currency="GBP",
+                    url=f"https://www.amazon.co.uk/dp/{item.isbn13}",
+                ),
+            ]
+
+    cfg = Config(
+        sources={
+            "multi": SourceConfig(
+                enabled=True, region="UK",
+                per_book_delay_seconds=(0, 0), concurrency=1,
+                item_kinds=[ItemKind.BOOK, ItemKind.PRODUCT],
+            ),
+        },
+    )
+
+    alert_calls: dict[ItemKind, list[list[int]]] = {
+        ItemKind.BOOK: [],
+        ItemKind.PRODUCT: [],
+    }
+
+    async def book_pipeline(ids: list[int]) -> None:
+        alert_calls[ItemKind.BOOK].append(list(ids))
+
+    async def product_pipeline(ids: list[int]) -> None:
+        alert_calls[ItemKind.PRODUCT].append(list(ids))
+
+    scheduler = Scheduler(
+        config=cfg,
+        sources={"multi": _MultiKindCrasher()},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipelines={
+            ItemKind.BOOK: book_pipeline,
+            ItemKind.PRODUCT: product_pipeline,
+        },
+    )
+
+    run_id = await scheduler.trigger_now("multi")
+    assert run_id > 0
+
+    with Session(sqlite_engine) as s:
+        # Book observation landed.
+        book_obs = s.exec(select(models.PriceObservation)).all()
+        assert len(book_obs) == 1, (
+            "book observation must land — sibling kind item failure shouldn't abort"
+        )
+        # No product observations — the item raised before _persist.
+        product_obs = s.exec(select(models.ProductObservation)).all()
+        assert len(product_obs) == 0
+        # Product row charged with last_scrape_error.
+        product_after = s.get(models.Product, seeded_product_id)
+        assert product_after.last_scrape_error is not None
+        assert "unexpected boom" in product_after.last_scrape_error
+        # SourceRun partial — 1/2 succeeded.
+        run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
+        assert run.status == "partial"
+        assert run.books_attempted == 2
+        assert run.books_succeeded == 1
+
+    # The fix: book alert pipeline STILL received its affected id, even
+    # though the product item crashed.
+    assert alert_calls[ItemKind.BOOK] == [[seeded_book_id]]
+    assert alert_calls[ItemKind.PRODUCT] == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_marks_product_failure_on_source_error(
     sqlite_engine, make_product,
 ) -> None:

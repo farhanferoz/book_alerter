@@ -34,6 +34,7 @@ from book_alerter import keepa, keepa_chart
 from book_alerter.api.deps import ConfigDep, SchedulerDep, SessionDep
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
+from book_alerter.enums import ItemStatus
 from book_alerter.sources.normalizers import amazon_uk_dp_url, to_isbn13
 from book_alerter.stats import (
     WINDOW_DAYS,
@@ -304,7 +305,7 @@ def list_books(
 ) -> list[BookOut]:
     stmt = select(models.Book)
     if not include_archived:
-        stmt = stmt.where(models.Book.status != "archived")
+        stmt = stmt.where(models.Book.status != ItemStatus.ARCHIVED)
     books = session.exec(stmt).all()
     medians = source_seller_global_shipping_medians(
         session,
@@ -446,7 +447,7 @@ def delete_book(
         session.commit()
         return out
 
-    book.status = "archived"
+    book.status = ItemStatus.ARCHIVED
     book.updated_at = datetime.now(UTC)
     session.add(book)
     session.commit()
@@ -498,20 +499,55 @@ class RefetchTriggered(BaseModel):
 
 class RefetchSkipped(BaseModel):
     source: str
-    reason: Literal["disabled", "backoff_active"]
+    reason: Literal["disabled", "backoff_active", "kind_unsupported"]
 
 
 class RefetchResult(BaseModel):
-    """Result of `POST /api/books/{id}/refetch`.
+    """Result of `POST /api/{kind}/{id}/refetch` (both books and products use
+    this shape via the shared `_run_refetch` helper below).
 
-    Fans out across every configured source. `triggered` lists sources whose
-    `scheduler.trigger_now` returned a real `run_id`. `skipped` records sources
-    that were intentionally not triggered: `reason="disabled"` for sources with
-    `enabled=False` in config, `reason="backoff_active"` when the scheduler
-    returned `0` (backoff gate). Empty `cfg.sources` yields two empty lists.
+    `triggered` lists sources whose `scheduler.trigger_now` returned a real
+    `run_id`. `skipped` records sources that were intentionally not triggered:
+    `reason="disabled"` for sources with `enabled=False`; `reason="backoff_active"`
+    when the scheduler returned `0`; `reason="kind_unsupported"` when the
+    source's configured `item_kinds` doesn't include the kind being refetched.
     """
     triggered: list[RefetchTriggered]
     skipped: list[RefetchSkipped]
+
+
+async def _run_refetch(cfg, scheduler, *, kind) -> RefetchResult:
+    """Shared fan-out: for each configured source, decide triggered vs. skipped
+    by (enabled, kind support, backoff gate). Re-used by both book and product
+    refetch endpoints.
+
+    `kind` is an `ItemKind`. Sources whose `SourceConfig.item_kinds` doesn't
+    contain `kind` are marked `kind_unsupported` so a product-only source
+    isn't fired when the user clicked refetch on a book (and vice versa).
+    """
+    triggered: list[RefetchTriggered] = []
+    skipped: list[RefetchSkipped] = []
+    eligible: list[str] = []
+    for n, sc in cfg.sources.items():
+        if not sc.enabled:
+            skipped.append(RefetchSkipped(source=n, reason="disabled"))
+            continue
+        if kind not in set(sc.item_kinds):
+            skipped.append(RefetchSkipped(source=n, reason="kind_unsupported"))
+            continue
+        eligible.append(n)
+    # Fire eligible sources concurrently — each `trigger_now` is async and may
+    # block on network I/O / scheduler queue. `gather` preserves input order
+    # so `triggered`/`skipped` follow `cfg.sources` iteration order.
+    run_ids = await asyncio.gather(
+        *(scheduler.trigger_now(n) for n in eligible),
+    )
+    for n, run_id in zip(eligible, run_ids, strict=True):
+        if run_id == 0:
+            skipped.append(RefetchSkipped(source=n, reason="backoff_active"))
+        else:
+            triggered.append(RefetchTriggered(source=n, run_id=run_id))
+    return RefetchResult(triggered=triggered, skipped=skipped)
 
 
 @router.post("/{book_id}/refetch", response_model=RefetchResult)
@@ -521,36 +557,22 @@ async def refetch_book(
     cfg: ConfigDep,
     scheduler: SchedulerDep,
 ) -> RefetchResult:
-    """Trigger an immediate scrape across every enabled source for this book.
+    """Trigger an immediate scrape across every enabled BOOK-serving source.
 
-    The refetch button is "ask all sources about this book again" — it does
-    **not** pre-filter by which sources have observed the book. Disabled
-    sources surface in `skipped` with `reason="disabled"`; sources whose
-    backoff gate is active (scheduler returns 0) surface with
-    `reason="backoff_active"`. 404 if the book id is not found.
+    The refetch button is "ask all enabled book-serving sources about this
+    book again." Sources whose `item_kinds` doesn't include BOOK are skipped
+    with `reason="kind_unsupported"` so a product-only source doesn't fire
+    a no-op cycle. Disabled sources surface in `skipped` with
+    `reason="disabled"`; backoff-gated sources with `reason="backoff_active"`.
+    404 if the book id is not found.
     """
+    from book_alerter.enums import ItemKind
+
     if session.get(models.Book, book_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="book not found"
         )
-    triggered: list[RefetchTriggered] = []
-    skipped: list[RefetchSkipped] = []
-    enabled_names = [n for n, sc in cfg.sources.items() if sc.enabled]
-    for n, sc in cfg.sources.items():
-        if not sc.enabled:
-            skipped.append(RefetchSkipped(source=n, reason="disabled"))
-    # Fire enabled sources concurrently — each `trigger_now` is async and may
-    # block on network I/O / scheduler queue. `gather` preserves input order
-    # so `triggered`/`skipped` follow `cfg.sources` iteration order.
-    run_ids = await asyncio.gather(
-        *(scheduler.trigger_now(n) for n in enabled_names)
-    )
-    for n, run_id in zip(enabled_names, run_ids, strict=True):
-        if run_id == 0:
-            skipped.append(RefetchSkipped(source=n, reason="backoff_active"))
-        else:
-            triggered.append(RefetchTriggered(source=n, run_id=run_id))
-    return RefetchResult(triggered=triggered, skipped=skipped)
+    return await _run_refetch(cfg, scheduler, kind=ItemKind.BOOK)
 
 
 @router.get("/{book_id}/stats", response_model=BookStatsOut)
