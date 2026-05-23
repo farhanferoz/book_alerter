@@ -91,7 +91,19 @@ function buildSeries(observations: PriceObservation[], range: Range): {
       row = { ts: o.ts };
       byTs.set(o.ts, row);
     }
-    row[key] = o.total_minor;
+    // A single Amazon scrape returns one observation per marketplace
+    // seller (7-10 rows per condition per scrape), all carrying the
+    // same `observed_at`. A naive `row[key] = o.total_minor` overwrites
+    // with whichever seller happened to be last in iteration order,
+    // making the rendered line jump randomly between sellers' prices
+    // and looking like noise. Aggregate by MIN(total) so each
+    // `(timestamp, source·condition)` point on the line is "the
+    // cheapest offer the scraper saw at that moment" — the same
+    // semantic the rest of the app uses for `current_best`.
+    const prev = row[key];
+    if (prev == null || o.total_minor < prev) {
+      row[key] = o.total_minor;
+    }
   }
 
   return {
