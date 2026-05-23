@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from book_alerter.enums import Condition
 from book_alerter.sources.amazon import _merge_offers, parse_dp, parse_offer_listing
 from book_alerter.sources.base import ObservationCandidate, SourceError
 
@@ -60,6 +61,50 @@ def test_parse_dp_paid_delivery_block_yields_numeric_shipping() -> None:
     assert offers[0].shipping_minor == 280
 
 
+def test_parse_delivery_text_handles_amazon_canonical_values() -> None:
+    """Direct unit tests for the delivery-text parser.
+
+    The function is the single shipping-extraction point used by every
+    AOD row, so each input shape gets a dedicated assertion.
+    """
+    from book_alerter.sources.amazon import _parse_delivery_text
+
+    # Empty / unparseable
+    assert _parse_delivery_text("") is None
+    assert _parse_delivery_text("   ") is None
+    assert _parse_delivery_text("Arrives Tuesday") is None
+
+    # Free
+    assert _parse_delivery_text("FREE") == 0
+    assert _parse_delivery_text("free") == 0
+    assert _parse_delivery_text("FREE delivery Wednesday, 27 May.") == 0
+    assert _parse_delivery_text("Free delivery 28 – 29 May") == 0
+
+    # Concrete numeric
+    assert _parse_delivery_text("£2.80 delivery") == 280
+    assert _parse_delivery_text("£3.49 delivery Friday") == 349
+    assert _parse_delivery_text("£10 delivery") == 1000
+
+    # Thousands separator — never seen on shipping in practice but the
+    # regex should not silently truncate it.
+    assert _parse_delivery_text("£1,200.00 delivery") == 120000
+    assert _parse_delivery_text("£1,234.56 delivery") == 123456
+
+
+def test_parse_delivery_text_conditional_free_promise_uses_concrete_charge() -> None:
+    """Regression for the substring-`free` trap: a conditional promise
+    like "£3.49 delivery. Free delivery on orders over £25" must yield
+    the concrete £3.49 charge, NOT zero. The prior version accepted any
+    "free" substring as zero shipping, silently dropping a real charge.
+    """
+    from book_alerter.sources.amazon import _parse_delivery_text
+
+    assert _parse_delivery_text(
+        "£3.49 delivery. Free delivery on orders over £25.",
+    ) == 349
+    assert _parse_delivery_text("£5.00 delivery (or FREE over £25)") == 500
+
+
 def test_extract_dp_condition_non_resale_seller_defaults_to_new() -> None:
     """Substring "warehouse" appearing in a legitimate marketplace name
     must NOT trigger the Used classification — only the literal
@@ -69,10 +114,10 @@ def test_extract_dp_condition_non_resale_seller_defaults_to_new() -> None:
     from book_alerter.sources.amazon import _extract_dp_condition
 
     tree = HTMLParser("<html><body></body></html>")
-    assert _extract_dp_condition(tree, "Warehouse Books Ltd") == "new"
-    assert _extract_dp_condition(tree, "Wholesale Resale Group") == "new"
-    assert _extract_dp_condition(tree, "Amazon") == "new"
-    assert _extract_dp_condition(tree, "BookCurl") == "new"
+    assert _extract_dp_condition(tree, "Warehouse Books Ltd") == Condition.NEW
+    assert _extract_dp_condition(tree, "Wholesale Resale Group") == Condition.NEW
+    assert _extract_dp_condition(tree, "Amazon") == Condition.NEW
+    assert _extract_dp_condition(tree, "BookCurl") == Condition.NEW
 
 
 def test_extract_dp_condition_amazon_resale_with_no_caption_defaults_to_used_vg() -> None:
@@ -84,8 +129,8 @@ def test_extract_dp_condition_amazon_resale_with_no_caption_defaults_to_used_vg(
     from book_alerter.sources.amazon import _extract_dp_condition
 
     tree = HTMLParser("<html><body></body></html>")
-    assert _extract_dp_condition(tree, "Amazon Resale") == "used_vg"
-    assert _extract_dp_condition(tree, " amazon warehouse ") == "used_vg"
+    assert _extract_dp_condition(tree, "Amazon Resale") == Condition.USED_VG
+    assert _extract_dp_condition(tree, " amazon warehouse ") == Condition.USED_VG
 
 
 def test_extract_dp_condition_amazon_resale_with_new_caption_text_still_used() -> None:
@@ -102,7 +147,7 @@ def test_extract_dp_condition_amazon_resale_with_new_caption_text_still_used() -
         '<span class="a-text-bold">New</span></div>'
     )
     tree = HTMLParser(html)
-    assert _extract_dp_condition(tree, "Amazon Resale") == "used_vg"
+    assert _extract_dp_condition(tree, "Amazon Resale") == Condition.USED_VG
 
 
 def test_parse_dp_used_buybox_returns_used_condition() -> None:
@@ -119,7 +164,9 @@ def test_parse_dp_used_buybox_returns_used_condition() -> None:
     assert len(offers) == 1
     o = offers[0]
     assert o.seller == "Amazon Resale"
-    assert o.condition == "used_vg", f"expected Used grade, got {o.condition!r}"
+    assert o.condition == Condition.USED_VG, (
+        f"expected Used grade, got {o.condition!r}"
+    )
     assert o.price_minor == 2860
     assert o.shipping_minor == 0
 

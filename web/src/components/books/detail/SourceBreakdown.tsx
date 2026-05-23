@@ -103,16 +103,19 @@ export function SourceBreakdown({
 }) {
   // Single memoized pass: derive both `rows` and `currentBestId` together
   // so they cannot disagree about which observation is "Current best"
-  // across re-renders.
+  // across re-renders. The current-best row ALWAYS sits at position 0
+  // — whether it was already in `latest` or had to be prepended — so
+  // the highlighted row never jumps between the top and the middle of
+  // the table between scrapes.
   const { rows, currentBestId } = useMemo(() => {
     const latest = latestPerGroup(observations);
     const currentBest = findCurrentBestObservation(book, observations);
     if (currentBest == null) {
       return { rows: latest, currentBestId: null };
     }
-    const alreadyShown = latest.some((o) => o.id === currentBest.id);
+    const rest = latest.filter((o) => o.id !== currentBest.id);
     return {
-      rows: alreadyShown ? latest : [currentBest, ...latest],
+      rows: [currentBest, ...rest],
       currentBestId: currentBest.id,
     };
   }, [book, observations]);

@@ -313,17 +313,19 @@ class AlertPipeline:
         # the user gets the DB row but no notification — silently broken.
         if p50 is not None and p50 > 0:
             pct = 100 * (p50 - current) / p50
+            # Round to the rendered precision FIRST, then compare. A naive
+            # `abs(pct) < 0.5` lets `pct == 0.5` fall through to the
+            # else-branch, where `f"{0.5:.0f}"` formats as "0" → the
+            # message reads "0% below median X" — the exact contradiction
+            # the threshold is supposed to prevent.
+            display_pct = round(abs(pct))
             window_str = f"{stats.percentile_window_days}d"
-            # Threshold "at median" when the absolute delta rounds to 0% —
-            # otherwise the formatter prints "0% above" / "0% below" which
-            # contradicts the sign the reader infers from the rest of the
-            # number.
-            if abs(pct) < 0.5:
+            if display_pct == 0:
                 delta = f", at {window_str} median {p50 / 100:.2f}"
             else:
                 direction = "below" if pct > 0 else "above"
                 delta = (
-                    f", {abs(pct):.0f}% {direction} "
+                    f", {display_pct}% {direction} "
                     f"{window_str} median {p50 / 100:.2f}"
                 )
         return (

@@ -639,21 +639,44 @@ def _parse_gbp_to_minor(text: str) -> int | None:
         return None
 
 
-# Restrict to 0-2 decimal places — Amazon UK only emits 2-decimal prices and
-# accepting unbounded decimals would let "£12.3456" round to a £12.35 imposter.
-_DELIVERY_PRICE_GBP_RE = re.compile(r"£\s*([0-9]+(?:[.,][0-9]{1,2})?)")
+# Restrict to 0-2 decimal places and accept thousands-separator commas
+# (Amazon will render postage on rare items as e.g. "£1,200.00 delivery").
+# Accepting unbounded decimals would let "£12.3456" round to a £12.35
+# imposter; accepting a comma-as-decimal would mis-parse "£1,200" as
+# £1.20.
+_DELIVERY_PRICE_GBP_RE = re.compile(
+    r"£\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)"
+)
+# Word-boundary "free" — avoid matching "Free delivery on orders over £25"
+# as zero shipping when a concrete charge is also present.
+_FREE_DELIVERY_RE_DELIVERY = re.compile(r"\bfree\s+delivery\b", re.IGNORECASE)
 
 
 def _parse_delivery_text(raw: str) -> int | None:
-    """"FREE" → 0; "£X.XX" → pence; everything else → None."""
+    """Parse a delivery descriptor.
+
+    "FREE" / "FREE delivery" → 0; "£X.XX" → pence in `X.XX`; conditional
+    promises ("£3.49 delivery. Free delivery over £25.") → the concrete
+    `£X.XX` value; everything else → None.
+
+    The numeric path is tried BEFORE the free check so a conditional
+    promise can never mask a real shipping charge — the prior version
+    accepted any substring "free" as zero, which a "free over £X.XX"
+    qualifier would silently trigger.
+    """
     text = raw.strip()
     if not text:
         return None
-    if "free" in text.lower():
-        return 0
     m = _DELIVERY_PRICE_GBP_RE.search(text)
     if m:
-        return int(round(float(m.group(1).replace(",", ".")) * 100))
+        return int(round(float(m.group(1).replace(",", "")) * 100))
+    # No concrete price seen — accept "FREE" / "free delivery" as
+    # genuinely-free delivery. Bare "FREE" appears in the
+    # `data-csa-c-delivery-price` data attribute (controlled vocabulary).
+    if text.strip().upper() == "FREE":
+        return 0
+    if _FREE_DELIVERY_RE_DELIVERY.search(text):
+        return 0
     return None
 
 
