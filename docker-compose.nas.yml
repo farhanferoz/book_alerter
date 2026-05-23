@@ -1,0 +1,42 @@
+# NAS deployment compose file.
+#
+# Lives on the QNAP at /share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml
+# (synced from this repo path on every deploy). Pulls the prebuilt image from
+# GHCR — no local build on the NAS. State (SQLite + config + observations +
+# backups) lives in /share/CACHEDEV1_DATA/Container/book_alerter/data on the
+# host so container recreation is lossless.
+#
+# Access model: Tailscale is the network boundary. Port 8090 published on
+# 0.0.0.0 (not 127.0.0.1) so Tailscale peers reach it; the QNAP firewall +
+# Tailscale ACLs gate ingress.
+
+services:
+  book_alerter:
+    image: ghcr.io/farhanferoz/book_alerter:${IMAGE_TAG:-latest}
+    container_name: book_alerter
+    user: "${PUID:-1000}:${PGID:-100}"
+    ports:
+      - "8090:8000"
+    volumes:
+      - /share/CACHEDEV1_DATA/Container/book_alerter/data:/app/data
+    env_file:
+      - path: .env
+        required: true
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
