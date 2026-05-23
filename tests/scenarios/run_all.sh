@@ -12,6 +12,7 @@ SCRIPTS=(
   scenario_04_per_book_mute.py
   scenario_05_alert_kind_toggle.py
   scenario_06_ui_surface.py
+  scenario_07_product_lifecycle.py
 )
 
 FAILURES=()

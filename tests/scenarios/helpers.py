@@ -19,7 +19,12 @@ from sqlmodel import Session, SQLModel
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
-from book_alerter.db.views import BOOK_STATS_VIEW_SQL, DROP_BOOK_STATS_VIEW_SQL
+from book_alerter.db.views import (
+    BOOK_STATS_VIEW_SQL,
+    DROP_BOOK_STATS_VIEW_SQL,
+    DROP_PRODUCT_STATS_VIEW_SQL,
+    PRODUCT_STATS_VIEW_SQL,
+)
 from book_alerter.notifications.dispatcher import AlertPipeline
 
 SCENARIO_DIR = Path(__file__).parent
@@ -65,7 +70,8 @@ def make_recorder(name: str) -> _Recorder:
 
 def fresh_engine() -> Engine:
     """Drop, recreate, and migrate the scenario sqlite file. Idempotent across
-    runs — every scenario invocation gets a pristine schema + view."""
+    runs — every scenario invocation gets a pristine schema + both views
+    (book_stats and product_stats)."""
     if SCENARIO_DB.exists():
         SCENARIO_DB.unlink()
     engine = get_engine(f"sqlite:///{SCENARIO_DB}")
@@ -73,6 +79,8 @@ def fresh_engine() -> Engine:
     with engine.begin() as conn:
         conn.exec_driver_sql(DROP_BOOK_STATS_VIEW_SQL)
         conn.exec_driver_sql(BOOK_STATS_VIEW_SQL)
+        conn.exec_driver_sql(DROP_PRODUCT_STATS_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_STATS_VIEW_SQL)
     return engine
 
 
@@ -124,6 +132,59 @@ def add_observation(
 ) -> models.PriceObservation:
     obs = models.PriceObservation(
         book_id=book_id,
+        source=source,
+        seller=seller,
+        condition=condition,
+        price_minor=total_minor,
+        currency="GBP",
+        total_minor=total_minor,
+        url=f"https://example.com/{source}/{total_minor}",
+        observed_at=observed_at or datetime.now(UTC),
+        raw={},
+    )
+    session.add(obs)
+    session.commit()
+    session.refresh(obs)
+    return obs
+
+
+def make_product(
+    session: Session,
+    *,
+    asin: str = "B07PRODUCT1",
+    title: str = "Test Product",
+    brand: str | None = "TestBrand",
+    target_price_minor: int | None = None,
+    track_used: bool = False,
+) -> models.Product:
+    now = datetime.now(UTC)
+    product = models.Product(
+        asin=asin,
+        title=title,
+        brand=brand,
+        target_price_minor=target_price_minor,
+        track_used=track_used,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(product)
+    session.commit()
+    session.refresh(product)
+    return product
+
+
+def add_product_observation(
+    session: Session,
+    *,
+    product_id: int,
+    total_minor: int,
+    source: str = "amazon_uk_product",
+    condition: str = "new",
+    observed_at: datetime | None = None,
+    seller: str | None = "Amazon",
+) -> models.ProductObservation:
+    obs = models.ProductObservation(
+        product_id=product_id,
         source=source,
         seller=seller,
         condition=condition,
