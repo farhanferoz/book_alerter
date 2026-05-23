@@ -1,5 +1,12 @@
 """Canonical DDL for SQL views. Imported by Alembic migrations and by
-integration tests (SQLModel.metadata.create_all does not create views)."""
+integration tests (SQLModel.metadata.create_all does not create views).
+
+`book_stats` and `product_stats` are mirror views — same CTE shape, with
+the table/column names swapped. We deliberately keep them as two separate
+strings (not generated) for readability: the SQL is small, and a templating
+abstraction would obscure the few semantic places they intentionally
+diverge (e.g., `b.isbn13` vs `p.asin`).
+"""
 from __future__ import annotations
 
 BOOK_STATS_VIEW_SQL = """
@@ -94,3 +101,75 @@ LEFT JOIN polled p        ON p.book_id  = b.id
 """
 
 DROP_BOOK_STATS_VIEW_SQL = "DROP VIEW IF EXISTS book_stats"
+
+
+PRODUCT_STATS_VIEW_SQL = """
+CREATE VIEW product_stats AS
+WITH non_dupes AS (
+    SELECT * FROM productobservation WHERE is_duplicate_of IS NULL
+),
+buyable AS (
+    SELECT * FROM non_dupes
+    WHERE source != 'keepa'
+),
+latest_per_offer AS (
+    SELECT product_id, source, total_minor, price_minor, shipping_minor,
+           condition, seller, url, observed_at,
+           ROW_NUMBER() OVER (
+               PARTITION BY product_id, source, condition, seller
+               ORDER BY observed_at DESC
+           ) AS rn
+    FROM buyable
+),
+current_best AS (
+    SELECT lp.product_id, lp.total_minor, lp.price_minor, lp.shipping_minor,
+           lp.source, lp.condition, lp.seller, lp.url
+    FROM latest_per_offer lp
+    JOIN (
+        SELECT product_id, MIN(total_minor) AS m
+        FROM latest_per_offer
+        WHERE rn = 1
+        GROUP BY product_id
+    ) best ON best.product_id = lp.product_id AND best.m = lp.total_minor AND lp.rn = 1
+    WHERE (lp.source, lp.condition, COALESCE(lp.seller, '')) = (
+        SELECT lp2.source, lp2.condition, COALESCE(lp2.seller, '')
+        FROM latest_per_offer lp2
+        WHERE lp2.product_id = lp.product_id AND lp2.total_minor = lp.total_minor AND lp2.rn = 1
+        ORDER BY lp2.source, lp2.condition, COALESCE(lp2.seller, '')
+        LIMIT 1
+    )
+),
+agg_history AS (
+    SELECT product_id,
+           COUNT(*)         AS observation_count,
+           MAX(observed_at) AS last_observed_at,
+           CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
+    FROM non_dupes
+    GROUP BY product_id
+),
+polled AS (
+    SELECT product_id, MAX(observed_at) AS last_polled_at
+    FROM productobservation
+    GROUP BY product_id
+)
+SELECT p.id AS product_id,
+       p.title,
+       p.asin,
+       cb.total_minor    AS current_best_total_minor,
+       cb.price_minor    AS current_best_price_minor,
+       cb.shipping_minor AS current_best_shipping_minor,
+       cb.source         AS current_best_source,
+       cb.condition      AS current_best_condition,
+       cb.seller         AS current_best_seller,
+       cb.url            AS current_best_url,
+       ah.observation_count,
+       ah.last_observed_at,
+       pl.last_polled_at,
+       ah.days_of_history
+FROM product p
+LEFT JOIN current_best cb ON cb.product_id = p.id
+LEFT JOIN agg_history ah  ON ah.product_id = p.id
+LEFT JOIN polled pl       ON pl.product_id = p.id
+"""
+
+DROP_PRODUCT_STATS_VIEW_SQL = "DROP VIEW IF EXISTS product_stats"

@@ -10,7 +10,7 @@ from sqlmodel import Session, SQLModel
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
-from book_alerter.db.views import BOOK_STATS_VIEW_SQL
+from book_alerter.db.views import BOOK_STATS_VIEW_SQL, PRODUCT_STATS_VIEW_SQL
 
 WOB_CASSETTE_DIR = Path(__file__).parent / "sources" / "cassettes"
 WOB_CARRIED_ISBN = "9780241638194"
@@ -30,6 +30,7 @@ def sqlite_engine(tmp_path) -> Engine:
 def engine_with_view(sqlite_engine):
     with sqlite_engine.begin() as conn:
         conn.exec_driver_sql(BOOK_STATS_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_STATS_VIEW_SQL)
     return sqlite_engine
 
 
@@ -45,6 +46,30 @@ def make_book():
         session.commit()
         session.refresh(book)
         return book
+
+    return _make
+
+
+@pytest.fixture
+def make_product():
+    def _make(
+        session: Session,
+        *,
+        asin: str = "B000000001",
+        title: str = "t",
+        brand: str | None = "b",
+        track_used: bool = False,
+    ) -> models.Product:
+        now = datetime.now(UTC)
+        product = models.Product(
+            asin=asin, title=title, brand=brand,
+            track_used=track_used,
+            created_at=now, updated_at=now,
+        )
+        session.add(product)
+        session.commit()
+        session.refresh(product)
+        return product
 
     return _make
 

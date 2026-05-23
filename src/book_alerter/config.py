@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+from book_alerter.enums import AlertKind, ItemKind
 
 _ENV_REF = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
@@ -82,12 +84,13 @@ class NotificationChannels(BaseModel):
     ntfy: NtfyChannelConfig = Field(default_factory=NtfyChannelConfig)
 
 
-AlertKind = Literal["target_hit", "percentile_cross", "new_low"]
-
-
 class NotificationsConfig(BaseModel):
     alert_kinds_enabled: list[AlertKind] = Field(
-        default_factory=lambda: ["target_hit", "percentile_cross", "new_low"]
+        default_factory=lambda: [
+            AlertKind.TARGET_HIT,
+            AlertKind.PERCENTILE_CROSS,
+            AlertKind.NEW_LOW,
+        ]
     )
     quiet_hours: QuietHours | None = Field(default_factory=QuietHours)
     channels: NotificationChannels = Field(default_factory=NotificationChannels)
@@ -102,6 +105,15 @@ class SourceConfig(BaseModel):
     concurrency: int = Field(default=1, ge=1, le=5)
     timeout_seconds: int = 60
     max_consecutive_errors: int = 5
+    # Which TrackedItem kinds this source serves. Default `[BOOK]` preserves
+    # the pre-products behaviour for existing configs; adding `PRODUCT`
+    # opts a source into the products iteration loop on the next scheduler
+    # tick. Sources whose `Source.item_kinds` doesn't intersect this list
+    # are skipped at scheduler-time (defence in depth — a non-product source
+    # configured with item_kinds=[product] is a no-op, not an error).
+    item_kinds: list[ItemKind] = Field(
+        default_factory=lambda: [ItemKind.BOOK]
+    )
 
 
 class MetadataConfig(BaseModel):
