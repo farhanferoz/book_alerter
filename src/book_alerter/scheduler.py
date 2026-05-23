@@ -15,7 +15,14 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from book_alerter.config import Config
-from book_alerter.db.models import Book, PriceObservation, SourceRun
+from book_alerter.db.models import (
+    Book,
+    PriceObservation,
+    Product,
+    ProductObservation,
+    SourceRun,
+)
+from book_alerter.enums import ItemKind
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 
@@ -76,20 +83,27 @@ def run_weekly_backup(
 
 
 class Scheduler:
-    """Wraps APScheduler; registers one job per enabled source."""
+    """Wraps APScheduler; registers one job per enabled source.
+
+    A single source may serve multiple ItemKinds (books, products) per its
+    declared `Source.item_kinds`. The scheduler iterates the intersection
+    of `Source.item_kinds` and the per-source-config `SourceConfig.item_kinds`
+    on every run, persisting observations to the right table and routing
+    affected ids to the right `alert_pipelines[kind]` after the source run.
+    """
 
     def __init__(
         self,
         config: Config,
         sources: dict[str, Source],
         session_factory: Callable[[], Session],
-        alert_pipeline: Callable[[list[int]], Awaitable[None]],
+        alert_pipelines: dict[ItemKind, Callable[[list[int]], Awaitable[None]]],
         db_path: str | Path | None = None,
     ) -> None:
         self._cfg = config
         self._sources = sources
         self._session_factory = session_factory
-        self._alert_pipeline = alert_pipeline
+        self._alert_pipelines = alert_pipelines
         self._db_path = Path(db_path) if db_path is not None else None
         self._sched = AsyncIOScheduler(timezone="UTC")
         self._consecutive_errors: dict[str, int] = {}
@@ -190,6 +204,14 @@ class Scheduler:
         if bu is not None and datetime.now(UTC) < bu:
             log.info("source.skipped.backoff", source=source_name, until=bu.isoformat())
             return 0
+        # Intersect what the source CAN do (`src.item_kinds`) with what the
+        # config WANTS it to do (`sc.item_kinds`). Empty intersection = source
+        # is enabled but configured against its capabilities; log + emit a
+        # no-op SourceRun so the audit trail records the cycle.
+        kinds_to_run = sorted(
+            set(sc.item_kinds) & src.item_kinds,
+            key=lambda k: k.value,
+        )
         with self._session_factory() as session:
             run = SourceRun(
                 source=source_name,
@@ -203,56 +225,48 @@ class Scheduler:
             # the attribute would trigger a refresh on a closed session.
             run_id: int = run.id or 0
 
-        affected_book_ids: list[int] = []
-        attempted = 0
-        succeeded = 0
-        try:
+        if not kinds_to_run:
+            log.warning(
+                "source.run.no_kinds",
+                source=source_name,
+                src_kinds=[k.value for k in src.item_kinds],
+                cfg_kinds=[k.value for k in sc.item_kinds],
+            )
             with self._session_factory() as session:
-                books = session.exec(
-                    select(Book).where(Book.status == "active")
-                ).all()
-            attempted = len(books)
-            sem = asyncio.Semaphore(sc.concurrency)
+                run = session.get(SourceRun, run_id)
+                run.finished_at = datetime.now(UTC)
+                run.status = "success"
+                session.commit()
+            return run_id
 
-            async def _one(book: Book) -> None:
-                nonlocal succeeded
-                async with sem:
-                    delay = random.uniform(*sc.per_book_delay_seconds)
-                    await asyncio.sleep(delay)
-                    try:
-                        candidates = await asyncio.wait_for(
-                            src.fetch(book), timeout=sc.timeout_seconds + 5
-                        )
-                    except (TimeoutError, SourceError) as e:
-                        log.warning(
-                            "source.book.error",
-                            source=source_name,
-                            isbn=book.isbn13,
-                            error=str(e),
-                        )
-                        self._record_book_failure(book.id, str(e))
-                        return
-                    # `_persist` clears last_scrape_error in the same commit.
-                    self._persist(source_name, book, candidates)
-                    affected_book_ids.append(book.id or 0)
-                    succeeded += 1
-
-            await asyncio.gather(*[_one(b) for b in books])
+        attempted_total = 0
+        succeeded_total = 0
+        affected_by_kind: dict[ItemKind, list[int]] = {}
+        try:
+            for kind in kinds_to_run:
+                ids, attempted, succeeded = await self._run_kind_for_source(
+                    source_name, src, sc, kind,
+                )
+                affected_by_kind[kind] = ids
+                attempted_total += attempted
+                succeeded_total += succeeded
 
             with self._session_factory() as session:
                 run = session.get(SourceRun, run_id)
                 run.finished_at = datetime.now(UTC)
-                run.books_attempted = attempted
-                run.books_succeeded = succeeded
-                if succeeded == attempted:
+                run.books_attempted = attempted_total
+                run.books_succeeded = succeeded_total
+                if attempted_total == 0:
+                    run.status = "success"  # zero items is success, not partial
+                elif succeeded_total == attempted_total:
                     run.status = "success"
-                elif succeeded > 0:
+                elif succeeded_total > 0:
                     run.status = "partial"
                 else:
                     run.status = "error"
                 session.commit()
 
-            if succeeded > 0:
+            if succeeded_total > 0 or attempted_total == 0:
                 self._consecutive_errors[source_name] = 0
                 self._backoff_until.pop(source_name, None)
             else:
@@ -260,12 +274,27 @@ class Scheduler:
                     self._consecutive_errors.get(source_name, 0) + 1
                 )
                 self._apply_backoff(source_name)
-            # Run alert pipeline AFTER the audit row commits, with its own
-            # try/except so a Phase 4 pipeline bug can't corrupt the run record.
-            try:
-                await self._alert_pipeline(affected_book_ids)
-            except Exception:
-                log.exception("alert_pipeline.failed", source=source_name)
+            # Run alert pipelines AFTER the audit row commits, with their own
+            # try/except so a pipeline bug can't corrupt the run record.
+            for kind, ids in affected_by_kind.items():
+                if not ids:
+                    continue
+                pipeline = self._alert_pipelines.get(kind)
+                if pipeline is None:
+                    log.warning(
+                        "alert_pipeline.missing",
+                        source=source_name,
+                        kind=kind.value,
+                    )
+                    continue
+                try:
+                    await pipeline(ids)
+                except Exception:
+                    log.exception(
+                        "alert_pipeline.failed",
+                        source=source_name,
+                        kind=kind.value,
+                    )
         except Exception as e:
             log.error(
                 "source.run.exception",
@@ -287,32 +316,101 @@ class Scheduler:
 
         return run_id
 
+    async def _run_kind_for_source(
+        self,
+        source_name: str,
+        src: Source,
+        sc,
+        kind: ItemKind,
+    ) -> tuple[list[int], int, int]:
+        """Per-kind iteration: query the right item table, fetch each item,
+        persist observations, return (affected_ids, attempted, succeeded).
+        """
+        item_model: type[Book | Product]
+        identifier_attr: str
+        if kind == ItemKind.BOOK:
+            item_model = Book
+            identifier_attr = "isbn13"
+        else:
+            item_model = Product
+            identifier_attr = "asin"
+
+        with self._session_factory() as session:
+            items = session.exec(
+                select(item_model).where(item_model.status == "active")
+            ).all()
+        attempted = len(items)
+        succeeded = 0
+        affected_ids: list[int] = []
+        sem = asyncio.Semaphore(sc.concurrency)
+
+        async def _one(item) -> None:
+            nonlocal succeeded
+            async with sem:
+                delay = random.uniform(*sc.per_book_delay_seconds)
+                await asyncio.sleep(delay)
+                try:
+                    candidates = await asyncio.wait_for(
+                        src.fetch(item), timeout=sc.timeout_seconds + 5,
+                    )
+                except (TimeoutError, SourceError) as e:
+                    log.warning(
+                        "source.item.error",
+                        source=source_name,
+                        kind=kind.value,
+                        identifier=getattr(item, identifier_attr, None),
+                        error=str(e),
+                    )
+                    self._record_item_failure(item_model, item.id, str(e))
+                    return
+                self._persist(source_name, kind, item, candidates)
+                if item.id is not None:
+                    affected_ids.append(item.id)
+                succeeded += 1
+
+        await asyncio.gather(*[_one(i) for i in items])
+        return affected_ids, attempted, succeeded
+
     def _persist(
         self,
         source_name: str,
-        book: Book,
+        kind: ItemKind,
+        item: Book | Product,
         candidates: list[ObservationCandidate],
     ) -> None:
         """Persist a scrape's candidates, marking exact-match repeats as duplicates.
 
         A new observation is marked `is_duplicate_of=<prior_canonical_id>` when
         the most recent canonical (non-duplicate) observation for the same
-        (book, source, seller, condition) tuple has identical price + shipping.
+        (item, source, seller, condition) tuple has identical price + shipping.
         Duplicates still land in the table (so we keep a heartbeat of "we did
-        check") but the `book_stats` view excludes them, keeping the
+        check") but the `{book,product}_stats` view excludes them, keeping the
         observation count and percentile distribution honest. See
         `RecommendationConfig.min_days_of_history` for why this matters.
 
-        Also updates the Book row's last_scrape_attempt_at + clears
-        last_scrape_error in the SAME session so a per-book scrape costs
+        Also updates the item row's last_scrape_attempt_at + clears
+        last_scrape_error in the SAME session so a per-item scrape costs
         one DB commit, not two.
         """
+        observation_model: type[PriceObservation | ProductObservation]
+        item_model: type[Book | Product]
+        item_fk_attr: str
+        if kind == ItemKind.BOOK:
+            observation_model = PriceObservation
+            item_model = Book
+            item_fk_attr = "book_id"
+        else:
+            observation_model = ProductObservation
+            item_model = Product
+            item_fk_attr = "product_id"
+
         now = datetime.now(UTC)
         with self._session_factory() as session:
+            item_fk_col = getattr(observation_model, item_fk_attr)
             for c in candidates:
                 total = c.price_minor + (c.shipping_minor or 0)
                 # Match a prior canonical row on the FULL offer identity
-                # (book/source/seller/condition/price/shipping). NULL shipping
+                # (item/source/seller/condition/price/shipping). NULL shipping
                 # (parser saw no delivery info) and 0 shipping (parser saw
                 # "FREE delivery") are DIFFERENT signals — we deliberately
                 # don't conflate them so that a scrape which finally extracts
@@ -326,37 +424,37 @@ class Scheduler:
                 # defensive (against a future source forgetting to strip and
                 # against pre-trim rows that may exist in older DBs).
                 if c.seller is None:
-                    seller_clause = PriceObservation.seller.is_(None)  # type: ignore[union-attr]
+                    seller_clause = observation_model.seller.is_(None)  # type: ignore[union-attr]
                 else:
                     seller_clause = (
-                        func.lower(func.trim(PriceObservation.seller))
+                        func.lower(func.trim(observation_model.seller))
                         == c.seller.strip().lower()
                     )
-                prior_q = select(PriceObservation).where(
-                    PriceObservation.book_id == book.id,
-                    PriceObservation.source == source_name,
+                prior_q = select(observation_model).where(
+                    item_fk_col == item.id,
+                    observation_model.source == source_name,
                     seller_clause,
-                    PriceObservation.condition == c.condition,
-                    PriceObservation.price_minor == c.price_minor,
-                    PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
+                    observation_model.condition == c.condition,
+                    observation_model.price_minor == c.price_minor,
+                    observation_model.is_duplicate_of.is_(None),  # type: ignore[union-attr]
                 )
                 if c.shipping_minor is None:
                     prior_q = prior_q.where(
-                        PriceObservation.shipping_minor.is_(None)  # type: ignore[union-attr]
+                        observation_model.shipping_minor.is_(None)  # type: ignore[union-attr]
                     )
                 else:
                     prior_q = prior_q.where(
-                        PriceObservation.shipping_minor == c.shipping_minor
+                        observation_model.shipping_minor == c.shipping_minor
                     )
                 prior = session.exec(
                     prior_q
-                    .order_by(PriceObservation.observed_at.desc())  # type: ignore[union-attr]
+                    .order_by(observation_model.observed_at.desc())  # type: ignore[union-attr]
                     .limit(1)
                 ).first()
                 duplicate_of: int | None = prior.id if prior is not None else None
                 session.add(
-                    PriceObservation(
-                        book_id=book.id,
+                    observation_model(
+                        **{item_fk_attr: item.id},
                         source=source_name,
                         seller=c.seller,
                         condition=c.condition,
@@ -370,30 +468,35 @@ class Scheduler:
                         is_duplicate_of=duplicate_of,
                     )
                 )
-            if book.id is not None:
-                fresh_book = session.get(Book, book.id)
-                if fresh_book is not None:
-                    fresh_book.last_scrape_attempt_at = now
-                    fresh_book.last_scrape_error = None
-                    session.add(fresh_book)
+            if item.id is not None:
+                fresh_item = session.get(item_model, item.id)
+                if fresh_item is not None:
+                    fresh_item.last_scrape_attempt_at = now
+                    fresh_item.last_scrape_error = None
+                    session.add(fresh_item)
             session.commit()
 
-    def _record_book_failure(self, book_id: int | None, error: str) -> None:
-        """Persist a failed scrape attempt on the Book row. Success path is
+    def _record_item_failure(
+        self,
+        item_model: type[Book | Product],
+        item_id: int | None,
+        error: str,
+    ) -> None:
+        """Persist a failed scrape attempt on the item row. Success path is
         folded into `_persist` so a successful scrape costs one commit.
         Last-write-wins across sources — enough signal for the FE to flag
         "something is broken right now"."""
-        if book_id is None:
+        if item_id is None:
             return
         # Truncate long Playwright tracebacks so they don't bloat the row.
         truncated = error[: self._ERROR_MSG_CAP]
         with self._session_factory() as session:
-            book = session.get(Book, book_id)
-            if book is None:
+            item = session.get(item_model, item_id)
+            if item is None:
                 return
-            book.last_scrape_attempt_at = datetime.now(UTC)
-            book.last_scrape_error = truncated
-            session.add(book)
+            item.last_scrape_attempt_at = datetime.now(UTC)
+            item.last_scrape_error = truncated
+            session.add(item)
             session.commit()
 
     _ERROR_MSG_CAP = 500

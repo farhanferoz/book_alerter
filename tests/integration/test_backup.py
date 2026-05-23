@@ -17,6 +17,7 @@ from sqlmodel import Session, SQLModel
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
+from book_alerter.enums import ItemKind
 from book_alerter.scheduler import run_weekly_backup
 
 
@@ -133,7 +134,7 @@ async def test_scheduler_registers_weekly_backup_job(tmp_path):
         config=Config(),
         sources={},
         session_factory=lambda: None,
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
         db_path=db_path,
     )
     sched.start()
@@ -159,7 +160,7 @@ async def test_scheduler_skips_backup_when_disabled(tmp_path):
         config=cfg,
         sources={},
         session_factory=lambda: None,
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
         db_path=db_path,
     )
     sched.start()

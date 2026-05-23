@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
+from book_alerter.enums import ItemKind
 from book_alerter.scheduler import Scheduler
 from book_alerter.sources.wob import WobInlineSource
 from tests.integration.conftest import WOB_CARRIED_ISBN
@@ -25,7 +26,7 @@ async def test_scheduler_registers_jobs_from_config():
         config=cfg,
         sources={"wob": AsyncMock()},
         session_factory=lambda: None,
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
     )
     sched.start()
     try:
@@ -50,7 +51,7 @@ async def test_scheduler_no_jobs_when_source_disabled():
         config=cfg,
         sources={"wob": AsyncMock()},
         session_factory=lambda: None,
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
     )
     sched.start()
     try:
@@ -80,7 +81,7 @@ async def test_scheduler_skips_unknown_source_in_config():
         config=cfg,
         sources={"wob": AsyncMock()},  # 'ghost' intentionally absent
         session_factory=lambda: None,
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
     )
     sched.start()
     try:
@@ -116,7 +117,7 @@ async def test_scheduler_runs_wob_end_to_end(sqlite_engine, make_book, wob_vcr):
         config=cfg,
         sources={"wob": src},
         session_factory=lambda: Session(sqlite_engine),
-        alert_pipeline=_capture_alert_pipeline,
+        alert_pipelines={ItemKind.BOOK: _capture_alert_pipeline},
     )
 
     # Skip scheduler.start() — trigger_now drives _run_source directly so the
@@ -170,7 +171,7 @@ async def test_scheduler_alert_pipeline_failure_does_not_corrupt_audit(
         config=cfg,
         sources={"wob": WobInlineSource(name="wob", region="UK")},
         session_factory=lambda: Session(sqlite_engine),
-        alert_pipeline=_failing_pipeline,
+        alert_pipelines={ItemKind.BOOK: _failing_pipeline},
     )
 
     with wob_vcr("none").use_cassette(f"wob_{WOB_CARRIED_ISBN}.yaml"):
@@ -213,7 +214,7 @@ async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
         config=cfg,
         sources={"wob": WobInlineSource(name="wob", region="UK")},
         session_factory=lambda: Session(sqlite_engine),
-        alert_pipeline=_noop_pipeline,
+        alert_pipelines={ItemKind.BOOK: _noop_pipeline},
     )
 
     cassette = f"wob_{WOB_CARRIED_ISBN}.yaml"
@@ -274,7 +275,7 @@ async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine
         config=Config(),
         sources={},
         session_factory=lambda: Session(sqlite_engine),
-        alert_pipeline=AsyncMock(),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
     )
 
     def _cand(seller: str) -> ObservationCandidate:
@@ -292,7 +293,7 @@ async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine
         with Session(sqlite_engine) as s:
             book_row = s.get(models.Book, book_id)
             assert book_row is not None
-            scheduler._persist("amazon", book_row, [_cand(variant)])
+            scheduler._persist("amazon", ItemKind.BOOK, book_row, [_cand(variant)])
 
     with Session(sqlite_engine) as s:
         canonical = s.exec(

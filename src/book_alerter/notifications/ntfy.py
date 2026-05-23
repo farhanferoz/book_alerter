@@ -10,9 +10,13 @@ from collections.abc import Callable
 import httpx
 
 from book_alerter.config import NtfyChannelConfig
-from book_alerter.db.models import Alert, Book
 from book_alerter.http_client import shared_or_fresh
-from book_alerter.notifications.base import NotificationResult, Notifier
+from book_alerter.notifications.base import (
+    AlertLike,
+    ItemLike,
+    NotificationResult,
+    Notifier,
+)
 
 
 def _encode_title(s: str) -> str:
@@ -44,13 +48,13 @@ class NtfyNotifier(Notifier):
         self._http = http
         self._client_factory = client_factory
 
-    async def send(self, alert: Alert, book: Book) -> NotificationResult:
+    async def send(self, alert: AlertLike, item: ItemLike) -> NotificationResult:
         if not self._cfg.enabled or not self._cfg.topic:
             return {"status": "error", "error_message": "ntfy disabled or topic missing"}
         url = f"{self._cfg.server.rstrip('/')}/{self._cfg.topic}"
         body = alert.message
         headers = {
-            "Title": _encode_title(f"{alert.kind} - {book.title}"),
+            "Title": _encode_title(f"{alert.kind} - {item.title}"),
             "Priority": self._cfg.priority,
             "Tags": ",".join(self._cfg.tags),
         }

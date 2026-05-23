@@ -240,15 +240,43 @@ def _window_stats_from_sorted(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _ItemSchema:
+    """Table + column names that distinguish books from products in the
+    stats engine. Allows `_compute_stats_impl` and
+    `source_seller_global_shipping_medians` to share one implementation."""
+
+    observation_table: str  # priceobservation / productobservation
+    id_column: str          # book_id / product_id
+    stats_view: str         # book_stats / product_stats
+
+
+_BOOK_SCHEMA = _ItemSchema(
+    observation_table="priceobservation",
+    id_column="book_id",
+    stats_view="book_stats",
+)
+_PRODUCT_SCHEMA = _ItemSchema(
+    observation_table="productobservation",
+    id_column="product_id",
+    stats_view="product_stats",
+)
+
+
 def source_seller_global_shipping_medians(
     session: Session,
     min_observations: int = 10,
+    *,
+    schema: _ItemSchema = _BOOK_SCHEMA,
 ) -> dict[tuple[str, SellerClass], int]:
     """Median of observed shipping per (source, seller_class) across every
-    book, bounded to the widest configured window. Used as cascade tier 2
-    in `_imputed_shipping`. Exposed so callers that invoke
-    `compute_book_stats` in a loop (e.g. the dashboard list endpoint)
-    compute it once per request rather than per book.
+    item, bounded to the widest configured window. Used as cascade tier 2
+    in `_imputed_shipping`. Exposed so callers that invoke `compute_*_stats`
+    in a loop (e.g. the dashboard list endpoint) compute it once per
+    request rather than per item.
+
+    Pass `schema=_PRODUCT_SCHEMA` for the product side. Default keeps the
+    book behaviour for every existing caller — no signature break.
 
     Buckets with fewer than `min_observations` rows are excluded so
     sparse-sample medians don't pollute the cascade — the caller's
@@ -256,8 +284,8 @@ def source_seller_global_shipping_medians(
     since = datetime.now(UTC) - timedelta(days=max(WINDOW_DAYS.values()))
     rows = session.exec(
         text(
-            """
-            SELECT source, seller, shipping_minor FROM priceobservation
+            f"""
+            SELECT source, seller, shipping_minor FROM {schema.observation_table}
             WHERE shipping_minor IS NOT NULL
               AND observed_at >= :since
             """
@@ -271,6 +299,18 @@ def source_seller_global_shipping_medians(
         for k, v in by_key.items()
         if len(v) >= min_observations
     }
+
+
+def product_source_seller_global_shipping_medians(
+    session: Session,
+    min_observations: int = 10,
+) -> dict[tuple[str, SellerClass], int]:
+    """Convenience wrapper around `source_seller_global_shipping_medians`
+    with `schema=_PRODUCT_SCHEMA` so product callers don't import the
+    private schema sentinel."""
+    return source_seller_global_shipping_medians(
+        session, min_observations, schema=_PRODUCT_SCHEMA,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -287,32 +327,82 @@ def compute_book_stats(
     default_shipping_minor: int = 280,
     min_global_median_observations: int = 10,
 ) -> BookStats:
-    """Compute the stats bundle for a single book.
+    """Compute the stats bundle for a single book. See `_compute_stats_impl`
+    for the full contract; this is a thin wrapper that fixes the schema to
+    the book tables."""
+    return _compute_stats_impl(
+        book_id,
+        session,
+        window_days,
+        schema=_BOOK_SCHEMA,
+        source_seller_global_medians=source_seller_global_medians,
+        default_shipping_minor=default_shipping_minor,
+        min_global_median_observations=min_global_median_observations,
+    )
+
+
+def compute_product_stats(
+    product_id: int,
+    session: Session,
+    window_days: int = 90,
+    *,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
+    default_shipping_minor: int = 280,
+    min_global_median_observations: int = 10,
+) -> BookStats:
+    """Compute the stats bundle for a single product. Returns `BookStats`
+    (the dataclass shape is item-kind-agnostic — the field `book_id` is
+    reused for the product id; see plan doc for the deliberate naming
+    debt). Mirrors `compute_book_stats` exactly except for the schema."""
+    return _compute_stats_impl(
+        product_id,
+        session,
+        window_days,
+        schema=_PRODUCT_SCHEMA,
+        source_seller_global_medians=source_seller_global_medians,
+        default_shipping_minor=default_shipping_minor,
+        min_global_median_observations=min_global_median_observations,
+    )
+
+
+def _compute_stats_impl(
+    item_id: int,
+    session: Session,
+    window_days: int,
+    *,
+    schema: _ItemSchema,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None,
+    default_shipping_minor: int,
+    min_global_median_observations: int,
+) -> BookStats:
+    """Schema-parameterised stats computation. Two table groups (book vs
+    product) share this implementation by passing distinct `_ItemSchema`
+    instances.
 
     `source_seller_global_medians` is a cascade-step-2 input. Callers that
     invoke this in a loop (e.g. the dashboard list endpoint) compute it
-    once via `source_seller_global_shipping_medians(session)` and pass it
-    in, so we don't scan the whole `priceobservation` table per book.
+    once via `source_seller_global_shipping_medians(session, schema=...)`
+    and pass it in, so we don't scan the whole observation table per item.
     `default_shipping_minor` is the cascade's terminal fallback when no
     tier produces an estimate. `min_global_median_observations` gates the
     (source, seller_class) tier so sparse buckets don't fire.
     """
     head = session.exec(
         text(
-            """
+            f"""
             SELECT current_best_total_minor, current_best_price_minor,
                    current_best_shipping_minor, current_best_source,
                    current_best_condition, current_best_seller, current_best_url,
                    observation_count, last_observed_at, days_of_history,
                    last_polled_at
-            FROM book_stats WHERE book_id = :bid
+            FROM {schema.stats_view} WHERE {schema.id_column} = :iid
             """
-        ).bindparams(bid=book_id)
+        ).bindparams(iid=item_id)
     ).one_or_none()
 
     if head is None:
         return BookStats(
-            book_id=book_id,
+            book_id=item_id,
             current_best_total_minor=None,
             current_best_price_minor=None,
             current_best_shipping_minor=None,
@@ -330,7 +420,7 @@ def compute_book_stats(
         )
 
     # Bound the imputation/percentile scan to the widest window we'll use so
-    # per-book work stays O(window) not O(history). `all_time_min/max` below
+    # per-item work stays O(window) not O(history). `all_time_min/max` below
     # therefore mean "min/max within this window" — for long-running deploys
     # that's the more useful signal anyway, and the `new_low` alert reads it
     # as "lower than recently seen".
@@ -338,28 +428,28 @@ def compute_book_stats(
     since = datetime.now(UTC) - timedelta(days=max_window_days)
     raw = session.exec(
         text(
-            """
+            f"""
             SELECT observed_at, source, seller, price_minor, shipping_minor, total_minor
-            FROM priceobservation
-            WHERE book_id = :bid
+            FROM {schema.observation_table}
+            WHERE {schema.id_column} = :iid
               AND is_duplicate_of IS NULL
               AND observed_at >= :since
             """
-        ).bindparams(bid=book_id, since=since)
+        ).bindparams(iid=item_id, since=since)
     ).all()
 
     # Shipping medians window-bounded to match the global query. Dupes
     # included on purpose — dupes repeat the canonical shipping signal,
-    # and on slow-moving books they're the bulk of the sample.
+    # and on slow-moving items they're the bulk of the sample.
     shipping_rows = session.exec(
         text(
-            """
-            SELECT source, shipping_minor FROM priceobservation
-            WHERE book_id = :bid
+            f"""
+            SELECT source, shipping_minor FROM {schema.observation_table}
+            WHERE {schema.id_column} = :iid
               AND shipping_minor IS NOT NULL
               AND observed_at >= :since
             """
-        ).bindparams(bid=book_id, since=since)
+        ).bindparams(iid=item_id, since=since)
     ).all()
     by_book_source: dict[str, list[int]] = {}
     all_book_shipping: list[int] = []
@@ -374,7 +464,9 @@ def compute_book_stats(
     )
     if source_seller_global_medians is None:
         source_seller_global_medians = source_seller_global_shipping_medians(
-            session, min_observations=min_global_median_observations,
+            session,
+            min_observations=min_global_median_observations,
+            schema=schema,
         )
 
     cascade_kwargs = dict(
@@ -458,7 +550,7 @@ def compute_book_stats(
         )
 
     return BookStats(
-        book_id=book_id,
+        book_id=item_id,
         current_best_total_minor=head[0],
         current_best_price_minor=head[1],
         current_best_shipping_minor=head[2],
@@ -490,8 +582,13 @@ def _to_aware(ts: datetime | str) -> datetime:
 
 
 def compute_signal(
-    book: models.Book, stats: BookStats, cfg: RecommendationConfig
+    item: models.Book | models.Product,
+    stats: BookStats,
+    cfg: RecommendationConfig,
 ) -> Signal:
+    """Compute the BUY/WATCH/WAIT signal for a tracked item. Item-agnostic —
+    reads only `percentile_threshold` and `target_price_minor` from the
+    item, both shared between Book and Product."""
     if stats.days_of_history < cfg.min_days_of_history:
         return "INSUFFICIENT_DATA"
     if stats.observation_count < cfg.min_observations_for_signal:
@@ -499,11 +596,11 @@ def compute_signal(
     if stats.current_best_total_minor is None:
         return "INSUFFICIENT_DATA"
 
-    threshold_pct = book.percentile_threshold or cfg.buy_percentile
+    threshold_pct = item.percentile_threshold or cfg.buy_percentile
 
-    if book.target_price_minor is not None:
-        tolerance = int(book.target_price_minor * (1 + cfg.target_tolerance_pct / 100))
-        if stats.current_best_total_minor <= book.target_price_minor:
+    if item.target_price_minor is not None:
+        tolerance = int(item.target_price_minor * (1 + cfg.target_tolerance_pct / 100))
+        if stats.current_best_total_minor <= item.target_price_minor:
             return "TARGET_HIT"
         if stats.current_best_total_minor <= tolerance:
             return "BUY"

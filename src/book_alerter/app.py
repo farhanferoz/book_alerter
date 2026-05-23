@@ -17,10 +17,15 @@ from book_alerter.api import notifications as notifications_routes
 from book_alerter.auth import basic_auth_dep, is_basic_auth_enabled
 from book_alerter.config import Config
 from book_alerter.db.session import get_engine
+from book_alerter.enums import ItemKind
 from book_alerter.http_client import build_shared_client
 from book_alerter.logging_setup import configure_logging, get_logger
 from book_alerter.notifications.base import Notifier
-from book_alerter.notifications.dispatcher import AlertPipeline
+from book_alerter.notifications.dispatcher import (
+    BOOK_MODELS,
+    PRODUCT_MODELS,
+    AlertPipeline,
+)
 from book_alerter.notifications.inapp import InAppNotifier
 from book_alerter.notifications.ntfy import NtfyNotifier
 from book_alerter.scheduler import Scheduler
@@ -53,16 +58,26 @@ def _build_runtime(
         http = getattr(app.state, "http", None)
     sources = build_sources(cfg, http=http)
     notifiers = _build_notifiers(cfg, http=http)
-    pipeline = AlertPipeline(
+    book_pipeline = AlertPipeline(
         cfg=cfg,
         session_factory=lambda: Session(engine),
         notifiers=notifiers,
+        models=BOOK_MODELS,
+    )
+    product_pipeline = AlertPipeline(
+        cfg=cfg,
+        session_factory=lambda: Session(engine),
+        notifiers=notifiers,
+        models=PRODUCT_MODELS,
     )
     scheduler = Scheduler(
         config=cfg,
         sources=sources,
         session_factory=lambda: Session(engine),
-        alert_pipeline=pipeline.run,
+        alert_pipelines={
+            ItemKind.BOOK: book_pipeline.run,
+            ItemKind.PRODUCT: product_pipeline.run,
+        },
         db_path=engine.url.database,
     )
     scheduler.start()
