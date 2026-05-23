@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import select
 
+from book_alerter.api._serializers import UtcDateTime, to_z_iso
 from book_alerter.api.deps import SessionDep
 from book_alerter.db import models
 
@@ -48,8 +49,8 @@ class AlertOut(BaseModel):
     source: str
     condition: str
     message: str
-    fired_at: datetime
-    dismissed_at: datetime | None
+    fired_at: UtcDateTime
+    dismissed_at: UtcDateTime | None
     delivered_via: list[str]
 
     @classmethod
@@ -117,7 +118,7 @@ def list_alerts(
     rows = session.exec(stmt).all()
     items = [AlertOut.from_alert(a) for a in rows]
     next_before = (
-        rows[-1].fired_at.isoformat() if len(rows) == limit and rows else None
+        to_z_iso(rows[-1].fired_at) if len(rows) == limit and rows else None
     )
     return AlertsPage(items=items, next_before=next_before)
 

@@ -26,6 +26,8 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
+from book_alerter.api._serializers import UtcDateTime, to_z_iso
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -135,8 +137,8 @@ class BookStatsOut(BaseModel):
     all_time_max_total_minor: int | None
     observation_count: int
     days_of_history: int
-    last_observed_at: datetime | None
-    last_polled_at: datetime | None
+    last_observed_at: UtcDateTime | None
+    last_polled_at: UtcDateTime | None
     percentile_window_days: int
     current_percentile_rank: int | None
     current_effective_total_minor: int | None
@@ -210,7 +212,7 @@ class PriceObservationOut(BaseModel):
     shipping_minor: int | None
     total_minor: int
     url: str
-    observed_at: datetime
+    observed_at: UtcDateTime
 
     @classmethod
     def from_obs(cls, obs: models.PriceObservation) -> PriceObservationOut:
@@ -256,13 +258,13 @@ class BookOut(BaseModel):
     bought_price_minor: int | None
     notes: str | None
     alert_kinds_disabled: list[str] = Field(default_factory=list)
-    muted_until: datetime | None
+    muted_until: UtcDateTime | None
     # Per-book scrape health. last_scrape_error is populated by the scheduler
     # when a source fails for this book and cleared on the next success.
-    last_scrape_attempt_at: datetime | None = None
+    last_scrape_attempt_at: UtcDateTime | None = None
     last_scrape_error: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
     stats: BookStatsOut
 
     @classmethod
@@ -493,7 +495,7 @@ def list_observations(
     rows = session.exec(stmt).all()
     items = [PriceObservationOut.from_obs(r) for r in rows]
     next_before = (
-        rows[-1].observed_at.isoformat() if len(rows) == limit and rows else None
+        to_z_iso(rows[-1].observed_at) if len(rows) == limit and rows else None
     )
     return ObservationsPage(items=items, next_before=next_before)
 

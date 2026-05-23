@@ -39,6 +39,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
+from book_alerter.api._serializers import UtcDateTime
 from book_alerter.api.deps import (
     ConfigDep,
     ConfigPathDep,
@@ -87,8 +88,8 @@ class SourceRunOut(BaseModel):
     """
     id: int
     source: str
-    started_at: datetime
-    finished_at: datetime | None
+    started_at: UtcDateTime
+    finished_at: UtcDateTime | None
     status: Literal["running", "success", "error", "partial"]
     books_attempted: int
     books_succeeded: int

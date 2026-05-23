@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
+from book_alerter.api._serializers import UtcDateTime, to_z_iso
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -111,12 +113,12 @@ class ProductOut(BaseModel):
     bought_price_minor: int | None
     notes: str | None
     alert_kinds_disabled: list[str] = Field(default_factory=list)
-    muted_until: datetime | None
+    muted_until: UtcDateTime | None
     track_used: bool
-    last_scrape_attempt_at: datetime | None = None
+    last_scrape_attempt_at: UtcDateTime | None = None
     last_scrape_error: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
     stats: BookStatsOut
 
     @classmethod
@@ -164,7 +166,7 @@ class ProductObservationOut(BaseModel):
     shipping_minor: int | None
     total_minor: int
     url: str
-    observed_at: datetime
+    observed_at: UtcDateTime
 
     @classmethod
     def from_obs(cls, obs: models.ProductObservation) -> ProductObservationOut:
@@ -372,7 +374,7 @@ def list_product_observations(
     rows = session.exec(stmt).all()
     items = [ProductObservationOut.from_obs(r) for r in rows]
     next_before = (
-        rows[-1].observed_at.isoformat() if len(rows) == limit and rows else None
+        to_z_iso(rows[-1].observed_at) if len(rows) == limit and rows else None
     )
     return ProductObservationsPage(items=items, next_before=next_before)
 
