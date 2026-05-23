@@ -68,17 +68,24 @@ function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
 // different cheapest offer, leaving the user staring at a snapshot price
 // they can't find anywhere in the table below.
 //
-// Match by (url + source + condition + seller) only — NOT total_minor.
-// total_minor on the live observation can drift by a penny between scrapes
-// while `current_best_*` still references the prior snapshot, and a
-// total-equality requirement would silently re-introduce the exact "no
-// matching row" failure this function exists to prevent.
+// Match the full (url, source, condition, seller, total_minor) tuple. A
+// single seller (e.g. World of Books on its own dot-com) sometimes lists
+// multiple copies at different prices under one product URL — without
+// `total_minor` the match is ambiguous and we'd pin the wrong row.
+// `book_stats` and `priceobservation` are both read from the same fresh
+// view/table on each render, so the tuple should always resolve to
+// exactly one observation; if it doesn't, returning null + falling back
+// to no-pin is strictly better than pinning a near-miss.
 function findCurrentBestObservation(
   book: Book,
   observations: PriceObservation[],
 ): PriceObservation | null {
   const s = book.stats;
-  if (s.current_best_url == null || s.current_best_source == null) {
+  if (
+    s.current_best_url == null ||
+    s.current_best_source == null ||
+    s.current_best_total_minor == null
+  ) {
     return null;
   }
   for (const o of observations) {
@@ -86,7 +93,8 @@ function findCurrentBestObservation(
       o.url === s.current_best_url &&
       o.source === s.current_best_source &&
       o.condition === s.current_best_condition &&
-      o.seller === s.current_best_seller
+      o.seller === s.current_best_seller &&
+      o.total_minor === s.current_best_total_minor
     ) {
       return o;
     }
