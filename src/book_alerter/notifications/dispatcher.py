@@ -48,11 +48,24 @@ class AlertPipeline:
         self.cfg = cfg
         self.session_factory = session_factory
         self.notifiers = notifiers
+        # Per-book lock so two source runs finishing within the dedup window
+        # cannot both evaluate the same book, race past `_filter_dedup`, and
+        # commit duplicate Alert rows. Pipelines on DISTINCT books still run
+        # in parallel; only same-book overlap serializes.
+        self._book_locks: dict[int, asyncio.Lock] = {}
+
+    def _lock_for(self, bid: int) -> asyncio.Lock:
+        lock = self._book_locks.get(bid)
+        if lock is None:
+            lock = self._book_locks[bid] = asyncio.Lock()
+        return lock
 
     async def run(self, book_ids: list[int]) -> None:
         for bid in book_ids:
-            with self.session_factory() as session:
-                await self._run_one(session, bid)
+            lock = self._lock_for(bid)
+            async with lock:
+                with self.session_factory() as session:
+                    await self._run_one(session, bid)
 
     async def _run_one(self, session: Session, bid: int) -> None:
         book = session.get(Book, bid)
@@ -169,7 +182,12 @@ class AlertPipeline:
             else None
         )
         delta = ""
-        if p50 is not None:
+        # `p50 > 0` guards a real degenerate case: when every historical
+        # observation totals £0 (free copies, parser quirk), p50 is 0 and
+        # the `(p50 - current) / p50` divisor blows up. The alert row has
+        # already been committed at this point, so a raise here would mean
+        # the user gets the DB row but no notification — silently broken.
+        if p50 is not None and p50 > 0:
             pct = 100 * (p50 - current) / p50
             delta = f" (was median {p50 / 100:.2f}, {pct:+.0f}%)"
         return (

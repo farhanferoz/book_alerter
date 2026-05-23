@@ -434,11 +434,39 @@ def delete_book(
     book = session.get(models.Book, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
-    window = _effective_window_days(book, cfg)
 
     if hard:
         stats = _stats_for(book, session, cfg)
         out = BookOut.from_book(book, stats, reco=cfg.recommendation)
+        # SQLite isn't running with `PRAGMA foreign_keys=ON` (intentional —
+        # the schema's FKs are declared but never set to CASCADE, so turning
+        # the pragma on would reject inserts that pre-date later migrations).
+        # That means a hard-delete here would leave PriceObservation, Alert,
+        # NotificationDelivery, and BookSignalState rows pointing at a
+        # vanished Book — orphans the dashboard renders as missing-book
+        # alerts. Cascade them by hand in the same transaction.
+        alert_ids = session.exec(
+            select(models.Alert.id).where(models.Alert.book_id == book.id)
+        ).all()
+        if alert_ids:
+            session.exec(
+                models.NotificationDelivery.__table__.delete().where(
+                    models.NotificationDelivery.alert_id.in_(alert_ids)  # type: ignore[union-attr]
+                )
+            )
+        session.exec(
+            models.Alert.__table__.delete().where(models.Alert.book_id == book.id)
+        )
+        session.exec(
+            models.PriceObservation.__table__.delete().where(
+                models.PriceObservation.book_id == book.id
+            )
+        )
+        session.exec(
+            models.BookSignalState.__table__.delete().where(
+                models.BookSignalState.book_id == book.id
+            )
+        )
         session.delete(book)
         session.commit()
         return out
@@ -585,6 +613,12 @@ def _keepa_backfill_blocking(
     em-dash so the gap is visible rather than papered over.
     """
     with session_factory() as session:
+        # If the book was hard-deleted between the BackgroundTasks dispatch
+        # and now, bail — otherwise we'd insert PriceObservation rows whose
+        # `book_id` FK points at nothing (the cascade-delete in delete_book
+        # has no way to wait for in-flight backfills).
+        if session.get(models.Book, book_id) is None:
+            return 0
         existing = session.exec(
             select(models.PriceObservation)
             .where(

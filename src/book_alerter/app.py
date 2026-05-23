@@ -4,12 +4,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
-
-import httpx
 
 from book_alerter.api import alerts, books, covers, health, sources
 from book_alerter.api import config as config_routes
@@ -93,8 +92,14 @@ def rebuild_runtime(app: FastAPI) -> None:
     prev = getattr(app.state, "scheduler", None)
     if not isinstance(prev, Scheduler):
         return
-    prev.shutdown()
+    # Build the new runtime BEFORE tearing down the old one. If construction
+    # raises (bad cron expr, unknown source name, etc.) the previous scheduler
+    # keeps serving — otherwise we'd leave the app scheduler-less and PUT
+    # /api/config could brick automation until the next process restart.
+    # `_build_runtime` overwrites `app.state.scheduler` on success; the prev
+    # ref we captured above is the one we shut down on the happy path.
     _build_runtime(app, app.state.config, engine)
+    prev.shutdown()
 
 
 @asynccontextmanager

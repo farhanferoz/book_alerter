@@ -99,6 +99,11 @@ class Scheduler:
         # is enforced by skipping rather than rescheduling, which avoids
         # APScheduler's awkward "delay next run" semantics.
         self._backoff_until: dict[str, datetime] = {}
+        # Per-source lock so a UI-triggered `trigger_now` (refetch button or
+        # `POST /api/sources/{name}/run`) cannot race the cron-fired job for
+        # the same source. APScheduler's `max_instances=1` only guards
+        # cron-to-cron overlap — not the manual trigger path.
+        self._source_locks: dict[str, asyncio.Lock] = {}
 
     def start(self) -> None:
         for name, _src in self._sources.items():
@@ -151,6 +156,15 @@ class Scheduler:
     def list_jobs(self) -> list[Any]:
         return self._sched.get_jobs()
 
+    @property
+    def running(self) -> bool:
+        """Mirror APScheduler's `running` so the deep healthcheck in
+        `api/health.py` actually probes scheduler liveness. Without this
+        proxy, `getattr(sched, "running", None)` on a real `Scheduler`
+        returned `None`, which the probe treats as "no probe available"
+        — so a crashed APScheduler never trips the 503."""
+        return self._sched.running
+
     def shutdown(self) -> None:
         self._sched.shutdown(wait=False)
 
@@ -159,6 +173,16 @@ class Scheduler:
         return await self._run_source(source_name)
 
     async def _run_source(self, source_name: str) -> int:
+        # Single-flight per source across BOTH cron and manual paths. Without
+        # this lock, `POST /api/sources/{name}/run` (or the refetch fan-out)
+        # could start a second `_run_source` while the cron run is in flight,
+        # producing parallel `SourceRun` rows and racing on the same shared
+        # InlineSource instance.
+        lock = self._source_locks.setdefault(source_name, asyncio.Lock())
+        async with lock:
+            return await self._run_source_locked(source_name)
+
+    async def _run_source_locked(self, source_name: str) -> int:
         sc = self._cfg.sources[source_name]
         src = self._sources[source_name]
         # Backoff gate: if we're inside the backoff window, skip this run.
@@ -199,7 +223,7 @@ class Scheduler:
                         candidates = await asyncio.wait_for(
                             src.fetch(book), timeout=sc.timeout_seconds + 5
                         )
-                    except (SourceError, asyncio.TimeoutError) as e:
+                    except (TimeoutError, SourceError) as e:
                         log.warning(
                             "source.book.error",
                             source=source_name,

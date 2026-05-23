@@ -215,6 +215,15 @@ def _parse_card(card: Node, fallback_url: str) -> ObservationCandidate | None:
                 except ValueError:
                     shipping_minor = None
 
+    # Guard against a parser quirk that would persist a negative item price.
+    # If shipping ended up larger than the visible total (rounding amplification
+    # in the USD-split branch, or a misread tail price in the text branch),
+    # roll back to "we don't know the split" rather than emitting an absurd
+    # negative item price downstream.
+    if shipping_minor is not None and price_minor < 0:
+        price_minor = visible_total_minor
+        shipping_minor = None
+
     clickout = fallback_url
     for anchor in card.css("a[href]"):
         href = anchor.attributes.get("href") or ""
