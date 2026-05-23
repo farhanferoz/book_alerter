@@ -1,6 +1,11 @@
 # Book Alerter
 
-Self-hosted second-hand book price tracker for the UK market. Watches a list of ISBNs across World of Books, Bookfinder, and Amazon UK, computes per-book percentile stats from observed prices, and fires alerts when a book hits your target, crosses the 25th-percentile "buy" threshold, or sets a new all-time low.
+Self-hosted price tracker for the UK market. Tracks two kinds of items:
+
+- **Books** across World of Books, Bookfinder, and Amazon UK (ISBN-keyed).
+- **Non-book Amazon products** across Amazon UK (ASIN-keyed), with optional Keepa historical backfill on add.
+
+Computes per-item percentile stats from observed prices and fires alerts when an item hits your target, crosses the 25th-percentile "buy" threshold, or sets a new all-time low. Both kinds share the same alert pipeline, notification channels, dashboard chrome, and signal logic — only the natural-key (ISBN vs ASIN) and the source mix differ.
 
 Designed to run as a single Docker container on a NAS behind Tailscale. SQLite for storage (one file, host-mounted), FastAPI + APScheduler for the backend, React + Tailwind for the UI. Money is stored as integer minor units throughout, so no float drift.
 
@@ -12,6 +17,7 @@ UK only at MVP. Currency is GBP. Prices are total landed cost (item + shipping) 
 - [Quickstart — local dev](#quickstart--local-dev)
 - [Quickstart — Docker deploy](#quickstart--docker-deploy-recommended-for-nas)
 - [Adding a tracked book](#adding-a-tracked-book)
+- [Adding a tracked product](#adding-a-tracked-product)
 - [Configuration](#configuration)
 - [Adding a new source](#adding-a-new-source)
 - [Notifications](#notifications)
@@ -23,10 +29,13 @@ UK only at MVP. Currency is GBP. Prices are total landed cost (item + shipping) 
 ## Architecture
 
 - **Backend**: FastAPI + SQLModel + Alembic + APScheduler, Python 3.12.
-- **Frontend**: Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui + TanStack Query / Table; built statically and served by FastAPI from the same port in production.
-- **Sources** (all inline Python, no subprocess): World of Books via `httpx` + `selectolax`; Bookfinder and Amazon UK via Playwright (Chromium).
-- **Notifiers**: in-app (always on, bypasses quiet hours, surfaced in the UI sidebar) and ntfy.sh (optional, push to phone).
-- **Storage**: one SQLite database on a host-mounted volume. Weekly `VACUUM INTO` snapshots kept in `data/backups/`.
+- **Frontend**: Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui + TanStack Query / Table; built statically and served by FastAPI from the same port in production. Two top-level routes: `/` (Books) and `/products`.
+- **Sources** (all inline Python, no subprocess):
+  - **Books**: World of Books via `httpx` + `selectolax`; Bookfinder and Amazon UK via Playwright (Chromium).
+  - **Products**: `amazon_uk_product` via Playwright (uses Product.asin directly, honours per-product `track_used` toggle).
+  - Sources declare `item_kinds: frozenset[ItemKind]`; the scheduler intersects that with `SourceConfig.item_kinds` to route per-kind iteration.
+- **Notifiers**: in-app (always on, bypasses quiet hours, surfaced in the UI sidebar) and ntfy.sh (optional, push to phone). Both notifiers receive book and product alerts via the same dispatcher.
+- **Storage**: one SQLite database on a host-mounted volume. Two parallel item stacks (Book / Product) with their own observations / alerts / signal-state tables; one shared NotificationDelivery table with a polymorphic FK enforced by CHECK constraint. Weekly `VACUUM INTO` snapshots kept in `data/backups/`.
 - **Deploy**: one Docker image, one compose file, one volume (`./data`).
 
 See `docs/superpowers/specs/2026-05-09-book-alerter-design.md` for the full design doc.
@@ -98,6 +107,60 @@ Optional fields on create / `PATCH /api/books/{id}`:
 - `notes` — freeform.
 
 `DELETE /api/books/{id}` soft-deletes (sets `status="archived"`); pass `?hard=true` to actually drop the row. Archived books are excluded from the default list — `GET /api/books?include_archived=true` brings them back.
+
+## Adding a tracked product
+
+Via the UI: navigate to **Products** in the top nav, click **Add product**, paste either a 10-character ASIN (`B07XYZ1234`) or any Amazon URL containing one (`https://www.amazon.co.uk/dp/B07XYZ1234`, `/gp/product/...`, etc.). The dialog auto-fetches title + image + brand via a one-shot Playwright scrape of the Amazon UK dp page, then shows a preview before you confirm.
+
+Via the API:
+
+```bash
+curl -X POST http://localhost:8000/api/products \
+  -H 'content-type: application/json' \
+  -d '{
+        "asin_or_url": "https://www.amazon.co.uk/dp/B07XYZ1234",
+        "title": "Anker PowerCore 10000",
+        "brand": "Anker",
+        "track_used": false
+      }'
+```
+
+`asin_or_url` accepts bare ASINs or full URLs across TLDs; the server normalises via `to_asin`. Returns 422 on garbage input, 409 on duplicate ASIN (with the existing `product_id` in the detail).
+
+Optional fields on create / `PATCH /api/products/{id}`:
+
+- `target_price_minor` — fires `target_hit` when the cheapest landed price falls at or below this value (within `target_tolerance_pct`).
+- `percentile_threshold` — per-product override of `recommendation.buy_percentile`.
+- `track_used` — when `true`, tracks used grades from the Amazon offer-listing page. Default `false` because most non-book products have no meaningful used market on Amazon. Useful for collectibles / vintage cameras / games.
+- `brand` — appears in the dashboard subtitle (where books show author).
+- `notes` — freeform.
+
+Other endpoints (mirror of `/api/books/*`):
+
+- `GET /api/products` — list (excludes archived; `?include_archived=true` to include).
+- `GET /api/products/{id}` — single product + stats.
+- `GET /api/products/{id}/observations?limit=100&before=<iso>&source=...` — cursor-paginated price history (newest first, deduplicated).
+- `POST /api/products/{id}/refetch` — fan out across every enabled product-serving source. Returns `{triggered, skipped}` with skip reasons `disabled` / `backoff_active` / `kind_unsupported`.
+- `GET /api/products/{id}/stats` — full stats bundle (same shape as `GET /api/books/{id}/stats`).
+- `POST /api/products/{id}/keepa-backfill` — one-shot Keepa PNG fetch + OCR + persist (idempotent; skipped if a `source='keepa'` row already exists). Also runs automatically as a background task after `POST /api/products`.
+- `GET /api/products/{id}/keepa-chart.png` — proxies the Keepa price-history PNG with a 24h server-side cache.
+
+To actually scrape products on the cron, add the source to `data/config.yaml`:
+
+```yaml
+sources:
+  amazon_uk_product:
+    enabled: true
+    item_kinds: [product]
+    schedule: "0 */6 * * *"
+    jitter_seconds: 600
+    per_book_delay_seconds: [5, 15]
+    concurrency: 1
+    timeout_seconds: 60
+    max_consecutive_errors: 5
+```
+
+Existing book-source configs do NOT need an `item_kinds` field — it defaults to `[book]` for backwards compatibility. A source whose `item_kinds` doesn't intersect its `Source.item_kinds` capability is a no-op cycle (visible in the SourceRun audit row).
 
 ## Configuration
 

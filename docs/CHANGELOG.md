@@ -8,6 +8,178 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ## 2026-05-23
 
+### Products feature (non-book Amazon items)
+
+Nine-commit feature add per the plan at
+`docs/superpowers/plans/2026-05-23-products-implementation.md`. Tracks
+non-book Amazon products end-to-end (scrape → observe → percentile-rank →
+alert → notify) using the same machinery as books, in **separate parallel
+tables** with a polymorphic NotificationDelivery FK and a per-product
+`track_used` toggle for the used market. Architecture decisions locked
+by the user up front: separate tables, configurable per-product condition,
+Amazon UK + Keepa, separate `/products` top-level tab.
+
+Cross-cutting durable rules established this pass: **prefer enum over
+string comparisons** (new `book_alerter.enums` StrEnum module) and
+**no code duplication** (book/product paths share `_compute_stats_impl`,
+`AlertPipeline` parameterised on `_AlertModels`, `_run_refetch`, the
+Amazon parser, the Keepa backfill helpers, etc.).
+
+- **`d0b48c8` — feat(products): P0 — enums, product models, migrations 0014/0015/0016.**
+  Shared StrEnums in new `enums.py` (Condition, AlertKind, ItemKind,
+  ItemStatus, SourceRunStatus, NotificationDeliveryStatus, BookFormat) —
+  wire format preserved. Migration 0014 adds Product / ProductObservation /
+  ProductAlert / ProductSignalState with ON DELETE CASCADE FKs from day
+  one. Migration 0015 makes `NotificationDelivery.alert_id` nullable, adds
+  nullable `product_alert_id` FK→productalert CASCADE, adds CHECK
+  `(alert_id IS NULL) <> (product_alert_id IS NULL)` enforcing exactly-one.
+  Migration 0016 installs `product_stats` view mirroring `book_stats`. 25
+  new tests pin enum wire format + CHECK constraint round-trip + migration
+  upgrade/downgrade cycle + cascade delete from ProductAlert.
+
+- **`96b51bd` — feat(products): P1 — generic Source ABC + Amazon parser split + product source.**
+  `Source.fetch(item: TrackedItem)` widened to a Protocol both Book and
+  Product satisfy. Book sources narrow with isinstance + assert (defence-
+  in-depth; scheduler item_kinds filter is primary). Amazon parser
+  extracted into module-level `_render_amazon_page` and
+  `_fetch_offers_for_asin(asin, *, source_name, timeout_s, track_used)`.
+  `parse_dp` / `parse_offer_listing` gain `source_name` kwarg for better
+  error messaging. New `AmazonUKProductInlineSource` uses Product.asin
+  directly (no ISBN conversion), honours `Product.track_used` (default
+  False = NEW offers only — used grades filter post-merge). New `to_asin`
+  normalizer accepts bare ASIN, full URLs across TLDs, `/dp/`,
+  `/gp/product/`, `/gp/aw/d/`, `/exec/obidos/asin/` path shapes. 31
+  unit tests on `to_asin`, 8 on the product source.
+
+- **`d8d5180` — feat(products): P2 — generic stats + AlertPipeline + scheduler routing.**
+  `stats.py` extracted `_compute_stats_impl(item_id, session, window_days, *, schema, ...)`
+  parameterised on `_ItemSchema` (observation_table / id_column / stats_view).
+  `compute_book_stats` and new `compute_product_stats` are 3-line wrappers.
+  `source_seller_global_shipping_medians` gains a `schema=` kwarg.
+  `AlertPipeline.__init__` takes a `_AlertModels` bundle (alert_model,
+  signal_state_model, stats_fn, delivery_fk_attr, ...). Two module-level
+  instances (`BOOK_MODELS` / `PRODUCT_MODELS`) cover the call sites. The
+  shared `_filter_dedup` / `_persist_state` / `_deliver` paths write to the
+  right tables via getattr() onto the bundle. Notifier surface widened to
+  AlertLike / ItemLike protocols. `detect_alert_kinds` and `compute_signal`
+  widened to `Book | Product`. Scheduler `__init__` takes
+  `alert_pipelines: dict[ItemKind, Callable]`. `_run_source_locked`
+  intersects `Source.item_kinds` ∩ `SourceConfig.item_kinds`, runs
+  `_run_kind_for_source` per kind, persists one SourceRun row covering all
+  kinds, routes affected ids to the matching pipeline. `_persist`
+  parameterised on ItemKind — books → PriceObservation, products →
+  ProductObservation. App wires both pipelines. 4 new pipeline tests + 2
+  new product-stats tests.
+
+- **`ff064ff` — feat(products): P3 — products API + ASIN-aware Keepa + asin-lookup.**
+  `api/products.py` mirror of `api/books.py`: list / create / get / patch /
+  delete (soft + hard), observations (cursor-paginated), refetch fan-out,
+  stats, Keepa backfill (BackgroundTask on create), Keepa chart proxy,
+  image proxy. `POST /api/products` accepts `{asin_or_url, ...}` with
+  `to_asin` normalization → 409 on duplicate. `PATCH` supports
+  `track_used` toggle. New `keepa.fetch_chart_png_for_asin(asin, ...)`
+  is the ASIN-keyed entry point; `fetch_chart_png(isbn13, ...)` is now a
+  thin wrapper. New `covers.fetch_and_cache_url(path, url, ...)` generic
+  helper; `fetch_and_cache(isbn13, url)` is a books-side thin wrapper.
+  New `ProductMetadata` dataclass + `fetch_amazon_uk_product_metadata(asin)`
+  Playwright helper. New `POST /api/metadata/asin-lookup` (422 / 502).
+  19 new API integration tests.
+
+- **`46c053a` — test(scheduler): P4 — end-to-end product iteration coverage.**
+  Stub product source proves the scheduler iterates Products when
+  `SourceConfig.item_kinds = [PRODUCT]`, writes ProductObservation rows,
+  routes affected ids to `alert_pipelines[ItemKind.PRODUCT]`, emits a
+  no-op SourceRun when capabilities don't intersect, and marks
+  Product.last_scrape_error on SourceError. 3 new tests.
+
+- **`c6f530f` — feat(products): P5 — Products tab, dashboard, detail page, Add modal.**
+  Regenerated `web/src/api/schema.ts`; the regen renamed
+  `RefetchResult` → `book_alerter__api__books__RefetchResult` (collision
+  with the new product side). Updated `BookRowMenu` + `ActionBar`. New
+  typed hooks `useProducts`, `useProduct`, `useProductObservations`. New
+  `<ProductsDashboard>` (`/products`) and `<ProductDetail>` (`/products/:id`):
+  deliberately leaner than the books equivalents (no signal pill / mini-
+  bars / chart at MVP). New `<AddProductModal>` paste-and-preview flow
+  using `POST /api/metadata/asin-lookup`. Top nav "Books / Products /
+  Alerts / Settings". Mount/unmount-on-open pattern for the Add modal
+  (state resets naturally; no side-effect-laden useEffect). Browser
+  smoke via Playwright confirms Products tab loads, empty state renders,
+  modal opens. Screenshots in /tmp/products-screens/. **Decision: NOT
+  refactoring BookCard → ItemCard at this scope** — leaner products UI
+  matches "generalizable, not overengineered" guidance.
+
+- **`0e81851` — test(products): P6 — scenario_07 product lifecycle e2e.**
+  Storyline-style script mirroring scenario_01 on the product side.
+  Covers: 14 descending observations clear `min_observations_for_signal`,
+  first pipeline run fires `target_hit` (and confirms `percentile_cross`
+  is correctly suppressed because TARGET_HIT takes signal precedence in
+  `compute_signal`), polymorphic delivery row routes via
+  `product_alert_id` not `alert_id`, no book Alert rows leak,
+  `ProductSignalState` persists cascade-imputed all_time_min (700 raw +
+  280 default shipping = 980), drop below prior min fires `new_low`,
+  mute suppresses further alerts. `helpers.py` gains `make_product` and
+  `add_product_observation`; `fresh_engine` installs both stats views.
+  `run_all.sh` 7/7.
+
+  (P6a dispatcher product-alert formatting: the existing `_format_message`
+  is already item-kind-agnostic — both Alert and ProductAlert + Book and
+  Product expose the same fields the formatter reads, so no branching
+  needed. The scenario above pins the contract.)
+
+- **`f388efa` — fix(products): tier-3 review — kind/item isolation, refetch scoping, image SSRF.**
+  Local tier-3 review fan-out flagged 4 actionable items; all addressed
+  with regression tests for the load-bearing ones.
+
+  **Per-kind exception isolation** (find-bugs HIGH): wrapped each kind's
+  `_run_kind_for_source` in its own try/except. Before: an exception
+  inside one kind's iteration jumped to the outer except and dropped
+  alert-pipeline calls for sibling kinds whose observations had already
+  committed. After: each kind's failure is recorded in `kind_exceptions`;
+  succeeded kinds still fire their pipelines; SourceRun.status reflects
+  partial / error per the kind-exception count.
+
+  **Per-item exception isolation** (find-bugs MEDIUM): `_one` now catches
+  every Exception (not just TimeoutError / SourceError) and charges the
+  individual item via `_record_item_failure`. `asyncio.gather` gains
+  `return_exceptions=True` as defence in depth. Before: any unexpected
+  exception (Playwright assertion, sqlite OperationalError mid-fetch,
+  source bug) aborted the entire kind's iteration. New regression test
+  pins this.
+
+  **Refetch fan-out scoping** (find-bugs MEDIUM): new shared
+  `_run_refetch(cfg, scheduler, *, kind)` helper. Both endpoints filter
+  sources to those whose `SourceConfig.item_kinds` contains the
+  refetched item's kind; non-matching sources are skipped with new
+  `reason="kind_unsupported"`. Before: a product refetch fired every
+  enabled source including book-only ones (wob, bookfinder) while the
+  actual product was never rescraped. Same gap closed on the books side.
+
+  **Image SSRF guard** (security MEDIUM): `product.image_url` is
+  user-controllable via `POST /api/products`. New `_is_safe_image_url`
+  rejects anything that isn't https:// pointing at an Amazon CDN host
+  (m.media-amazon.com, images-na.ssl-images-amazon.com, etc.). Before: a
+  malicious POST could plant `image_url=http://169.254.169.254/...` and
+  turn the image-proxy into an SSRF probe. Single-user NAS posture
+  mitigates impact, but validation belongs at the boundary regardless.
+
+  Plus convention cleanups: `ItemStatus.ARCHIVED` replaces
+  `"archived"` string comparisons in books.py + scheduler.py. Removed
+  the late-imports + `_ = (Condition, Path, HttpDep)` sentinel at the
+  bottom of products.py (lifted to top-level imports per ruff's I001).
+  `_product_image_cache_path` made side-effect-free.
+  `product_source_seller_global_shipping_medians` dead wrapper deleted;
+  `Stats = BookStats` alias added.
+
+  **Deferred from review** (logged but not actioned): find-bugs LOW
+  `to_asin` docstring drift; simplify findings on Keepa backfill
+  duplication (worth a separate cleanup commit) + scheduler routing
+  dataclass + Signal Literal → StrEnum migration; plan-deferred
+  `BookStats.book_id` field rename.
+
+**Net: 395 unit/integration passed / 302 baseline, 7/7 scenarios, ruff
+clean, ty clean, FE TS+ESLint+build clean, alembic head
+`0016_product_stats_view`, 0 FK violations.**
+
 ### Pre-deploy quality / perf / scraper-resilience pass
 
 Seven-commit hardening pass driven by a fresh codebase review against the bar

@@ -2,33 +2,38 @@
 
 > Lean session-resumption file. Don't bloat. Reference other docs for detail.
 
-**Status:** **MVP COMPLETE + Tier-2 reviewed × 2 + Amazon used-grades fix + real-HTML parser fix + pre-deploy quality/perf pass.** All plan phases 0–13 shipped. **2026-05-23 pre-deploy pass** landed 7 commits hardening correctness, performance, and scraper resilience: (1) per-source + per-book asyncio locks closing trigger-now-vs-cron and dispatcher dedup races; healthcheck now actually probes APScheduler liveness; `rebuild_runtime` builds the new runtime before tearing down the old; hard-delete cascades to all child tables; bookfinder rolls back to "unknown shipping" on rounding-amplified negative prices; alert message guards `p50 = 0` from ZeroDivisionError. (2) SQLite WAL/synchronous/busy_timeout/temp_store PRAGMAs on every connection; global shipping-median snapshot precomputed once per pipeline cycle instead of per book. (3) Cosmetic ruff backlog cleared end-to-end (zero findings). (4) **Bot-marker fragility fix**: Amazon + Bookfinder + WoB parsers now assert positive page markers before reporting 0 offers — a new anti-bot variant whose substring isn't in `BOT_MARKERS` now raises SourceError instead of silently biasing percentiles upward. (5) `_PRICE_AMOUNT_RE` Amazon fallback scoped to the `twister-plus-buying-options-price-data` div so the regex can't drift onto stray "frequently bought together" prices. (6) WoB JSON-LD + `var meta` extraction migrated from raw regex to selectolax DOM parsing. (7) Schema-enforced cascade: migration 0013 adds ON DELETE CASCADE to all book/alert FKs; `PRAGMA foreign_keys=ON` set per-connection; hand-cascade in `api/books.delete_book` removed. Every change live-validated against real books (id=1 / 4 / 7) — WoB/Amazon/Bookfinder still return their expected offer counts. **Next action: first deploy to NAS.**
+**Status:** **MVP COMPLETE + Tier-2/3 reviewed × 3 + pre-deploy quality/perf pass + PRODUCTS FEATURE shipped.** All book-side plan phases 0–13 shipped; the 2026-05-23 products plan (`docs/superpowers/plans/2026-05-23-products-implementation.md`) is end-to-end complete with tier-3 review fixes landed. The app now tracks non-book Amazon products (ASIN-keyed) end-to-end alongside books: scrape via `AmazonUKProductInlineSource`, persist to parallel tables (`Product` / `ProductObservation` / `ProductAlert` / `ProductSignalState`), share the alert/notifier/dispatcher machinery via `_AlertModels` parameterisation, surface via `/api/products/*` + `/products` FE routes, polymorphic `NotificationDelivery` (CHECK-enforced exactly-one of `alert_id` / `product_alert_id`). Tier-3 review caught and fixed two scheduler isolation bugs (per-kind + per-item exception leaks), a refetch fan-out scoping bug (was firing book-only sources on product refetches), and an SSRF gap on the user-supplied `product.image_url`. **Next action: first deploy to NAS** (unchanged — products are additive; existing deploy steps work as-is).
 
-**Branch:** `master` (no worktree, linear chain). 27 commits beyond the prior MVP-complete head (`bd4ffa5`).
-**Last update:** 2026-05-23, 7-commit pre-deploy pass (bot-marker fragility + buy-box scoping + WoB DOM migration + FK cascade migration). All tests green: 302 unit/integration + 6/6 scenarios + ruff clean + 0 FK violations.
+**Branch:** `master` (no worktree, linear chain). 36 commits beyond the prior MVP-complete head (`bd4ffa5`): 27 pre-products + 9 products.
+**Last update:** 2026-05-23, 9-commit products feature add. All tests green: **395 unit/integration + 7/7 scenarios + ruff clean + ty clean + FE TS+ESLint+build clean + 0 FK violations + alembic head `0016_product_stats_view`**.
 
 ## What ships
 
-- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Three sources (WoB via httpx, Bookfinder + Amazon UK via Playwright). Amazon UK renders BOTH the dp and the offer-listing page every fetch and merges with dedup (`(seller, condition, price)` key, concrete shipping wins over `None`), so the new buy-box and every used grade Amazon publishes both land in one observation list. Two notifiers (in-app always-on + ntfy.sh opt-in). Weekly SQLite backup via `VACUUM INTO`. Lifespan-scoped shared `httpx.AsyncClient` threaded through all non-Playwright HTTP. Per-book scrape health (`last_scrape_attempt_at` + `last_scrape_error`) on `Book`, written by the scheduler. Deep `/api/health` (DB `SELECT 1` + APScheduler `.running`) returns 503 on failure so Docker actually restarts an unhealthy container.
-- **Frontend** — Vite + React 19 + TS + Tailwind v4 + shadcn/ui + Recharts + TanStack Query + Monaco. Served by FastAPI from the same port in production. Dashboard shows imputed-shipping marker (`~+£X.XX*`) when the cascade fills in missing postage; per-book red dot when `last_scrape_error` is set. Monaco editor re-themes live via the new `useIsDark` hook.
-- **Stats** — `compute_book_stats` bounds the raw-observation scan to `max(WINDOW_DAYS, percentile_window_days)` days; `all_time_min/max` therefore mean "within window" (better signal for long-running deploys). Cascade-imputed shipping pulled via `seller_class()` (`amazon_fulfilled` vs `third_party`), with `(source, seller_class)` global medians gated by `min_global_median_observations`. `BookStats` wire shape now reads `windows[label_for_days(days)]` for percentiles; `current_percentile_rank` retained for custom (non-canonical) windows.
-- **Deployment** — Multi-stage Dockerfile (`mcr.microsoft.com/playwright/python:v1.59.0-noble` base + Node 20 builder), `docker-compose.yml` with healthcheck + log rotation + shm_size + PUID/PGID, `.env.example` with every knob documented. First boot writes `data/config.yaml` from defaults so the user has a discoverable seed file.
-- **Testing** — 273 unit/integration tests, 6 storyline-style end-to-end scenarios, 1 Docker boot smoke test, 2 live-network canaries (skipped by default).
+- **Backend** — FastAPI + SQLModel + Alembic + APScheduler + structlog. Four sources: WoB (httpx, books), Bookfinder (Playwright, books), Amazon UK book source (Playwright, books), and `AmazonUKProductInlineSource` (Playwright, products — uses Product.asin directly, honours `track_used`). All sources share the `Source.fetch(item: TrackedItem)` ABC; scheduler intersects `Source.item_kinds` ∩ `SourceConfig.item_kinds` to route per-kind iteration. One `AlertPipeline` implementation is parameterised on `_AlertModels` so books and products share dedup/quiet-hours/notifier dispatch with the right tables substituted in. Two notifiers (in-app always-on + ntfy.sh opt-in) — both take `AlertLike` / `ItemLike` protocols so book and product alerts route through the same channels. `NotificationDelivery` is polymorphic: exactly one of `alert_id` / `product_alert_id` is set per row (CHECK constraint). Weekly SQLite backup. Per-item scrape health (`last_scrape_attempt_at` + `last_scrape_error`) on `Book` AND `Product`. Deep `/api/health` (DB `SELECT 1` + APScheduler `.running`) returns 503 on failure.
+- **Frontend** — Vite + React 19 + TS + Tailwind v4 + shadcn/ui + Recharts + TanStack Query + Monaco. Two top-level routes: `/` (books dashboard, unchanged) and `/products` (new). Products dashboard is deliberately leaner than books (no signal pill / mini-bars / chart yet — extend if you want); `/products/:id` detail page has image + title header, refetch/archive/delete actions, target-price form, track-used toggle, recent-observations table. Add-product modal pastes ASIN or Amazon URL → debounced `/api/metadata/asin-lookup` → preview → confirm.
+- **Stats** — Single `_compute_stats_impl(item_id, session, window_days, *, schema, ...)` parameterised on `_ItemSchema` (observation_table / id_column / stats_view). `compute_book_stats` and `compute_product_stats` are 3-line wrappers. `source_seller_global_shipping_medians(session, *, schema=...)` likewise. Cascade-imputed shipping pulled via `seller_class()` (`amazon_fulfilled` vs `third_party`), with `(source, seller_class)` global medians gated by `min_global_median_observations`. `BookStats` dataclass is item-kind-agnostic — used for both kinds; the `book_id` field is reused as the item id (documented; full rename deferred).
+- **Enums** — New `src/book_alerter/enums.py` is the canonical home for shared StrEnums: `Condition`, `AlertKind`, `ItemKind`, `ItemStatus`, `SourceRunStatus`, `NotificationDeliveryStatus`, `BookFormat`. Wire format identical to the previous Literal strings. Field columns stay `Column(String, nullable=False)` (not `Column(Enum(...))`) to dodge SQLAlchemy's name-vs-value pitfall — equality via StrEnum's `str` subclassing works both ways.
+- **Polymorphic NotificationDelivery** — migration 0015 made `alert_id` nullable and added nullable `product_alert_id` FK→productalert CASCADE + the `(alert_id IS NULL) <> (product_alert_id IS NULL)` CHECK. Dispatcher writes the row with the kind-specific FK column via `_AlertModels.delivery_fk_attr` (`alert_id` for books, `product_alert_id` for products). Constraint test pins the four-case matrix.
+- **Refetch fan-out** — `_run_refetch(cfg, scheduler, *, kind)` (in `api/books.py`) is shared by both `POST /api/books/{id}/refetch` and `POST /api/products/{id}/refetch`. Sources whose `SourceConfig.item_kinds` doesn't include the kind being refetched are skipped with `reason="kind_unsupported"` (alongside the existing `disabled` / `backoff_active` reasons).
+- **Image SSRF guard** — `product.image_url` is user-controllable; `api/products.py::_is_safe_image_url` rejects anything that isn't `https://` pointing at an Amazon CDN host (m.media-amazon.com, images-na.ssl-images-amazon.com, images-eu.ssl-images-amazon.com, etc.) before the image proxy fetches it.
+- **Deployment** — Multi-stage Dockerfile (`mcr.microsoft.com/playwright/python:v1.59.0-noble` base + Node 20 builder), `docker-compose.yml` with healthcheck + log rotation + shm_size + PUID/PGID, `.env.example` with every knob documented. First boot writes `data/config.yaml` from defaults so the user has a discoverable seed file. No new env vars for the products feature; new YAML knob is `sources.<name>.item_kinds: [book|product]` (default `[book]` preserves the pre-products config).
+- **Testing** — 395 unit/integration tests (+93 over the prior 302 baseline), 7 storyline-style end-to-end scenarios, 1 Docker boot smoke test, 2 live-network canaries (skipped by default).
 
 ## Test layers — verify on return
 
 ```bash
 cd /home/ff235/dev/book_alerter
 
-# Layer 1: unit + integration (≤6 s)
+# Layer 1: unit + integration (≤8 s)
 uv run pytest -q
-# expected: 302 passed, 3 skipped, 1 deselected
+# expected: 395 passed, 3 skipped, 1 deselected
 #   - 3 skipped: live BookFinder/Amazon canaries (gated by BOOKFINDER_LIVE=1 / AMAZON_LIVE=1) + one VCR cassette gate
 #   - 1 deselected: e2e marker (opt-in only)
 
-# Layer 2: storyline scenarios (≤2 s)
+# Layer 2: storyline scenarios (≤3 s)
 bash tests/scenarios/run_all.sh
-# expected: ALL SCENARIOS PASS (6/6)
+# expected: ALL SCENARIOS PASS (7/7)
+# scenario_07_product_lifecycle is the product mirror of scenario_01
 
 # Layer 3: Docker boot smoke (~5 s, requires book_alerter:dev image)
 docker build -t book_alerter:dev .          # ~20 s cold; cached ~2 s
@@ -37,11 +42,16 @@ uv run pytest -m e2e tests/e2e/ -q
 
 # Frontend pipeline
 cd web && npx tsc --noEmit && npx eslint . && npm run build
-# expected: clean / clean / 505.12 kB main + 366.31 kB BookDetail chunk + 58.49 kB Advanced chunk
+# expected: clean / clean / ~603 kB main + ~372 kB BookDetail chunk + ~58 kB Advanced chunk
+# (chunk-size warning is pre-existing, not products-specific)
 
 # Database
 uv run alembic current
-# expected: 0013_fk_cascade_on_book_delete (head)
+# expected: 0016_product_stats_view (head)
+
+# FK pragma check
+uv run python -c "import sqlite3; con=sqlite3.connect('data/book_alerter.db'); cur=con.cursor(); cur.execute('PRAGMA foreign_keys=ON'); cur.execute('PRAGMA foreign_key_check'); print('violations:', len(cur.fetchall()))"
+# expected: violations: 0
 
 # First-time setup on a new machine
 uv run playwright install chromium
@@ -73,10 +83,10 @@ docker compose down
 
 ## What to do first
 
-1. **NAS deploy** (the next-session goal): bring the repo onto the target NAS, `id -u` / `id -g` on the host to get the right values for `PUID/PGID`, copy `.env.example` → `.env` and fill them (+ optional `GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`), ensure `./data` is owned by `PUID:PGID`, then `docker compose up -d`. First boot will apply migrations `0001..0013` against an empty SQLite and seed `data/config.yaml` from defaults; deep `/api/health` gates orchestrator readiness. Synology default UID/GID is `1026:100`; Unraid is `99:100`.
-2. **Browser smoke** — visit the deployed UI, add a book by ISBN, verify the dashboard renders the new fields (signal pill, mini-bars per window, imputed shipping marker, per-book red dot if a source fails).
-3. **Ntfy wiring** — set `NTFY_SERVER` + `NTFY_TOPIC` in `.env` (or via the Notifications settings tab), click "Send test". Channel won't be instantiated if topic is empty.
-4. **Live sources** — enable a source in Settings → Sources (default `config.yaml` ships `sources: {}` empty); WoB is the lowest-flake; Bookfinder and Amazon UK both Playwright-based with anti-bot exposure.
+1. **NAS deploy** (the next-session goal): bring the repo onto the target NAS, `id -u` / `id -g` on the host to get the right values for `PUID/PGID`, copy `.env.example` → `.env` and fill them (+ optional `GOOGLE_BOOKS_API_KEY`, `NTFY_TOPIC`), ensure `./data` is owned by `PUID:PGID`, then `docker compose up -d`. First boot will apply migrations `0001..0016` (the products tables + polymorphic notification delivery + product_stats view) against an empty SQLite and seed `data/config.yaml` from defaults; deep `/api/health` gates orchestrator readiness. Synology default UID/GID is `1026:100`; Unraid is `99:100`.
+2. **Browser smoke** — visit the deployed UI, add a book by ISBN AND add a product by ASIN/URL, verify both dashboards render (signal pill, mini-bars per window, imputed shipping marker, per-book/per-product red dot if a source fails). Add a product → confirm the Add-Product modal pre-fills title/image from the asin-lookup endpoint.
+3. **Ntfy wiring** — set `NTFY_SERVER` + `NTFY_TOPIC` in `.env` (or via the Notifications settings tab), click "Send test". Channel won't be instantiated if topic is empty. Both book and product alerts route through the same channels.
+4. **Live sources** — enable a source in Settings → Sources (default `config.yaml` ships `sources: {}` empty); WoB is the lowest-flake book source. To enable products, add an `amazon_uk_product` source with `item_kinds: [product]` and `enabled: true` in `config.yaml`. The `sources` UI editor may not yet surface `item_kinds`; edit the YAML directly via Settings → Advanced if so. Amazon UK product is Playwright-based with the same anti-bot exposure as the book Amazon source.
 
 ## Deferred follow-ups (NOT bugs — design choices or post-MVP scope)
 
@@ -120,6 +130,27 @@ Closed by the 2026-05-23 pre-deploy pass (no longer deferred):
 - ~~WoB `_LDJSON_RE` + `_META_RE` regexes are brittle to template tweaks~~ — shipped in `aa3516f`: both extraction paths migrated to selectolax DOM lookups; positive-marker check added consistent with Amazon/Bookfinder.
 - ~~FK cascade lived in app code, not the schema~~ — shipped in `8708cbb`: migration 0013 adds ON DELETE CASCADE to four FKs (priceobservation/alert/notificationdelivery/booksignalstate → book/alert); `PRAGMA foreign_keys=ON` per-connection in `db/session.py`. Audit confirmed 0 orphans across all child tables; row counts preserved across migration.
 - ~~ruff backlog of 72 cosmetic findings~~ — shipped in `4c555ba` + `7394747`: auto-fixed where safe, hand-wrapped 5 legit E501s, configured per-file ignores for Alembic-generated migrations + test-setup semicolon idioms + intentional typography (en-dashes for ranges, `×` for multiplication, `∨` for logical-or in math comments). `ruff check ./src ./tests` now reports zero findings.
+
+Deferrals new in 2026-05-23 products tier-3 review pass:
+
+- **Keepa backfill duplication** — `_keepa_backfill_blocking` in `api/books.py` and `api/products.py` are near-line-for-line clones (model class + helper-fn substitution). Tier-3 simplify reviewer flagged as a candidate for extraction into a single `_keepa_backfill_for_schema(item_id, identifier, *, session_factory, schema, fetch_png, dp_url_for)` parameterised on `_ItemSchema`. Worth doing; deferred to avoid mixing with the bug-fix commit.
+- **Scheduler kind routing dispatch in `_run_kind_for_source`** — two if/else blocks switch on `ItemKind` to pick `(item_model, identifier_attr, observation_model, item_fk_attr)`. Could be absorbed into `_ItemSchema` or a new `_KindRouting` keyed by `ItemKind`. Worth doing; the third dispatch-on-kind site after stats + dispatcher.
+- **`Signal` Literal → `StrEnum`** — `Signal = Literal["BUY","WATCH","WAIT","TARGET_HIT","INSUFFICIENT_DATA"]` in `stats.py` is still a Literal. Migrate to `StrEnum` in `enums.py` per the project enum-preferred rule. Bigger refactor (touches every alert-pipeline call site); not on the critical path.
+- **`BookStats.book_id` field rename to `item_id`** — wire-format field name leaks into product API responses via `BookStatsOut.book_id`. Plan-deferred. Add `@property def book_id` shim if renaming for the FE clients.
+- **FE `ProductsDashboard` / `ProductDetail` use local `priceCell` + `fmtDateTime` helpers** instead of the shared `formatMoneyMinor` / `formatDateTime` in `web/src/lib/format.ts`. Reach for the shared helpers when adding the next FE iteration.
+- **`to_asin` docstring drift** — the `amzn.eu/d/<code>` short-link example in the docstring describes behaviour the regex doesn't support (10-char ASIN exact match; amzn.eu short codes are 8-9 chars and need an HTTP redirect to resolve). Either drop the example or implement the resolution. Docstring noise; behaviour unchanged.
+- **`refetch_book` source filtering by kind** — symmetric to the product-side fix that prompted this section. Book refetches now correctly skip product-only sources via the shared `_run_refetch` helper, so this is **closed** but worth flagging that the fix touched both endpoints.
+- **Amazon source rate-limit on the doubled scrape volume** — adding products means each scheduler cycle hits Amazon for `N_books + N_products` ASINs. Per-source `max_consecutive_errors` gate already exists; consider a per-source-per-kind concurrency cap if anti-bot tightens.
+- **Per-product scrape health vs per-book** — same last-write-wins flicker design as books (doc'd in the books deferred list above). Applies symmetrically to products.
+
+Closed by the 2026-05-23 products tier-3 review pass (no longer deferred):
+
+- ~~Per-kind exception in scheduler dropped sibling kind's alert pipeline~~ — shipped in `f388efa`: each kind's `_run_kind_for_source` wrapped in its own try/except; `kind_exceptions` list drives SourceRun status. Regression test in `test_scheduler_products.py::test_scheduler_isolates_per_item_unexpected_exception`.
+- ~~Per-item exception in `_one` aborted entire kind iteration~~ — shipped in `f388efa`: `_one` catches every `Exception` and charges the item via `_record_item_failure`; `asyncio.gather` gains `return_exceptions=True`. Regression test pins the contract.
+- ~~`POST /api/products/{id}/refetch` fanned out to book-only sources~~ — shipped in `f388efa`: shared `_run_refetch(cfg, scheduler, *, kind)` helper filters sources by `SourceConfig.item_kinds`. New `RefetchSkipped.reason="kind_unsupported"`. Books-side gap closed in the same commit.
+- ~~User-controllable `product.image_url` → SSRF probe via image proxy~~ — shipped in `f388efa`: `_is_safe_image_url` rejects non-https or non-Amazon-CDN hosts before the proxy fetches.
+- ~~`api/products.py` late-imports + `_ = (Condition, Path, HttpDep)` sentinel block~~ — shipped in `f388efa`: lifted to top-of-file imports per ruff I001; `_product_image_cache_path` is now pure (no mkdir side effect).
+- ~~`product_source_seller_global_shipping_medians` dead wrapper~~ — shipped in `f388efa`: deleted. `Stats = BookStats` alias added.
 
 Closed by the 2026-05-16 review pass (no longer deferred):
 
@@ -176,27 +207,67 @@ _None._ All blockers from Phase 1 resolved.
 - **FE typed client** (Phase 9.2): `web/src/api/client.ts` exports `apiGet/Post/Patch/Put/Delete<P>` typed against generated `paths` from `web/src/api/schema.ts`. No `any` anywhere. Regen via `cd web && npm run gen:api` against a running backend.
 - **FE simplify-pass shared helpers** (Phase 10/11 simplifies): `<Skeleton>` primitive at `web/src/components/ui/skeleton.tsx`; `formatErrorMessage` in `web/src/lib/utils.ts`; `<SignalPill>` lifted to `web/src/components/books/signal.tsx`; `diffToRows` + `formatPutError(Message)` in `web/src/lib/config-diff.ts`; `useSavedFlash` in `web/src/hooks/useSavedFlash.ts`. Use these before writing local copies.
 - **Mount-key remount pattern** (Phase 11): `<SourceCard>`, `Recommendation`, `Notifications` all use a composite mount key built from server fields. After a successful PATCH + cache invalidate, the new server snapshot becomes the mount key → component remounts → `useState(server)` re-initialises cleanly. Sidesteps `react-hooks/set-state-in-effect` without a `null`-sentinel maze.
+- **(Products) Shared StrEnums in `src/book_alerter/enums.py`.** New typed string sets default to StrEnum. Existing book-side `Literal[...]` types were migrated to StrEnum where they're shared with products (`Condition`, `AlertKind`, `ItemStatus`, `BookFormat`, etc.). Wire format unchanged; `Column(String, nullable=False)` retained so storage = `.value` (not `.name`).
+- **(Products) `_AlertModels` parameterisation.** `AlertPipeline.__init__(... , models: _AlertModels)`. Two module-level bundles (`BOOK_MODELS` / `PRODUCT_MODELS`) in `notifications/dispatcher.py`. Every kind-specific class + the dispatch table for `NotificationDelivery.delivery_fk_attr` lives there. Adding a third item kind = add a third `_AlertModels`.
+- **(Products) `_ItemSchema` parameterisation.** `stats.py` uses `_BOOK_SCHEMA` / `_PRODUCT_SCHEMA` to substitute `observation_table` / `id_column` / `stats_view` in the SQL templates. Hardcoded constants — no user input reaches the substitution.
+- **(Products) `TrackedItem` Protocol** in `sources/base.py` is the surface book + product sources both program against. Each source's `fetch(item)` asserts `isinstance(item, Book|Product)` before unpacking — defence in depth; scheduler's `item_kinds` intersection is the primary filter.
+- **(Products) Per-kind + per-item exception isolation in scheduler.** `_run_source_locked` wraps each kind in its own try/except so a sibling kind's crash doesn't drop alert-pipeline calls for the kinds that succeeded. `_one` catches every `Exception` (not just `TimeoutError`/`SourceError`) and charges the single item via `_record_item_failure`. `asyncio.gather(..., return_exceptions=True)` for defence in depth.
+- **(Products) `_run_refetch(cfg, scheduler, *, kind)`** in `api/books.py` is shared by both refetch endpoints. Sources whose `SourceConfig.item_kinds` doesn't contain the kind are skipped with `reason="kind_unsupported"`.
+- **(Products) `product.image_url` is user-controllable** via `POST /api/products`. The image proxy at `GET /api/products/{id}/image` runs `_is_safe_image_url` (https + Amazon CDN host allowlist) before fetching to prevent SSRF.
+- **(Products) Polymorphic `NotificationDelivery`** — exactly one of `alert_id` / `product_alert_id` is non-NULL per row, enforced by `ck_notificationdelivery_alert_xor_product` CHECK constraint (migration 0015 + `__table_args__` in `db/models.py`). Dispatcher writes via `_AlertModels.delivery_fk_attr`.
 
 ## Working agreements (do NOT re-decide)
 
 - Tech stack: Python 3.12 / uv / FastAPI / SQLModel / Alembic / APScheduler / structlog · React 19 / Vite / TS / Tailwind v4 / shadcn/ui / Recharts · Playwright (for browser-required sources)
 - Deployment: Docker (multi-stage) on NAS; Tailscale-only access; HTTP Basic optional but off by default
-- Sources at MVP: WoB UK (inline `httpx`), Bookfinder (inline Playwright), Amazon UK (inline Playwright). **Architecture revision 2026-05-14**: original design called for Go source-CLIs generated via `printing-press` + orchestrated through a `SubprocessSource` ABC; that path was abandoned for Phase 8.2 (AWS WAF `mp_verify` defeated every static-cookie / pure-Go-solver replay) and removed entirely. `SubprocessSource` deleted; no Go binaries; no printing-press dependency.
+- Sources at MVP: WoB UK (inline `httpx`, books), Bookfinder (inline Playwright, books), Amazon UK (inline Playwright, books), **AmazonUKProductInlineSource (inline Playwright, products)** (added 2026-05-23). **Architecture revision 2026-05-14**: original design called for Go source-CLIs generated via `printing-press` + orchestrated through a `SubprocessSource` ABC; that path was abandoned for Phase 8.2 (AWS WAF `mp_verify` defeated every static-cookie / pure-Go-solver replay) and removed entirely. `SubprocessSource` deleted; no Go binaries; no printing-press dependency.
 - Push at MVP: **ntfy only**. Telegram + Pushover deferred (no schema slots yet).
 - Region: UK only at MVP; schema pluggable.
-- Identity: ISBN-pinned; `isbnlib` normalises ISBN-10 → ISBN-13.
-- Recommendation: hybrid (percentile default + per-book target override); `INSUFFICIENT_DATA` cold-start.
-- Stats: `book_stats` SQL view + `compute_book_stats()` Python helper (no materialised stats table).
+- Identity: ISBN-pinned for books; ASIN-pinned for products. `isbnlib` normalises ISBN-10 → ISBN-13; `sources/normalizers.py::to_asin` accepts bare ASINs and full Amazon URLs across TLDs (`/dp/`, `/gp/product/`, `/gp/aw/d/`, etc.).
+- Item kinds: **books** + **products** (added 2026-05-23). Separate parallel tables (`Book` ↔ `Product`, `PriceObservation` ↔ `ProductObservation`, `Alert` ↔ `ProductAlert`, `BookSignalState` ↔ `ProductSignalState`); polymorphic `NotificationDelivery`. Adding a third kind requires the same pattern: new tables + new `_AlertModels` bundle + new `_ItemSchema` + new scheduler kind in `_run_kind_for_source`.
+- Recommendation: hybrid (percentile default + per-book/per-product target override); `INSUFFICIENT_DATA` cold-start.
+- Stats: `book_stats` + `product_stats` SQL views + `compute_book_stats()` / `compute_product_stats()` Python helpers (no materialised stats table). Both wrap a single `_compute_stats_impl` parameterised on `_ItemSchema`.
 - Money: integer minor units (pence); never floats.
 - Time: UTC in DB; render local in UI.
 
 ## Key files
 
 - `README.md` — user-facing onboarding (Phase 13.2).
-- `docs/superpowers/specs/2026-05-09-book-alerter-design.md` — design spec (authoritative for behaviour).
-- `docs/superpowers/plans/2026-05-09-book-alerter-implementation.md` — task-by-task implementation plan.
+- `docs/superpowers/specs/2026-05-09-book-alerter-design.md` — design spec (authoritative for book behaviour).
+- `docs/superpowers/plans/2026-05-09-book-alerter-implementation.md` — task-by-task implementation plan for the book MVP.
+- `docs/superpowers/plans/2026-05-23-products-implementation.md` — task-by-task implementation plan for the products feature. **Complete** as of 2026-05-23 (commit `f388efa`).
 - `docs/CHANGELOG.md` — append-only log of completed implementation tasks (commits, deviations).
 - `RESUME.md` — this file (cursor + open decisions only).
+
+### Products-specific key files (added 2026-05-23)
+
+- `src/book_alerter/enums.py` — single home for shared StrEnums.
+- `src/book_alerter/db/models.py` — Book + Product stacks side-by-side; polymorphic `NotificationDelivery` with `__table_args__` CHECK constraint.
+- `src/book_alerter/db/views.py` — `BOOK_STATS_VIEW_SQL` + `PRODUCT_STATS_VIEW_SQL` (mirror views kept as separate strings, not generated).
+- `src/book_alerter/db/migrations/versions/0014_product_tables.py` — adds the four product tables with ON DELETE CASCADE.
+- `src/book_alerter/db/migrations/versions/0015_notif_delivery_polymorphic.py` — `alert_id` nullable + `product_alert_id` + CHECK.
+- `src/book_alerter/db/migrations/versions/0016_product_stats_view.py` — installs `product_stats` view.
+- `src/book_alerter/sources/base.py` — `Source.fetch(item: TrackedItem)`, `Source.item_kinds` ClassVar.
+- `src/book_alerter/sources/amazon.py` — shared `_render_amazon_page` / `_fetch_offers_for_asin`; `AmazonUKInlineSource` (book) + `AmazonUKProductInlineSource` (product).
+- `src/book_alerter/sources/normalizers.py` — `to_asin(raw)` + `amazon_uk_product_dp_url(asin)`.
+- `src/book_alerter/stats.py` — `_ItemSchema`, `_compute_stats_impl`, `compute_book_stats` / `compute_product_stats`, `Stats` alias.
+- `src/book_alerter/notifications/dispatcher.py` — `_AlertModels`, `BOOK_MODELS`, `PRODUCT_MODELS`, parameterised `AlertPipeline`.
+- `src/book_alerter/notifications/base.py` — `AlertLike` + `ItemLike` protocols.
+- `src/book_alerter/scheduler.py` — `alert_pipelines: dict[ItemKind, Callable]`, `_run_kind_for_source`, per-kind + per-item exception isolation, `_persist` parameterised on `ItemKind`.
+- `src/book_alerter/api/products.py` — products CRUD + observations + refetch + stats + Keepa + image proxy with `_is_safe_image_url`.
+- `src/book_alerter/api/books.py` — shared `_run_refetch(cfg, scheduler, *, kind)` lives here.
+- `src/book_alerter/api/metadata.py` — `POST /api/metadata/asin-lookup`.
+- `src/book_alerter/keepa.py` — `fetch_chart_png_for_asin(asin, ...)` is the ASIN-keyed entry point; `fetch_chart_png(isbn13, ...)` is the books-side wrapper.
+- `src/book_alerter/covers.py` — `fetch_and_cache_url(path, url, ...)` is the generic helper; `fetch_and_cache(isbn13, url)` is the books wrapper.
+- `web/src/pages/ProductsDashboard.tsx` + `ProductDetail.tsx`.
+- `web/src/components/products/AddProductModal.tsx`.
+- `web/src/hooks/useProducts.ts` + `useProduct.ts`.
+- `tests/integration/test_scheduler_products.py` — pins the per-item exception isolation contract.
+- `tests/integration/test_product_alert_pipeline.py` — pins polymorphic delivery FK routing.
+- `tests/integration/test_notif_delivery_polymorphic.py` — pins the CHECK constraint matrix.
+- `tests/integration/test_migrations.py` — migration upgrade/downgrade round-trip.
+- `tests/integration/api/test_products_api.py` — full CRUD coverage.
+- `tests/scenarios/scenario_07_product_lifecycle.py` — storyline-style e2e for the product alert lifecycle.
 
 ## Conventions for autonomous work
 

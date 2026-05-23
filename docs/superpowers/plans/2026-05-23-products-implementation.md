@@ -1,6 +1,8 @@
 # Products (non-book Amazon items) — Implementation Plan
 
-> **Status:** In progress, 2026-05-23. **Predecessor:** `2026-05-09-book-alerter-implementation.md` (book MVP) is the spine this builds on; everything here is incremental.
+> **Status: COMPLETE 2026-05-23.** All phases P0..P7 shipped in commits `d0b48c8..f388efa` (9 commits, +3700 LOC, 3 migrations, 93 new tests, 1 new scenario, tier-3 review applied). See `docs/CHANGELOG.md` for the per-commit log and `RESUME.md` for the cursor + deferred follow-ups.
+>
+> **Predecessor:** `2026-05-09-book-alerter-implementation.md` (book MVP) is the spine this builds on; everything here is incremental.
 
 **Goal:** Add a Products section to the app that tracks non-book Amazon products (ASIN-keyed) end-to-end — scrape, observe, percentile-rank, alert, notify — using the same machinery as books, with parallel tables and per-product condition scope. Adds a Keepa historical backfill on add so a freshly-added product immediately has chartable history.
 
