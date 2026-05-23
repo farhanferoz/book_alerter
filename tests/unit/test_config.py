@@ -10,7 +10,10 @@ def test_config_defaults_when_no_file(tmp_path):
     assert cfg.recommendation.min_days_of_history == 7
     assert cfg.recommendation.min_observations_for_signal == 1
     assert cfg.notifications.alert_kinds_enabled == ["target_hit", "percentile_cross", "new_low"]
-    assert cfg.sources == {}
+    assert set(cfg.sources) == {"wob", "bookfinder", "amazon", "amazon_uk_product"}
+    assert all(s.enabled for s in cfg.sources.values())
+    assert cfg.sources["amazon_uk_product"].item_kinds == ["product"]
+    assert cfg.sources["wob"].item_kinds == ["book"]
 
 
 def test_config_round_trip(tmp_path):

@@ -145,11 +145,23 @@ class BackupConfig(BaseModel):
     retain: int = Field(default=7, ge=1)
 
 
+def _default_sources() -> dict[str, SourceConfig]:
+    return {
+        "wob": SourceConfig(),
+        "bookfinder": SourceConfig(timeout_seconds=90),
+        "amazon": SourceConfig(timeout_seconds=90),
+        "amazon_uk_product": SourceConfig(
+            timeout_seconds=90,
+            item_kinds=[ItemKind.PRODUCT],
+        ),
+    }
+
+
 class Config(BaseModel):
     config_version: int = 1
     recommendation: RecommendationConfig = Field(default_factory=RecommendationConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
-    sources: dict[str, SourceConfig] = Field(default_factory=dict)
+    sources: dict[str, SourceConfig] = Field(default_factory=_default_sources)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
 
