@@ -52,7 +52,12 @@ def _extract_sku_availability(html: str) -> dict[str, bool]:
             if not isinstance(item, dict) or item.get("@type") != "Product":
                 continue
             offers = item.get("offers")
-            offer_list = offers if isinstance(offers, list) else [offers] if isinstance(offers, dict) else []
+            if isinstance(offers, list):
+                offer_list = offers
+            elif isinstance(offers, dict):
+                offer_list = [offers]
+            else:
+                offer_list = []
             for o in offer_list:
                 sku = o.get("sku") if isinstance(o, dict) else None
                 if not sku:

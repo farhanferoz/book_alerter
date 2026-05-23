@@ -137,7 +137,7 @@ def _ocr_region(
         import pytesseract
     except ImportError:
         return None
-    x0, y0, x1, y1 = box
+    x0, y0, _x1, _y1 = box
     crop = img.crop(box)
     if upscale != 1:
         crop = crop.resize((crop.width * upscale, crop.height * upscale), Image.LANCZOS)
@@ -338,7 +338,7 @@ def _trace_series(
     price_lo: int,
     price_hi: int,
 ) -> list[ExtractedObservation]:
-    h, w, _ = plot_int16.shape
+    _h, w, _ = plot_int16.shape
     tgt = np.array(target, dtype=np.int16)
     diff = np.abs(plot_int16 - tgt).max(axis=2)  # (h, w)
     mask = diff <= _COLOR_TOLERANCE
@@ -350,7 +350,7 @@ def _trace_series(
         # The line is ~2px thick (anti-aliased); use the centre. Multiple
         # columns mapping to the same calendar date are deduped in
         # _compact_daily.
-        pixel_y_full = int(round(ys.mean())) + _PLOT_TOP
+        pixel_y_full = round(ys.mean()) + _PLOT_TOP
         pixel_x_full = col + _PLOT_LEFT
         price = y_calib(pixel_y_full)
         if price < price_lo or price > price_hi:

@@ -30,7 +30,9 @@ BASE_URL = "http://127.0.0.1:18000"
 CONTAINER = "book_alerter_e2e"
 
 
-def _compose(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def _compose(
+    *args: str, check: bool = True, capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     cmd = ["docker", "compose", "-f", str(COMPOSE_FILE), *args]
     return subprocess.run(
         cmd,

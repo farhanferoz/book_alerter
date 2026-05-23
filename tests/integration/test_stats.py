@@ -1,6 +1,7 @@
 """Tests for `compute_book_stats` — reads from the `book_stats` view."""
 from __future__ import annotations
 
+import itertools
 from datetime import UTC, datetime, timedelta
 
 from hypothesis import given
@@ -11,8 +12,11 @@ from book_alerter.db import models
 from book_alerter.stats import BookStats, compute_book_stats, seller_class
 
 
-def _add_obs(session: Session, *, book_id: int, total: int, source: str = "wob",
-             observed_at: datetime | None = None, is_duplicate_of: int | None = None) -> models.PriceObservation:
+def _add_obs(
+    session: Session, *, book_id: int, total: int, source: str = "wob",
+    observed_at: datetime | None = None,
+    is_duplicate_of: int | None = None,
+) -> models.PriceObservation:
     # shipping_minor=0 (not None) so the row is treated as "buyable" by the
     # book_stats view's current_best CTE. Tests that need a known shipping
     # value pass it explicitly via other helpers.
@@ -182,7 +186,7 @@ def test_percentile_monotonicity_property(values):
     )
     # Sample a few percentile pairs.
     pcts = [1, 10, 25, 50, 75, 90, 99]
-    for a, b in zip(pcts, pcts[1:]):
+    for a, b in itertools.pairwise(pcts):
         pa = stats.percentile_at(a)
         pb = stats.percentile_at(b)
         assert pa is not None and pb is not None

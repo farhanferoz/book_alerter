@@ -57,7 +57,7 @@ def transient_stats():
         rank = current_percentile_rank
         if rank is None and totals and current_best_total_minor is not None:
             below = sum(1 for t in totals if t <= current_best_total_minor)
-            rank = int(round((below / len(totals)) * 100))
+            rank = round((below / len(totals)) * 100)
         # Synthesize the "3m" window so callers that exercise the dispatcher
         # alert-message path (reads windows[cfg_label].p50) get the median
         # they passed in. Other windows stay empty.

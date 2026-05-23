@@ -23,8 +23,8 @@ from book_alerter.db.models import (
 from book_alerter.notifications.base import Notifier
 from book_alerter.stats import (
     BookStats,
-    Signal,
     SellerClass,
+    Signal,
     compute_book_stats,
     label_for_days,
     source_seller_global_shipping_medians,

@@ -175,7 +175,7 @@ def _percentile_rank(sorted_totals: list[int], value: int) -> int:
     if not sorted_totals:
         return 0
     below = bisect_right(sorted_totals, value)
-    return int(round((below / len(sorted_totals)) * 100))
+    return round((below / len(sorted_totals)) * 100)
 
 
 def _imputed_shipping(

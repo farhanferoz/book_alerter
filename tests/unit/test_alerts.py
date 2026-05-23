@@ -19,7 +19,9 @@ def test_target_hit_fires_when_current_at_or_below_target(
     assert "percentile_cross" not in out
 
     stats_below = transient_stats(observation_count=5, current_best_total_minor=500)
-    out2, _ = detect_alert_kinds(book, stats_below, prev_signal=None, prev_all_time_min=None, cfg=cfg)
+    out2, _ = detect_alert_kinds(
+        book, stats_below, prev_signal=None, prev_all_time_min=None, cfg=cfg,
+    )
     assert "target_hit" in out2
     assert "percentile_cross" not in out2
 

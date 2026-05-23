@@ -101,7 +101,8 @@ def main() -> int:
                 models.BookSignalState.book_id == book_id
             )
         ).one_or_none()
-    r.step(f"After mute: alerts={[a.kind for a in alerts]} state={state.last_signal if state else None}")
+    last_signal = state.last_signal if state else None
+    r.step(f"After mute: alerts={[a.kind for a in alerts]} state={last_signal}")
     r.expect(
         any(a.kind == "target_hit" for a in alerts),
         f"target_hit fires after mute lifts (got {[a.kind for a in alerts]})",
