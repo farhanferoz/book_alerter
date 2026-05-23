@@ -109,6 +109,41 @@ spanning the parser fixture changes, dispatcher message wording,
 Z-suffix serializer behaviour, `_parse_delivery_text` shape, and
 `_extract_dp_condition` corner cases.
 
+Follow-up: book_stats view freshness gate + tiebreaker
+(commits `c00f93f` + `ded49bb`)
+
+User reported "best price is higher than the prices in list" after the
+parser-fix rollout: book 1 (Gemini and Mercury) showed
+`CURRENT BEST £28.60 AMAZON · new · Amazon Resale` while the source
+breakdown listed an `AMAZON · used_vg · £24.62 · Amazon Resale` row
+from the same scrape. Two compounding view-side bugs surfaced:
+
+1. **Stale partition** — the pre-deploy parser had classified Amazon
+   Resale as `condition=new`. After commit `f24668b` it correctly
+   tags Amazon Resale as `used_vg`, so the `(amazon, new, Amazon
+   Resale)` partition stopped receiving fresh rows. The old £28.60
+   `new` row sat as latest-of-its-partition indefinitely and won
+   `MIN(total_minor)` against truly-current rows.
+2. **Non-deterministic ROW_NUMBER** — within `(amazon, used_vg,
+   Amazon Resale)`, parse_dp and the offer-listing parser both
+   emitted a row at the same `observed_at` (£24.62 + £28.60).
+   `ROW_NUMBER() OVER ... ORDER BY observed_at DESC` had no
+   tiebreaker, so SQLite picked rn=1 arbitrarily — sometimes the
+   cheaper row won, sometimes the dearer.
+
+Migration `0017_views_freshness_gate` (commit `c00f93f`) rebuilds
+both `book_stats` and `product_stats` to (a) JOIN on a
+`latest_scrape_per_source` CTE so only rows from each (book, source)
+pair's most recent scrape enter `latest_per_offer`, and (b) extend
+the ROW_NUMBER `ORDER BY` to `observed_at DESC, total_minor ASC, id
+ASC` so within-partition ties resolve to the cheapest total
+(commit `ded49bb` rides on the same migration since the NAS hasn't
+yet seen 0017 — the canonical DDL is loaded from views.py at
+apply-time). +1 regression test reproducing the production failure
+exactly. Verified end-to-end against a WAL-checkpointed copy of the
+production DB: all 9 books now report current_best = the actual
+MIN(total_minor) across fresh observations.
+
 ### Deferred-list cleanup pass
 
 One-commit refactor closing six items from the post-products deferred list
