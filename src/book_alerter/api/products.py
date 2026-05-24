@@ -24,13 +24,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from book_alerter.api._serializers import UtcDateTime, to_z_iso
-
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_backfill
+from book_alerter.api._serializers import UtcDateTime, to_z_iso
 from book_alerter.api.books import (
     BookStatsOut,  # shape is item-agnostic
     _run_refetch,

@@ -32,7 +32,6 @@ Design notes:
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status

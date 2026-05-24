@@ -677,7 +677,7 @@ def _parse_delivery_text(raw: str) -> int | None:
         return None
     m = _DELIVERY_PRICE_GBP_RE.search(text)
     if m:
-        return int(round(float(m.group(1).replace(",", "")) * 100))
+        return round(float(m.group(1).replace(",", "")) * 100)
     # No concrete price seen — accept "FREE" / "free delivery" as
     # genuinely-free delivery. Bare "FREE" appears in the
     # `data-csa-c-delivery-price` data attribute (controlled vocabulary).
