@@ -295,12 +295,11 @@ def test_parse_offer_listing_real_capture_shipping_extracted_for_all_rows() -> N
 
 
 def test_parse_offer_listing_clickout_not_shipping_help() -> None:
-    """Regression for `_extract_clickout` returning Amazon's shipping-help
+    """Regression for the offer clickout returning Amazon's shipping-help
     page (`/gp/help/customer/display.html?nodeId=GQ6B6RH72AX8D2TD`)
-    instead of the seller/offer page. The shipping-help anchor sits
-    first in every modern AOD row, so the previous "first anchor wins"
-    logic always picked it up. After the fix, no offer URL should
-    contain `/gp/help/customer/`.
+    instead of the offer page. The shipping-help anchor sits first in
+    every modern AOD row, so an earlier "first anchor wins" logic picked
+    it up. No offer URL should contain `/gp/help/customer/`.
     """
     for fname in (
         "9780241638194-uk-offer-listing-real.html",
@@ -317,25 +316,26 @@ def test_parse_offer_listing_clickout_not_shipping_help() -> None:
         )
 
 
-def test_parse_offer_listing_seller_anchors_resolve_to_marketplace_pages() -> None:
-    """Marketplace seller rows on real Amazon UK AOD link to
-    `/gp/aag/main?...seller=<id>` (the seller's storefront landing
-    page). After the clickout fix, those rows must resolve to a URL
-    matching that pattern — proves we are picking the soldBy anchor,
-    not any random anchor in the row.
+def test_parse_offer_listing_clickout_is_offer_listing_page() -> None:
+    """Every AOD row's clickout is the offer-listing page, never the seller
+    storefront.
+
+    Regression for the live bug where the Amazon Resale current-best offer
+    linked to `/Amazon-Warehouse-Deals/b?node=...` — the Resale "storefront"
+    is a generic category landing page with no sign of the book. Amazon AOD
+    rows carry no stable per-offer deep link, so we link to the offer-listing
+    page, which shows this offer in context alongside the others.
     """
+    listing_url = "https://www.amazon.co.uk/gp/offer-listing/0241638194?condition=all"
     html = _load("9780241638194-uk-offer-listing-real.html")
-    offers = parse_offer_listing(
-        html, fallback_url="https://www.amazon.co.uk/dp/0241638194"
-    )
-    # Pick any marketplace row (not the Amazon-direct one, which falls
-    # back to the dp URL since it has no soldBy <a>).
-    marketplace = [o for o in offers if o.seller not in {"Amazon", "Amazon Resale"}]
-    assert marketplace, "no marketplace rows in fixture"
-    for o in marketplace:
-        assert "seller=" in o.url and "/gp/aag/main" in o.url, (
-            f"marketplace seller {o.seller!r} resolved to unexpected url {o.url!r}"
+    offers = parse_offer_listing(html, fallback_url=listing_url)
+    assert offers
+    for o in offers:
+        assert o.url == listing_url, (
+            f"seller {o.seller!r} resolved to {o.url!r}, not the offer-listing page"
         )
+    # The Resale row in particular must not leak the Warehouse-Deals storefront.
+    assert not any("Warehouse-Deals" in o.url for o in offers)
 
 
 def test_empty_html_returns_empty_list() -> None:

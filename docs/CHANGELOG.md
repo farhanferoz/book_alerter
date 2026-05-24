@@ -6,6 +6,50 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ---
 
+## 2026-05-24
+
+### Live-deployment bug sweep — stale current_best, Amazon links, chart spikes
+
+Triggered by screenshots from the running NAS deployment. Three user-visible
+bugs; the headline one turned out to be a data-model flaw, not a broken scraper
+(the WOB/eBay sources were scraping fine — verified via the live `sourcerun`
+table, all `success`, last run that morning).
+
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| B1 | "Current best" showed a price that no longer existed (1929: WOB £16 used_vg, gone since 05-17, beating live Amazon £17.59). Wrong on 6 of 9 books. | The view ranked offers by the canonical (non-dupe) row's `observed_at` = when a price was FIRST seen. A stable-but-live price is deduped on every scrape, so its canonical timestamp freezes at first sighting; a since-vanished offer whose first sighting was more recent could out-rank the genuinely-live ones. | Reworked `current_best` to key freshness off LAST-seen — `buyable_last_seen` folds dups onto their canonical via `COALESCE(is_duplicate_of, id)`; an offer is live iff `last_seen` = its source's latest scrape; a source >1 day behind the entity's freshest scrape is dropped (relative gate, so a brief all-source delay still shows the cheapest rather than going price-less). Migration `0018`. |
+| B2 | Amazon "Open offer" link landed on a generic `/Amazon-Warehouse-Deals/b` category page, not the book. | `_extract_clickout` preferred the seller storefront anchor; for Amazon Resale that storefront IS the Warehouse-Deals category page. AOD rows carry no stable per-offer deep link. | `_parse_offer_row` now returns the offer-listing `fallback_url` (shows the offer in context). Removed `_extract_clickout` + `_CLICKOUT_REJECT_SUBSTRS`. Shared by the book and product Amazon sources, so both are fixed. |
+| B3 | History chart spiked to ~£42/£49 at the recent edge. | The chart blended all sources into New/Used lines and took MIN per exact `observed_at`; each source stamps its own timestamp, so eBay's postage-inflated total landed alone on a timestamp and drew a phantom spike. | `HistoryChart` now draws one line per source (cheapest total per source over time). Keepa, which the old New/Used lines already included, becomes its own line (same data, regrouped). |
+
+Refactor (folded in): `book_stats` / `product_stats` were two hand-maintained
+SQL strings. The B1 rework made them complex enough that two copies were a
+drift hazard, so they now render from one `_STATS_VIEW_TEMPLATE` — verified
+token-identical, with `test_compute_product_stats_window_percentile_matches_book_path`
+as the runtime parity guard.
+
+Validation: full suite green; B1 last-seen model validated against a snapshot
+of the real production DB (all 9 books' current_best corrected); a Hypothesis
+property test (`test_book_stats_view_properties.py`) checks the view against an
+independent last-seen reference across randomised offer/dup/timestamp sets;
+added book + product regression tests (stale-source, last-seen-vs-first-seen,
+all-sources-stale, the inclusive 1-day boundary). Reviewed via the tiered-review
+pipeline (Tier 3 + property tests): simplify → parallel fan-out
+(differential-review, find-bugs, security-review, test-coverage, conventions) →
+fp-check → /second-opinion → adversarial pass. The /second-opinion pass caught a
+latent duplicate-row bug — a NULL-seller and an ''-seller offer at the same
+lowest total both won `rn=1` and matched current_best's `COALESCE(seller,'')`
+tiebreaker, emitting two `book_stats` rows for one entity; fixed by partitioning
+`latest_per_offer` on `COALESCE(seller,'')` (regression test
+`test_book_stats_view_null_and_empty_seller_do_not_duplicate`).
+
+Known residual (not fixed; separate follow-up): the history chart and the
+offers table read the `/observations` endpoint, which excludes dups — so a
+stable-but-live price still plots/labels at its first-seen time. Only
+`current_best` uses the last-seen fold. The two freshness models can visually
+disagree until the observations surface also exposes last-seen.
+
+---
+
 ## 2026-05-23
 
 ### NAS deployment + production-bug sweep

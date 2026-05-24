@@ -535,16 +535,19 @@ def test_window_rank_reflects_current_position(engine_with_view, make_book):
     now = datetime.now(UTC)
     with Session(engine_with_view) as s:
         book = make_book(s, isbn13="9780000000038")
-        # 5 observations in last 20 days at totals 100, 200, 300, 400, 500
+        # One fresh multi-source scrape: 5 sources at totals 100..500, all
+        # within minutes of each other so every source is live (the stale-
+        # source gate would otherwise drop the cheaper ones if they lagged the
+        # freshest scrape by more than a day — see the dedicated gate test).
         for i, total in enumerate([500, 400, 300, 200, 100]):
             _add_obs_with_shipping(
                 s, book_id=book.id, price=total, shipping=0,
                 source=f"src_{i}",
-                observed_at=now - timedelta(days=i * 3),
+                observed_at=now - timedelta(minutes=i),
             )
         stats = compute_book_stats(book.id, s)
 
-    # current_best is the cheapest row (100), so rank = 1/5 = 20%
+    # current_best is the cheapest live row (100), so rank = 1/5 = 20%
     assert stats.windows["1m"].count == 5
     assert stats.windows["1m"].rank == 20
 

@@ -552,15 +552,23 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
     shipping_minor = _extract_shipping_minor(row)
     condition = _extract_condition(row)
     seller = _extract_offer_seller(row)
-    clickout = _extract_clickout(row, fallback_url)
 
+    # Clickout: the offer-listing page (`fallback_url`), NOT the seller's
+    # storefront. Amazon's AOD rows carry no stable per-offer deep link — the
+    # only anchors are the shipping-help page, the seller-rating tooltip, and
+    # the seller's storefront. The storefront is a dead end for the buyer:
+    # Amazon Resale's "storefront" is the generic `/Amazon-Warehouse-Deals/b`
+    # category page (no sign of the actual book), and a marketplace seller's
+    # is their whole catalogue. The offer-listing page shows THIS offer in
+    # context, sorted with the others by price — the page a user actually
+    # wants when they click "Open offer".
     return ObservationCandidate(
         seller=seller,
         condition=condition,
         price_minor=price_minor,
         shipping_minor=shipping_minor,
         currency="GBP",
-        url=clickout,
+        url=fallback_url,
     )
 
 
@@ -753,45 +761,6 @@ def _extract_offer_seller(row: Node) -> str:
             text = cleaned
             break
     return text or "?"
-
-
-_CLICKOUT_REJECT_SUBSTRS = (
-    "/gp/help/customer/",   # shipping / delivery help pages
-    "/gp/help/seller/",     # seller-info help drawer (Amazon-direct AOD row)
-    "/gp/aag/details",      # seller-details modal (shipping rates breakdown)
-)
-
-
-def _extract_clickout(row: Node, fallback_url: str) -> str:
-    """Return the seller / offer URL for an AOD row, or `fallback_url`.
-
-    Modern AOD offer rows include several anchors before the
-    seller/offer link — the "Details about delivery costs" help anchor,
-    a "More about delivery" anchor (href="#"), and the offer-specific
-    Add-to-Cart form anchor. The old implementation grabbed the *first*
-    `<a href>` it could find, which always landed on the delivery-help
-    URL. This implementation prefers the explicit `#aod-offer-soldBy a`
-    (the seller's storefront link) and otherwise skips known
-    non-clickout anchor patterns.
-    """
-    sold_by = row.css_first("#aod-offer-soldBy a[href]")
-    if sold_by is not None:
-        href = (sold_by.attributes.get("href") or "").strip()
-        if href.startswith("http"):
-            return href
-        if href.startswith("/"):
-            return "https://www.amazon.co.uk" + href
-    for anchor in row.css("a[href]"):
-        href = (anchor.attributes.get("href") or "").strip()
-        if not href or href == "#":
-            continue
-        if any(bad in href for bad in _CLICKOUT_REJECT_SUBSTRS):
-            continue
-        if href.startswith("http"):
-            return href
-        if href.startswith("/"):
-            return "https://www.amazon.co.uk" + href
-    return fallback_url
 
 
 def _extract_dp_seller(tree: HTMLParser) -> str:

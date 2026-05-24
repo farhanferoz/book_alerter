@@ -1,8 +1,17 @@
-// History chart — Recharts line chart, one series per `(source, condition)`.
+// History chart — Recharts line chart, ONE LINE PER SOURCE, each showing that
+// source's cheapest total over time.
+//
+// Why per-source: a single scrape stamps every source with its own
+// `observed_at`, so eBay (whose total includes a chunky postage charge) lands
+// on a timestamp where no Amazon offer is present. The old "collapse all
+// sources into one New/Used line, MIN per timestamp" logic then drew a point
+// at eBay's lone, expensive total and a neighbouring point at Amazon's cheap
+// one — a phantom spike. Keeping each source on its own line shows eBay's
+// price in its own context and removes the cross-source blending entirely.
 //
 // Series grouping: backend ships observations newest-first with a flat shape
-// (one row per offer); we pivot client-side into `{ ts, [series_key]: total_minor }`
-// rows so Recharts can stack them on a shared time axis.
+// (one row per offer); we pivot client-side into `{ ts, [source]: total_minor }`
+// rows so Recharts can plot them on a shared time axis.
 //
 // Time range filter (7d / 30d / 90d / all) clips the data client-side rather
 // than refetching with a smaller window — the request is capped at 500 rows
@@ -61,25 +70,20 @@ const SERIES_COLORS = [
   "#65a30d", // lime-600
 ];
 
-// Two-bucket condition family: "new" vs everything used. Mirrors Keepa's
-// chart shape (just `New` + `Used` lines), keeps the history readable.
-// Per-seller granularity is available below in the source breakdown.
-function conditionFamily(condition: string): "new" | "used" | null {
-  if (condition === "new") return "new";
-  if (
-    condition === "used_vg" ||
-    condition === "used_g" ||
-    condition === "used_acceptable"
-  ) {
-    return "used";
-  }
-  return null;
-}
-
-const SERIES_LABEL: Record<"new" | "used", string> = {
-  new: "New",
-  used: "Used",
+// One readable label per source; unknown sources fall back to the raw key.
+// (`amazon` and `amazon_uk_product` never co-occur on one item, so collapsing
+// both to "Amazon" is safe.)
+const SOURCE_LABEL: Record<string, string> = {
+  amazon: "Amazon",
+  amazon_uk_product: "Amazon",
+  wob: "World of Books",
+  bookfinder: "eBay (BookFinder)",
+  keepa: "Keepa",
 };
+
+function sourceLabel(source: string): string {
+  return SOURCE_LABEL[source] ?? source;
+}
 
 type ChartRow = { ts: number } & Record<string, number | null>;
 
@@ -100,21 +104,17 @@ function buildSeries(observations: PriceObservation[], range: Range): {
   const seriesSet = new Set<string>();
   const byTs = new Map<number, ChartRow>();
   for (const o of filtered) {
-    const family = conditionFamily(o.condition);
-    if (family == null) continue;
-    const key = SERIES_LABEL[family];
+    const key = sourceLabel(o.source);
     seriesSet.add(key);
     let row = byTs.get(o.ts);
     if (!row) {
       row = { ts: o.ts };
       byTs.set(o.ts, row);
     }
-    // A single scrape returns multiple observations per (source × seller ×
-    // condition) — and we further collapse per-condition variants
-    // (used_vg + used_g + used_acceptable) into one "Used" family.
-    // Aggregate by MIN(total) so each point is "the cheapest live offer
-    // the scrapers saw at that moment in that family." Same semantic
-    // as `current_best`, and matches Keepa's New/Used line aesthetic.
+    // A single scrape returns several offers (seller × condition) for the same
+    // source at one instant — keep the cheapest, i.e. that source's best price
+    // at that moment. We deliberately do NOT take a MIN across sources: that
+    // cross-source blend is exactly what produced the phantom eBay spikes.
     const prev = row[key];
     if (prev == null || o.total_minor < prev) {
       row[key] = o.total_minor;
@@ -123,8 +123,7 @@ function buildSeries(observations: PriceObservation[], range: Range): {
 
   return {
     rows: [...byTs.values()].sort((a, b) => a.ts - b.ts),
-    // New first, Used second — stable legend / colour ordering.
-    series: ["New", "Used"].filter((s) => seriesSet.has(s)),
+    series: [...seriesSet].sort((a, b) => a.localeCompare(b)),
   };
 }
 
