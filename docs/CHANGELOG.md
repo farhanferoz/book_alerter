@@ -8,6 +8,33 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ## 2026-05-24
 
+### Follow-up — history chart plots cheapest-LIVE, not cheapest-first-seen
+
+Another round of screenshots: the per-source price-history line still looked
+"rubbish" on 90d — the Amazon line spiked up to ~£25 / ~£23 at the recent edge.
+Reproduced on a prod-DB copy (book 5, Neptune's Fortune): the spikes were **not**
+real price moves. `HistoryChart.buildSeries` plotted a point at each offer's
+`observed_at` (FIRST sighting) and took the cheapest per instant. But dedup
+folds every re-sighting onto the canonical first-sighting row, so a stable cheap
+offer (Amazon's own £19.65 "new", first seen 05-15) has a single point stranded
+at its first sighting and contributes nothing to later scrapes. When a scrape
+first-saw a batch of pricier marketplace sellers (eight at £25.00 on 05-16
+17:25, then BookCurl at £22.91), they were the *only* canonical points at that
+instant, so the "cheapest per instant" line jumped up to them — while £19.65 was
+still live the whole time. The previous follow-up's terminal-extension band-aid
+only patched the tail, not these mid-window spikes.
+
+Fix (`HistoryChart.tsx`, FE-only — data already carries `last_seen`): treat each
+offer as alive across `[observed_at, last_seen]` and plot `min(total)` over the
+offers *actually live* at each interval breakpoint — the true "cheapest you
+could have paid" envelope. This subsumes and removes the terminal-extension
+logic. Verified in a real browser against the prod copy across 7d/30d/90d/All:
+phantom upward spikes gone, lines clamp correctly to the window edge, the one
+remaining dip (£10.07 on 05-23) is a genuine transient WoB-via-Amazon used offer
+that since expired (line correctly steps back to £12.87). Shipped as `6d8139a`;
+GHA-built `:latest` pulled onto the NAS (healthy, no migration — head stays
+`0019`).
+
 ### Follow-up — current_best / observations surface the LATEST sighting, not the frozen canonical
 
 The earlier sweep (B1–B3) fixed *ranking*, but a second round of screenshots
