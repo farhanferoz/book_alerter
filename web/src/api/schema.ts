@@ -93,13 +93,14 @@ export interface paths {
         put?: never;
         /**
          * Refetch Book
-         * @description Trigger an immediate scrape across every enabled source for this book.
+         * @description Trigger an immediate scrape across every enabled BOOK-serving source.
          *
-         *     The refetch button is "ask all sources about this book again" — it does
-         *     **not** pre-filter by which sources have observed the book. Disabled
-         *     sources surface in `skipped` with `reason="disabled"`; sources whose
-         *     backoff gate is active (scheduler returns 0) surface with
-         *     `reason="backoff_active"`. 404 if the book id is not found.
+         *     The refetch button is "ask all enabled book-serving sources about this
+         *     book again." Sources whose `item_kinds` doesn't include BOOK are skipped
+         *     with `reason="kind_unsupported"` so a product-only source doesn't fire
+         *     a no-op cycle. Disabled sources surface in `skipped` with
+         *     `reason="disabled"`; backoff-gated sources with `reason="backoff_active"`.
+         *     404 if the book id is not found.
          */
         post: operations["refetch_book_api_books__book_id__refetch_post"];
         delete?: never;
@@ -138,14 +139,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Keepa Backfill
+         * Trigger Keepa Backfill
          * @description Trigger a one-shot Keepa backfill. Idempotent.
          *
          *     Returns inserted=0 if a previous backfill already populated this book.
          *     Synchronous (awaits the extraction) so the caller gets a real count;
          *     the book-creation auto-backfill is fire-and-forget via BackgroundTasks.
          */
-        post: operations["keepa_backfill_api_books__book_id__keepa_backfill_post"];
+        post: operations["trigger_keepa_backfill_api_books__book_id__keepa_backfill_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -243,11 +244,12 @@ export interface paths {
         put?: never;
         /**
          * Refetch Product
-         * @description Trigger an immediate scrape across every product-serving source.
+         * @description Trigger an immediate scrape across every PRODUCT-serving source.
          *
-         *     Identical fan-out shape to `POST /api/books/{id}/refetch`: enabled
-         *     sources go to `triggered`; disabled or backoff-gated sources go to
-         *     `skipped` with a reason.
+         *     Shares the books-side `_run_refetch` helper — same triggered/skipped
+         *     shape, filtered to sources whose `item_kinds` includes PRODUCT so a
+         *     book-only source (wob, bookfinder) is correctly marked
+         *     `kind_unsupported` rather than firing a no-op cycle.
          */
         post: operations["refetch_product_api_products__product_id__refetch_post"];
         delete?: never;
@@ -286,11 +288,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Keepa Backfill
+         * Trigger Keepa Backfill
          * @description Trigger a one-shot Keepa backfill for this product. Idempotent —
          *     returns inserted=0 if a previous backfill already populated this product.
          */
-        post: operations["keepa_backfill_api_products__product_id__keepa_backfill_post"];
+        post: operations["trigger_keepa_backfill_api_products__product_id__keepa_backfill_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -654,10 +656,7 @@ export interface components {
             condition: string;
             /** Message */
             message: string;
-            /**
-             * Fired At
-             * Format: date-time
-             */
+            /** Fired At */
             fired_at: string;
             /** Dismissed At */
             dismissed_at: string | null;
@@ -778,15 +777,9 @@ export interface components {
             last_scrape_attempt_at?: string | null;
             /** Last Scrape Error */
             last_scrape_error?: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
+            /** Created At */
             created_at: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
+            /** Updated At */
             updated_at: string;
             stats: components["schemas"]["BookStatsOut"];
         };
@@ -812,10 +805,16 @@ export interface components {
          * @description Wire mirror of `book_alerter.stats.BookStats`.
          *
          *     Excludes `sorted_totals` (internal percentile cache).
+         *
+         *     `book_id` and `item_id` carry the same value (the underlying dataclass
+         *     field is named `book_id` for historical reasons). New product callers
+         *     should read `item_id`; existing book callers keep reading `book_id`.
          */
         BookStatsOut: {
             /** Book Id */
             book_id: number;
+            /** Item Id */
+            item_id: number;
             /** Current Best Total Minor */
             current_best_total_minor: number | null;
             /** Current Best Price Minor */
@@ -948,6 +947,13 @@ export interface components {
          *     Excludes the internal `raw` source payload and the `is_duplicate_of`
          *     dedup pointer — the observations endpoint filters duplicates out before
          *     serializing, so the pointer is irrelevant to callers.
+         *
+         *     Each returned row is a dedup *canonical* (first-sighting) row. `observed_at`
+         *     is therefore the FIRST time this offer was seen — the right x for a price
+         *     timeline. `last_seen` is the most recent scrape that re-confirmed the offer
+         *     (MAX over the dedup group), and `url` is that latest sighting's link — the
+         *     canonical row's own link can be a stale page an older parser recorded. The
+         *     dedup key excludes url, so the latest link is for the same offer.
          */
         PriceObservationOut: {
             /** Id */
@@ -970,11 +976,10 @@ export interface components {
             total_minor: number;
             /** Url */
             url: string;
-            /**
-             * Observed At
-             * Format: date-time
-             */
+            /** Observed At */
             observed_at: string;
+            /** Last Seen */
+            last_seen: string;
         };
         /** ProductCreate */
         ProductCreate: {
@@ -1042,11 +1047,10 @@ export interface components {
             total_minor: number;
             /** Url */
             url: string;
-            /**
-             * Observed At
-             * Format: date-time
-             */
+            /** Observed At */
             observed_at: string;
+            /** Last Seen */
+            last_seen: string;
         };
         /** ProductObservationsPage */
         ProductObservationsPage: {
@@ -1096,15 +1100,9 @@ export interface components {
             last_scrape_attempt_at?: string | null;
             /** Last Scrape Error */
             last_scrape_error?: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
+            /** Created At */
             created_at: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
+            /** Updated At */
             updated_at: string;
             stats: components["schemas"]["BookStatsOut"];
         };
@@ -1127,6 +1125,23 @@ export interface components {
             /** Track Used */
             track_used?: boolean | null;
         };
+        /**
+         * RefetchResult
+         * @description Result of `POST /api/{kind}/{id}/refetch` (both books and products use
+         *     this shape via the shared `_run_refetch` helper below).
+         *
+         *     `triggered` lists sources whose `scheduler.trigger_now` returned a real
+         *     `run_id`. `skipped` records sources that were intentionally not triggered:
+         *     `reason="disabled"` for sources with `enabled=False`; `reason="backoff_active"`
+         *     when the scheduler returned `0`; `reason="kind_unsupported"` when the
+         *     source's configured `item_kinds` doesn't include the kind being refetched.
+         */
+        RefetchResult: {
+            /** Triggered */
+            triggered: components["schemas"]["RefetchTriggered"][];
+            /** Skipped */
+            skipped: components["schemas"]["RefetchSkipped"][];
+        };
         /** RefetchSkipped */
         RefetchSkipped: {
             /** Source */
@@ -1135,7 +1150,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "disabled" | "backoff_active";
+            reason: "disabled" | "backoff_active" | "kind_unsupported";
         };
         /** RefetchTriggered */
         RefetchTriggered: {
@@ -1203,10 +1218,7 @@ export interface components {
             id: number;
             /** Source */
             source: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
+            /** Started At */
             started_at: string;
             /** Finished At */
             finished_at: string | null;
@@ -1269,29 +1281,6 @@ export interface components {
             p75: number | null;
             /** P95 */
             p95: number | null;
-        };
-        /**
-         * RefetchResult
-         * @description Result of `POST /api/books/{id}/refetch`.
-         *
-         *     Fans out across every configured source. `triggered` lists sources whose
-         *     `scheduler.trigger_now` returned a real `run_id`. `skipped` records sources
-         *     that were intentionally not triggered: `reason="disabled"` for sources with
-         *     `enabled=False` in config, `reason="backoff_active"` when the scheduler
-         *     returned `0` (backoff gate). Empty `cfg.sources` yields two empty lists.
-         */
-        book_alerter__api__books__RefetchResult: {
-            /** Triggered */
-            triggered: components["schemas"]["RefetchTriggered"][];
-            /** Skipped */
-            skipped: components["schemas"]["RefetchSkipped"][];
-        };
-        /** RefetchResult */
-        book_alerter__api__products__RefetchResult: {
-            /** Triggered */
-            triggered: components["schemas"]["RefetchTriggered"][];
-            /** Skipped */
-            skipped: components["schemas"]["RefetchSkipped"][];
         };
     };
     responses: never;
@@ -1539,7 +1528,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["book_alerter__api__books__RefetchResult"];
+                    "application/json": components["schemas"]["RefetchResult"];
                 };
             };
             /** @description Validation Error */
@@ -1584,7 +1573,7 @@ export interface operations {
             };
         };
     };
-    keepa_backfill_api_books__book_id__keepa_backfill_post: {
+    trigger_keepa_backfill_api_books__book_id__keepa_backfill_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1863,7 +1852,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["book_alerter__api__products__RefetchResult"];
+                    "application/json": components["schemas"]["RefetchResult"];
                 };
             };
             /** @description Validation Error */
@@ -1908,7 +1897,7 @@ export interface operations {
             };
         };
     };
-    keepa_backfill_api_products__product_id__keepa_backfill_post: {
+    trigger_keepa_backfill_api_products__product_id__keepa_backfill_post: {
         parameters: {
             query?: never;
             header?: never;

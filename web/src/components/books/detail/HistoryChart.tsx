@@ -95,10 +95,18 @@ function buildSeries(observations: PriceObservation[], range: Range): {
   const cutoff =
     range === "all" ? 0 : now - RANGE_SECONDS[range] * 1000;
 
-  // Sort ascending by observed_at so the line draws left-to-right.
+  // Keep offers ALIVE during the window: filter on `last_seen` (most recent
+  // sighting), not `observed_at` (first sighting). A stable offer first seen
+  // before the window but still live today must appear — filtering on
+  // observed_at would drop it from 7d/30d views even though it's the current
+  // price. Each row carries both timestamps.
   const filtered = observations
-    .map((o) => ({ ...o, ts: new Date(o.observed_at).getTime() }))
-    .filter((o) => o.ts >= cutoff)
+    .map((o) => ({
+      ...o,
+      ts: new Date(o.observed_at).getTime(),
+      lastSeenTs: new Date(o.last_seen).getTime(),
+    }))
+    .filter((o) => o.lastSeenTs >= cutoff)
     .sort((a, b) => a.ts - b.ts);
 
   const seriesSet = new Set<string>();
@@ -106,10 +114,13 @@ function buildSeries(observations: PriceObservation[], range: Range): {
   for (const o of filtered) {
     const key = sourceLabel(o.source);
     seriesSet.add(key);
-    let row = byTs.get(o.ts);
+    // Clamp a pre-window first-sighting to the window start so its price level
+    // begins at the visible edge rather than off-chart (or being dropped).
+    const pointTs = Math.max(o.ts, cutoff);
+    let row = byTs.get(pointTs);
     if (!row) {
-      row = { ts: o.ts };
-      byTs.set(o.ts, row);
+      row = { ts: pointTs };
+      byTs.set(pointTs, row);
     }
     // A single scrape returns several offers (seller × condition) for the same
     // source at one instant — keep the cheapest, i.e. that source's best price
@@ -119,6 +130,37 @@ function buildSeries(observations: PriceObservation[], range: Range): {
     if (prev == null || o.total_minor < prev) {
       row[key] = o.total_minor;
     }
+  }
+
+  // Extend each source's line to its most-recent sighting (`last_seen`). Points
+  // above are plotted at `observed_at` (FIRST sighting) — correct for a price
+  // timeline — but a stable-but-live offer is deduped on every scrape, so it
+  // has a single first-seen point and the line collapses to one dot stranded
+  // in the past. We add a terminal point at the source's latest `last_seen`
+  // carrying its cheapest still-live total, so the line runs through to "now".
+  // (Keepa rows aren't deduped, so last_seen == observed_at and this is a
+  // no-op for them.)
+  // One pass: per source, find its latest sighting (`last_seen`) and the
+  // cheapest total at that moment.
+  const srcTerminal = new Map<string, { ts: number; min: number }>();
+  for (const o of filtered) {
+    const key = sourceLabel(o.source);
+    const ts = o.lastSeenTs;
+    const cur = srcTerminal.get(key);
+    if (cur === undefined || ts > cur.ts) {
+      srcTerminal.set(key, { ts, min: o.total_minor });
+    } else if (ts === cur.ts && o.total_minor < cur.min) {
+      cur.min = o.total_minor;
+    }
+  }
+  for (const [key, { ts, min }] of srcTerminal) {
+    let row = byTs.get(ts);
+    if (!row) {
+      row = { ts };
+      byTs.set(ts, row);
+    }
+    const prev = row[key];
+    if (prev == null || min < prev) row[key] = min;
   }
 
   return {

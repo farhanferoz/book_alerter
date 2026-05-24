@@ -252,6 +252,68 @@ def test_book_stats_view_uses_last_seen_not_first_seen(tmp_path):
     assert row["current_best_url"] == "https://wob/live"
 
 
+def test_book_stats_view_current_best_url_is_latest_sighting(tmp_path):
+    """Regression: current_best_url must come from the LATEST sighting in the
+    dedup group, not the canonical (first-seen) row.
+
+    Live failure: a stable Amazon Resale offer was first scraped by the old
+    parser, which recorded a useless `/Amazon-Warehouse-Deals/b` category URL.
+    Every later scrape re-saw the same offer (same price/seller/condition) and
+    was deduped onto that canonical row, so its URL was frozen — even after the
+    parser was fixed to emit a proper `/gp/offer-listing/<asin>` link. The
+    canonical row keeps the broken URL forever; only the dup rows carry the
+    fixed one. current_best must surface the fixed (latest) URL.
+
+    The dedup key is (item, source, seller, condition, price, shipping) — URL is
+    NOT part of it — so the latest sighting's URL is always for the same offer.
+    """
+    db_path = tmp_path / "t.db"
+    url = f"sqlite:///{db_path}"
+    subprocess.run(
+        ["uv", "run", "alembic", "upgrade", "head"],
+        env={**os.environ, "BOOK_ALERTER_DATABASE_URL": url},
+        check=True, capture_output=True,
+    )
+    engine = create_engine(url)
+    now = datetime.now(UTC)
+    with Session(engine) as s:
+        book = models.Book(
+            isbn13="9780000000009", title="StaleUrl", author="x",
+            created_at=now, updated_at=now,
+        )
+        s.add(book); s.commit(); s.refresh(book)
+
+        # Canonical first-sighting (old parser): broken category URL.
+        canonical = models.PriceObservation(
+            book_id=book.id, source="amazon", condition="used_vg",
+            seller="Amazon Resale",
+            price_minor=2354, currency="GBP", shipping_minor=0, total_minor=2354,
+            url="https://www.amazon.co.uk/Amazon-Warehouse-Deals/b?node=358",
+            observed_at=now - timedelta(days=5), raw={},
+        )
+        s.add(canonical); s.commit(); s.refresh(canonical)
+        # Today's re-sighting (fixed parser): proper offer-listing URL. Same
+        # offer → deduped onto the canonical row.
+        s.add(models.PriceObservation(
+            book_id=book.id, source="amazon", condition="used_vg",
+            seller="Amazon Resale",
+            price_minor=2354, currency="GBP", shipping_minor=0, total_minor=2354,
+            url="https://www.amazon.co.uk/gp/offer-listing/024163/?condition=all",
+            observed_at=now, raw={}, is_duplicate_of=canonical.id,
+        ))
+        s.commit()
+
+        row = s.exec(
+            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
+        ).mappings().first()
+
+    assert row["current_best_total_minor"] == 2354
+    assert (
+        row["current_best_url"]
+        == "https://www.amazon.co.uk/gp/offer-listing/024163/?condition=all"
+    ), "current_best_url must be the latest sighting's URL, not the frozen canonical one"
+
+
 def test_book_stats_view_all_sources_stale_still_shows_cheapest(tmp_path):
     """The gate is RELATIVE, not wall-clock: when every source is old, the book
     must still surface its cheapest known offer rather than going price-less.

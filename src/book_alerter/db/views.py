@@ -43,15 +43,24 @@ WITH non_dupes AS (
     SELECT * FROM {obs} WHERE is_duplicate_of IS NULL
 ),
 buyable_last_seen AS (
+    -- `url AS current_url` leans on SQLite's documented bare-column rule: with
+    -- exactly one MAX() aggregate and no MIN(), every bare column takes its
+    -- value from the row that produced the maximum. So current_url is the URL
+    -- of the LATEST sighting in the dedup group, NOT the canonical first-
+    -- sighting row — whose URL may be an obsolete link an older parser wrote
+    -- (e.g. a dead `/Amazon-Warehouse-Deals/b` category page) and which dedup
+    -- freezes forever. URL is not part of the dedup key (item/source/seller/
+    -- condition/price/shipping), so the latest URL is always for the SAME offer.
     SELECT COALESCE(is_duplicate_of, id) AS canonical_id,
-           MAX(observed_at) AS last_seen
+           MAX(observed_at) AS last_seen,
+           url AS current_url
     FROM {obs}
     WHERE source != 'keepa'
     GROUP BY COALESCE(is_duplicate_of, id)
 ),
 live_offers AS (
     SELECT o.{id}, o.source, o.total_minor, o.price_minor, o.shipping_minor,
-           o.condition, o.seller, o.url, o.id, ls.last_seen
+           o.condition, o.seller, ls.current_url AS url, o.id, ls.last_seen
     FROM non_dupes o
     JOIN buyable_last_seen ls ON ls.canonical_id = o.id
     WHERE o.source != 'keepa'

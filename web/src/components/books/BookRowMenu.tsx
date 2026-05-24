@@ -25,7 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import type { Book } from "@/hooks/useBooks";
 
-type RefetchResult = components["schemas"]["book_alerter__api__books__RefetchResult"];
+type RefetchResult = components["schemas"]["RefetchResult"];
 type ConfirmKind = "archive" | "delete" | null;
 
 const CONFIRM_COPY: Record<

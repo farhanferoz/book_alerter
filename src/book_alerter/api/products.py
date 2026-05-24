@@ -33,6 +33,7 @@ from book_alerter.api._serializers import UtcDateTime, to_z_iso
 from book_alerter.api.books import (
     BookStatsOut,  # shape is item-agnostic
     _run_refetch,
+    latest_sighting_by_canonical,
 )
 from book_alerter.api.books import (
     RefetchResult as BookRefetchResult,
@@ -155,6 +156,10 @@ class ProductOut(BaseModel):
 
 
 class ProductObservationOut(BaseModel):
+    # Mirror of PriceObservationOut: `observed_at` is the offer's FIRST sighting
+    # (canonical row, for the price timeline), `last_seen` the latest scrape that
+    # re-confirmed it, and `url` that latest sighting's link. See that class for
+    # the full rationale.
     id: int
     product_id: int
     source: str
@@ -166,9 +171,15 @@ class ProductObservationOut(BaseModel):
     total_minor: int
     url: str
     observed_at: UtcDateTime
+    last_seen: UtcDateTime
 
     @classmethod
-    def from_obs(cls, obs: models.ProductObservation) -> ProductObservationOut:
+    def from_obs(
+        cls,
+        obs: models.ProductObservation,
+        latest: tuple[datetime, str] | None = None,
+    ) -> ProductObservationOut:
+        last_seen, current_url = latest if latest is not None else (obs.observed_at, obs.url)
         return cls(
             id=obs.id or 0,
             product_id=obs.product_id,
@@ -179,8 +190,9 @@ class ProductObservationOut(BaseModel):
             currency=obs.currency,
             shipping_minor=obs.shipping_minor,
             total_minor=obs.total_minor,
-            url=obs.url,
+            url=current_url,
             observed_at=obs.observed_at,
+            last_seen=last_seen,
         )
 
 
@@ -371,7 +383,10 @@ def list_product_observations(
     stmt = stmt.order_by(models.ProductObservation.observed_at.desc()).limit(limit)  # type: ignore[attr-defined]
 
     rows = session.exec(stmt).all()
-    items = [ProductObservationOut.from_obs(r) for r in rows]
+    latest = latest_sighting_by_canonical(
+        session, models.ProductObservation, [r.id for r in rows if r.id is not None]
+    )
+    items = [ProductObservationOut.from_obs(r, latest.get(r.id)) for r in rows]
     next_before = (
         to_z_iso(rows[-1].observed_at) if len(rows) == limit and rows else None
     )

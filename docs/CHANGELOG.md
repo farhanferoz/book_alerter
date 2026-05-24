@@ -8,6 +8,38 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ## 2026-05-24
 
+### Follow-up — current_best / observations surface the LATEST sighting, not the frozen canonical
+
+The earlier sweep (B1–B3) fixed *ranking*, but a second round of screenshots
+showed the display layer still served stale data. Dedup folds every re-sighting
+of an offer onto its canonical FIRST-sighting row, and the view/endpoint read
+that row's `url` and `observed_at`. So a stable offer kept whatever (possibly
+obsolete) link the parser first recorded — e.g. the dead
+`/Amazon-Warehouse-Deals/b` page — forever, and the breakdown "Observed" column
+showed first-seen ("9 days ago") instead of when the offer was last confirmed.
+The dedup key is `(item, source, seller, condition, price, shipping)`; `url` and
+`observed_at` are NOT in it, so the latest sighting is the same offer.
+
+| Symptom | Fix |
+|---|---|
+| `current_best` link frozen at the canonical row's stale url | `db/views.py`: `buyable_last_seen` now also carries `url AS current_url` via SQLite's bare-column-with-single-`MAX()` rule. `live_offers` projects it into `current_best`. Migration `0019`. |
+| Breakdown "Observed" showed first-seen; chart stable sources collapsed to a single dot | `/observations` (books + products) now returns `last_seen` (group MAX) and the latest sighting's `url` alongside `observed_at` (kept as first-seen for the timeline), via a shared `latest_sighting_by_canonical` helper. `SourceBreakdown` keys "latest scrape" off `last_seen` + shows the fresh link; `HistoryChart` extends each source's line to `last_seen` and keeps offers alive in the window (filter on `last_seen`, clamp a pre-window start to the edge). |
+
+Investigated a reported phantom "best £23.54" (Gemini): a live Amazon render
+confirmed it was a real Amazon Warehouse Deals used-VG copy, live at the 10:24
+scrape and since sold (live floor is now £28.60) — NOT a Keepa leak
+(`current_best` excludes `source='keepa'`; 0/9 books). Self-heals on the next
+scrape when the sold offer drops from the latest-scrape set; no code change —
+scrape latency on a genuinely transient offer.
+
+Tier-4 review (3 local agents + `/second-opinion` cold-context + `fp-check`):
+fixed a chart bug where 7d/30d views dropped live offers first-seen before the
+window; verified current_best ↔ breakdown consistency and correct links across
+all 9 books against a prod-DB snapshot, and rendered the result in a browser.
+Regenerating `schema.ts` also flushed pre-existing backend drift (`item_id`,
+`kind_unsupported`, op renames) — no behaviour change; two stale `RefetchResult`
+FE refs fixed. Net test delta: +2 real-data regressions.
+
 ### Live-deployment bug sweep — stale current_best, Amazon links, chart spikes
 
 Triggered by screenshots from the running NAS deployment. Three user-visible

@@ -332,6 +332,39 @@ def test_get_observations_excludes_duplicates(api_client, engine_with_view, make
     assert body["items"][0]["id"] == canonical_id
 
 
+def test_get_observations_surfaces_latest_sighting_url_and_last_seen(
+    api_client, engine_with_view, make_observation
+):
+    """A canonical row whose offer was re-seen later (a dup) must report the
+    LATEST sighting's url + last_seen, while observed_at stays the first sighting.
+
+    Mirrors the production bug: the canonical row froze a stale link/timestamp;
+    the chart needs first-seen (observed_at) for the timeline, the breakdown
+    needs last-seen + the fresh link.
+    """
+    bid = _seed_book(api_client)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        canonical = make_observation(
+            s, book_id=bid, observed_at=base, url="https://example.com/stale-canonical",
+        )
+        canonical_id = canonical.id
+        make_observation(
+            s, book_id=bid,
+            observed_at=base + timedelta(days=3),
+            url="https://example.com/fresh-latest",
+            is_duplicate_of=canonical_id,
+        )
+
+    body = api_client.get(f"/api/books/{bid}/observations").json()
+    assert len(body["items"]) == 1  # dup still excluded from the row set
+    item = body["items"][0]
+    assert item["id"] == canonical_id
+    assert item["observed_at"].startswith("2026-01-01T12:00")  # first-seen kept
+    assert item["last_seen"].startswith("2026-01-04T12:00")  # latest sighting
+    assert item["url"] == "https://example.com/fresh-latest"  # fresh link, not stale
+
+
 def test_get_observations_unknown_book_returns_404(api_client):
     resp = api_client.get("/api/books/99999/observations")
     assert resp.status_code == 404

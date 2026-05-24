@@ -31,26 +31,30 @@ import {
 // table only lists offers the user could actually transact on. Keepa still
 // drives the chart and percentile distribution via its own code paths.
 function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
-  // Pass 1: find the most recent observed_at per (source, condition). ISO
-  // 8601 strings sort correctly with `>`.
+  // Key off `last_seen` (the most recent scrape that re-confirmed each offer),
+  // NOT `observed_at` (first sighting). A stable-but-live offer is deduped on
+  // every scrape, so its canonical observed_at is frozen at the first sighting
+  // — keying on that would show the offer as days stale, or drop it in favour
+  // of a more-recently-CHANGED (but not necessarily cheaper) offer. last_seen
+  // reflects the genuine latest scrape. ISO 8601 strings sort correctly with `>`.
   const latestTs = new Map<string, string>();
   for (const o of observations) {
     if (o.source === "keepa") continue;
     const key = `${o.source}::${o.condition}`;
     const cur = latestTs.get(key);
-    if (cur === undefined || o.observed_at > cur) {
-      latestTs.set(key, o.observed_at);
+    if (cur === undefined || o.last_seen > cur) {
+      latestTs.set(key, o.last_seen);
     }
   }
-  // Pass 2: keep every price point in the latest snapshot for its
+  // Pass 2: keep every price point present in the latest scrape for its
   // (source, condition). Two copies at identical prices collapse (same
   // offer scraped twice); copies at different prices each get a row.
-  // Drops stale historical listings whose observed_at doesn't match.
+  // Drops listings no longer in the latest scrape (last_seen doesn't match).
   const seen = new Map<string, PriceObservation>();
   for (const o of observations) {
     if (o.source === "keepa") continue;
     const groupKey = `${o.source}::${o.condition}`;
-    if (o.observed_at !== latestTs.get(groupKey)) continue;
+    if (o.last_seen !== latestTs.get(groupKey)) continue;
     const rowKey = `${groupKey}::${o.total_minor}`;
     if (!seen.has(rowKey)) seen.set(rowKey, o);
   }
@@ -196,7 +200,7 @@ export function SourceBreakdown({
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {formatRelativeTime(o.observed_at)}
+                    {formatRelativeTime(o.last_seen)}
                   </TableCell>
                   <TableCell>
                     <a
