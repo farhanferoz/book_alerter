@@ -36,6 +36,7 @@ web/.vite/
 .idea/
 *.swp
 .DS_Store
+.antigravitycli/
 
 # Claude
 .claude/settings.local.json
