@@ -111,10 +111,21 @@ fresh-session review).
 - **Wave 2** (T2.1–T2.6) — Tier 2 **NOT RUN**, but the shipping chain it owns had a full
   adversarial review (S1–S8, report in the session scratchpad), which is stronger than
   Tier 2 on the part that mattered. Findings all fixed except S2 (queued) and S8→D38.
-- **Wave 3** (T3.1–T3.4) — Tier 4: property-tests-first ✅ (0021 and 0022 both had theirs
-  written and watched fail first); **fresh-session review DISPATCHED 2026-09-04** —
-  report lands at `<scratchpad>/tier4-wave3-review.md`. **This is the sign-off gate for the
-  migration that deleted 77,835 of 90,172 production rows.**
+- **Wave 3** (T3.1–T3.4) — Tier 4: property-tests-first ✅; fresh-session review **DONE and the
+  verdict is FAIL**. Report: `<scratchpad>/tier4-wave3-review.md`. **THIS BLOCKS THE MERGE TO
+  `master`.** The forward backfill was certified sound (0 mismatches over all 12,337 rows, every
+  consumer output identical for all 13 books), but three items stand:
+  - **F-A HIGH** — `downgrade→upgrade` silently wrecks the live-offer view: 212 rows → **24**,
+    **11 of 13** current-bests change, **7 signal flips**, with `integrity_check` and FK clean
+    throughout. Both round-trip tests run on an **empty DB**, so neither can fail for it.
+  - **F-B MED** — 0021 keeps `last_seen_at` but **discards `current_url`**, reverting migration
+    0019's fix: 187 rows stale, 35 of 212 live candidates, worst case an Amazon **help page**
+    where the deleted row held the offer-listing URL. The property test's table has **no `url`
+    column**, and the migration test gives every row in a group the same URL.
+  - **F-C MED, latent** — D14's raw-`total_minor` rank still in SQL; **zero reachability measured
+    on production today**. Fix, don't oversell.
+  - Plus an undocumented behaviour change (book 6's 12-month window: rank 41→1, p25 +64%).
+  All three are with the stats worker. **Do not merge to `master` until they land.**
 - **Wave 4** (T4.1–T4.5) — Tier 2 **NOT RUN**; T4.1 still in flight.
 - **Wave 5** (T5.1–T5.5) — Tier 2 **NOT RUN**.
 - **Wave 6** (T6.1–T6.8) — Tier 2 **NOT RUN**.
