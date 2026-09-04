@@ -80,7 +80,7 @@ Severity: **S1** wrong data or user-visible failure · **S2** degraded behaviour
 | F9 | S2 | **Keepa backfill writes future-dated rows.** The probe product received a Keepa row stamped `2026-09-05T00:00Z` on 2026-09-04. `_DateCalib.__call__` rounds a linear fit with no clamp to today. | `src/book_alerter/keepa_chart.py:324`; probe output |
 | F10 | S2 | **Keepa-only history yields an immediate signal.** 406 Keepa rows (all NULL shipping) arrived at creation; `days_of_history = 360`, rank 100, before a single live scrape. No UI caveat. | probe output |
 | F11 | S2 | **No non-book fixture exists.** Every file in `tests/fixtures/amazon/` is ISBN-named. Variant (twister) pages, "currently unavailable", single-seller pages are untested. The probe's Echo Dot returned only the buy box and zero AOD rows — UNVERIFIED whether genuine (Amazon-brand device) or a parse gap. | `ls tests/fixtures/amazon` |
-| F12 | S3 | `DELETE /api/products/{id}` archives by default; `?hard=true` deletes. The products UI does not distinguish the two. | `src/book_alerter/api/products.py:333` |
+| F12 | S3 | `DELETE /api/products/{id}` archives by default; `?hard=true` deletes. ⚠️ CORRECTED 2026-09-04 by T4.6: the UI *did* have two buttons, but Delete omitted `?hard=true` — so it promised a cascading delete in its confirm dialog and silently archived instead. | `src/book_alerter/api/products.py:333` |
 
 ### Bot detection (root driver of F1, F7, and the Amazon run failures)
 
@@ -221,7 +221,7 @@ Verify: every T0.4 fixture has a passing test naming its expected offers.
 - [x] **T4.5 Product alerts surface.** ✅ DONE 2026-09-04 (commit `f75c7a1`) — union feed over both tables driven by the existing `_AlertModels` registry (no per-kind duplication); local `AlertKind` Literal replaced by the `StrEnum`; alerts addressed by `(item_kind, id)` because ids collide across tables (regression test seeds colliding ids); rows carry their own title so the client-side `useBooks` lookup is gone from both page and sidebar. 17 alerts tests green; FE tsc/eslint/build green. Original spec: `api/alerts.py` returns a union of `Alert` and `ProductAlert` rows (`kind`, `item_kind`, `item_id`, `title`, message, fired_at, dismissed_at), with dismiss / dismiss-all covering both tables; `Alerts.tsx` links to `/products/:id` for product rows. Notification test endpoint unchanged.
 Verify: API tests for mixed listing and dismiss; scenario 07 extended to assert the alert appears in `GET /api/alerts`.
 
-- [ ] **T4.6 Archive vs delete in the products UI.** `ProductDetail.tsx` action bar: "Archive" (default) and "Delete permanently" (confirm dialog → `?hard=true`). Mirror on the books detail page if it has the same gap (check `ActionBar.tsx`; fix both or note why not).
+- [x] **T4.6 Archive vs delete in the products UI.** ✅ DONE 2026-09-04 — ⚠️ **F12 was partly inaccurate**: the products UI *does* have both buttons. The real defect was worse — Delete called the endpoint **without `?hard=true`**, so it soft-archived while its confirm dialog promised a cascading permanent delete. Fixed to send `?hard=true`; both dialogs now state the actual consequence. The **books** ActionBar was already correct (it passes `?hard=true` and documents why), so no change was needed there. Original spec: `ProductDetail.tsx` action bar: "Archive" (default) and "Delete permanently" (confirm dialog → `?hard=true`). Mirror on the books detail page if it has the same gap (check `ActionBar.tsx`; fix both or note why not).
 
 ### Wave 5 — products feature parity (phase 2)
 
