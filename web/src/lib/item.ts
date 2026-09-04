@@ -203,11 +203,12 @@ export function applyItemFilters(items: Item[], filters: ItemFilters): Item[] {
       sorted.sort((a, b) => SIGNAL_ORDER[bookSignal(a)] - SIGNAL_ORDER[bookSignal(b)]);
       break;
     case "best_price":
-      sorted.sort((a, b) => {
-        const av = a.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
-        const bv = b.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
-        return av - bv;
-      });
+      // sortableTotalMinor, not current_best_total_minor directly -- see
+      // that function's own docstring (D34/D20: an unpaid delivery charge
+      // must never sort as free). Spotted this call site still on the raw
+      // field while working on T4.1 in this same file; columns.tsx and
+      // Dashboard.tsx were already fixed, this one was missed.
+      sorted.sort((a, b) => sortableTotalMinor(a.stats) - sortableTotalMinor(b.stats));
       break;
     case "percentile":
       sorted.sort((a, b) => rank3mOrInf(a) - rank3mOrInf(b));

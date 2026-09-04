@@ -827,6 +827,8 @@ def parse_dp(
         source_name=source_name,
     )
     condition = _extract_dp_condition(tree, seller)
+    item_title = _extract_item_title(tree)
+    item_image_url = _extract_item_image_url(tree)
 
     return [
         ObservationCandidate(
@@ -837,8 +839,41 @@ def parse_dp(
             delivery_text=delivery_text,
             currency="GBP",
             url=fallback_url,
+            item_title=item_title,
+            item_image_url=item_image_url,
         )
     ]
+
+
+# T4.1: title/image for a still-PENDING product (scheduler._persist resolves
+# it off whichever candidate carries a non-None item_title — dp only, an AOD
+# row never sets these). Selectors matched from metadata.py's
+# `_AMAZON_TITLE_SELECTORS` / `_AMAZON_COVER_SELECTORS` (the already-proven
+# interactive asin-lookup path), not imported from there: metadata.py
+# already imports `BOT_MARKERS` from this module, so importing back would be
+# circular.
+_ITEM_TITLE_SELECTORS = ("#productTitle",)
+_ITEM_IMAGE_SELECTORS = ("#landingImage", "#imgBlkFront", "#ebooksImgBlkFront")
+
+
+def _extract_item_title(tree: HTMLParser) -> str | None:
+    for sel in _ITEM_TITLE_SELECTORS:
+        node = tree.css_first(sel)
+        if node is not None:
+            text = _node_text(node)
+            if text:
+                return text
+    return None
+
+
+def _extract_item_image_url(tree: HTMLParser) -> str | None:
+    for sel in _ITEM_IMAGE_SELECTORS:
+        node = tree.css_first(sel)
+        if node is not None:
+            src = node.attributes.get("src") or node.attributes.get("data-old-hires")
+            if src:
+                return src
+    return None
 
 
 def _extract_priceamount_minor(tree: HTMLParser, html: str) -> int | None:

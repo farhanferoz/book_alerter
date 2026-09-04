@@ -849,6 +849,8 @@ export interface components {
             all_time_max_total_minor: number | null;
             /** Observation Count */
             observation_count: number;
+            /** Live Observation Count */
+            live_observation_count: number;
             /** Days Of History */
             days_of_history: number;
             /** Last Observed At */
@@ -863,8 +865,11 @@ export interface components {
             current_effective_total_minor: number | null;
             /** Shipping Estimate Minor */
             shipping_estimate_minor: number | null;
-            /** Signal */
-            signal: ("BUY" | "WATCH" | "WAIT" | "TARGET_HIT" | "INSUFFICIENT_DATA") | null;
+            /** Shipping Is Estimate */
+            shipping_is_estimate: boolean;
+            /** Prime Applied */
+            prime_applied: boolean;
+            signal: components["schemas"]["Signal"] | null;
             /** Windows */
             windows: {
                 [key: string]: components["schemas"]["WindowStatsOut"];
@@ -1007,7 +1012,7 @@ export interface components {
             /** Asin Or Url */
             asin_or_url: string;
             /** Title */
-            title: string;
+            title?: string | null;
             /** Image Url */
             image_url?: string | null;
             /** Brand */
@@ -1088,6 +1093,11 @@ export interface components {
             asin: string;
             /** Title */
             title: string;
+            /**
+             * Metadata Status
+             * @enum {string}
+             */
+            metadata_status: "pending" | "ok" | "failed";
             /** Image Url */
             image_url: string | null;
             /** Brand */
@@ -1181,6 +1191,20 @@ export interface components {
             run_id: number;
         };
         /**
+         * Signal
+         * @description BUY/WATCH/WAIT recommendation returned by `stats.compute_signal` and
+         *     persisted on `*SignalState.last_signal`.
+         *
+         *     Unlike every other enum in this file the values are UPPERCASE. That is a
+         *     deliberate deviation from the module convention, not an oversight: these
+         *     exact strings are already the wire contract the frontend compares against
+         *     (`web/src/components/books/signal.tsx`, `BookFilters.tsx`) and that
+         *     `alerts.detect_alert_kinds` branches on. Lower-casing them would be a
+         *     breaking API change dressed up as a tidy-up.
+         * @enum {string}
+         */
+        Signal: "BUY" | "WATCH" | "WAIT" | "TARGET_HIT" | "INSUFFICIENT_DATA";
+        /**
          * SourceConfigOut
          * @description Wire mirror of `book_alerter.config.SourceConfig`.
          */
@@ -1209,14 +1233,16 @@ export interface components {
          * SourceHealthOut
          * @description Rolled-up scrape health over the last 24 hours.
          *
-         *     `challenged` is a **proxy**, not a direct count. `SourceRun` records only
-         *     attempted/succeeded totals, and per-item bot challenges are caught inside
-         *     the scheduler and written to `Book.last_scrape_error` (last-write-wins, no
-         *     history) rather than rolled up onto the run. So this counts every item
-         *     failure, of which bot challenges are the dominant but not the only cause.
-         *     Plan task T1.3 adds `SourceRun.items_challenged`; when it lands this
-         *     becomes an exact figure and `_last_24h_health_per_source` changes by one
-         *     line.
+         *     `challenged` is an EXACT count as of T1.3: the scheduler now records
+         *     `SourceRun.items_challenged` per run (items whose final outcome was an
+         *     unsolved bot challenge, after the one retry). It was previously a proxy
+         *     -- every item failure, of which challenges were the dominant but not the
+         *     only cause -- because the run row carried no challenge count at all.
+         *
+         *     One honest limitation: runs that predate migration 0022 carry 0, since
+         *     the counter did not exist then. So the figure under-reports for the first
+         *     window after deploy rather than inventing history, which is the same
+         *     reason the migration backfills 0 rather than guessing.
          */
         SourceHealthOut: {
             /**

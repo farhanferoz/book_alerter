@@ -529,7 +529,17 @@ async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
                     "#productTitle", timeout=8_000, state="attached"
                 )
             except PlaywrightTimeoutError:
-                log.info("metadata.asin_lookup.no_title_selector", url=url)
+                # T4.1: this function is now also called in a loop
+                # (metadata_refresh, up to 6 attempts x every PENDING
+                # product) rather than only from the one-shot interactive
+                # asin-lookup endpoint. A missing selector after 8s is
+                # usually just a slow render, not a terminal failure (the
+                # code still falls through to try parsing the page below)
+                # -- plan §8 rules out per-item progress logging at INFO,
+                # so this one drops to DEBUG. nav_timeout/error (genuine
+                # failures) and bot_blocked (a real outcome worth keeping
+                # visible even under retry) are unchanged.
+                log.debug("metadata.asin_lookup.no_title_selector", url=url)
             html = await page.content()
     except BrowserSessionBusy:
         # Distinct from every other failure below — see

@@ -105,6 +105,14 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
               >
                 {item.title}
               </Link>
+              {item.kind === "product" && item.metadata_status === "pending" && (
+                <span
+                  className="inline-flex items-center rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase text-muted-foreground"
+                  title="Title/image not confirmed yet — filled in by the next successful scrape or metadata retry"
+                >
+                  Pending
+                </span>
+              )}
               {item.last_scrape_error && (
                 <span
                   role="img"

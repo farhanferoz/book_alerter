@@ -41,7 +41,7 @@ from book_alerter.api.deps import ConfigDep, HttpDep, SchedulerDep, SessionDep
 from book_alerter.config import RecommendationConfig
 from book_alerter.covers import fetch_and_cache_url, sniff_mime
 from book_alerter.db import models
-from book_alerter.enums import ItemKind, ItemStatus
+from book_alerter.enums import ItemKind, ItemStatus, MetadataStatus
 from book_alerter.sources.normalizers import to_asin
 from book_alerter.stats import (
     _PRODUCT_SCHEMA,
@@ -51,6 +51,11 @@ from book_alerter.stats import (
 )
 
 PRODUCT_IMAGE_CACHE_DIR = Path("data/product-images")
+
+# T4.1: placeholder title for a product created from an ASIN alone. The
+# migration's backfill keys on this exact shape, so the two must stay in
+# step -- see 0023_product_metadata_status.
+_DEFAULT_TITLE_TEMPLATE = "Amazon product {asin}"
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -77,7 +82,10 @@ def _stats_for(product: models.Product, session: Session, cfg) -> BookStats:
 
 class ProductCreate(BaseModel):
     asin_or_url: str
-    title: str
+    # T4.1 (F7): optional, because Confirm must not wait on a live Amazon
+    # render that returns 502 on a bot challenge. Absent means the row is
+    # created PENDING and the title arrives later.
+    title: str | None = None
     image_url: str | None = None
     brand: str | None = None
     target_price_minor: int | None = None
@@ -102,6 +110,9 @@ class ProductOut(BaseModel):
     id: int
     asin: str
     title: str
+    # Literal rather than the raw enum, matching this file's existing
+    # convention for `status` above.
+    metadata_status: Literal["pending", "ok", "failed"]
     image_url: str | None
     brand: str | None
     region: str
@@ -132,6 +143,7 @@ class ProductOut(BaseModel):
             id=product.id or 0,
             asin=product.asin,
             title=product.title,
+            metadata_status=product.metadata_status,
             # Same-origin proxy URL so browser shields don't block third-party
             # CDN requests. Bytes are served by the image-proxy endpoint below.
             image_url=(f"/api/products/{product.id}/image" if product.image_url else None),
@@ -258,10 +270,18 @@ def create_product(
             },
         )
 
+    # T4.1: a product created from an ASIN alone gets a placeholder title and
+    # PENDING status; the scheduler's metadata_refresh job and the price
+    # scraper's own dp parse both race to resolve it. A caller that supplied a
+    # title (the UI does when its lookup succeeded) is OK immediately.
+    title = payload.title or _DEFAULT_TITLE_TEMPLATE.format(asin=asin)
+    metadata_status = MetadataStatus.OK if payload.title else MetadataStatus.PENDING
+
     now = datetime.now(UTC)
     product = models.Product(
         asin=asin,
-        title=payload.title,
+        title=title,
+        metadata_status=metadata_status,
         image_url=payload.image_url,
         brand=payload.brand,
         target_price_minor=payload.target_price_minor,
@@ -285,6 +305,17 @@ def create_product(
         product.asin,
         lambda: Session(engine),
     )
+    # T4.1: try once immediately rather than leaving the product PENDING for
+    # up to 30 minutes waiting on the periodic job. Fire-and-forget for the
+    # same reason the Keepa backfill is — the interactive request must never
+    # block on Playwright.
+    if metadata_status == MetadataStatus.PENDING:
+        background_tasks.add_task(
+            _refresh_product_metadata_once,
+            product.id,
+            product.asin,
+            lambda: Session(engine),
+        )
 
     stats = _stats_for(product, session, cfg)
     return ProductOut.from_product(product, stats, reco=cfg.recommendation)
@@ -435,6 +466,54 @@ def _keepa_backfill_blocking(
     return keepa_backfill.backfill_blocking(
         product_id, asin, session_factory, schema=keepa_backfill.PRODUCT_SCHEMA,
     )
+
+
+async def _refresh_product_metadata_once(
+    product_id: int,
+    asin: str,
+    session_factory,
+) -> None:
+    """One immediate metadata attempt right after create (T4.1), so a product
+    usually does not sit PENDING for up to 30 minutes waiting on the
+    scheduler's periodic `metadata_refresh` job.
+
+    `fetch_amazon_uk_product_metadata` logs its own navigation, bot-block and
+    parse failures and returns None for all of them, so the only exception
+    this needs to catch is `BrowserSessionBusy` -- the one case it raises
+    instead (D24: the `amazon_uk_product` profile can legitimately be held by
+    a scheduled run for minutes).
+
+    Deliberately does NOT touch `metadata_attempts` /
+    `metadata_last_attempt_at`: the periodic job owns backoff and attempt
+    counting, and this is a free extra try, not attempt 1 of 6. Re-checks
+    PENDING under the session before writing, because the price scraper's dp
+    parse may have resolved the row while this was in flight.
+
+    Imports are local to avoid a circular import: `metadata` imports from
+    `sources.amazon`, which this module's import graph already reaches.
+    """
+    from book_alerter.metadata import fetch_amazon_uk_product_metadata
+    from book_alerter.sources.browser import BrowserSessionBusy
+
+    try:
+        result = await fetch_amazon_uk_product_metadata(asin)
+    except BrowserSessionBusy:
+        return
+    if result is None:
+        return
+    with session_factory() as session:
+        product = session.get(models.Product, product_id)
+        if product is None or product.metadata_status != MetadataStatus.PENDING:
+            return
+        product.title = result.title
+        if result.image_url is not None:
+            product.image_url = result.image_url
+        if result.brand is not None:
+            product.brand = result.brand
+        product.metadata_status = MetadataStatus.OK
+        product.updated_at = datetime.now(UTC)
+        session.add(product)
+        session.commit()
 
 
 @router.post("/{product_id}/keepa-backfill")

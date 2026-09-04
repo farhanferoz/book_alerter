@@ -85,6 +85,47 @@ def test_post_products_rejects_garbage_asin(api_client) -> None:
     assert "could not extract ASIN" in r.json()["detail"]
 
 
+def test_post_products_without_title_creates_pending_placeholder(
+    api_client, monkeypatch,
+) -> None:
+    """T4.1: add-product must never block on a live Amazon fetch (F7) —
+    omitting `title` still creates the row immediately, with a placeholder
+    title and metadata_status="pending" resolved later by the
+    metadata_refresh scheduler job or the product scraper's own dp parse.
+
+    Stubs the immediate post-create metadata attempt so this test doesn't
+    launch a real Playwright browser — `create_product` fires it via
+    `background_tasks.add_task`, which FastAPI's TestClient runs
+    synchronously before the response returns."""
+    async def _fake_immediate_attempt(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "book_alerter.api.products._refresh_product_metadata_once",
+        _fake_immediate_attempt,
+    )
+    r = api_client.post("/api/products", json={"asin_or_url": "B07TEST0PD"})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["asin"] == "B07TEST0PD"
+    assert body["title"] == "Amazon product B07TEST0PD"
+    assert body["metadata_status"] == "pending"
+
+
+def test_post_products_with_title_is_metadata_ok(api_client) -> None:
+    """The existing flow (asin-lookup succeeded, or the user typed a title
+    themselves) must not be downgraded to "pending" — a title given up
+    front means metadata is already known-good."""
+    r = api_client.post(
+        "/api/products",
+        json={"asin_or_url": "B07TEST0OK", "title": "Real Title"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["title"] == "Real Title"
+    assert body["metadata_status"] == "ok"
+
+
 def test_post_products_409_on_duplicate_asin(api_client) -> None:
     _seed_product(api_client.app.state.engine, asin="B07TEST004")
     r = api_client.post(

@@ -673,6 +673,35 @@ def test_parse_dp_seller_none_on_echo_dot_fixture_with_no_merchant_info() -> Non
     assert offers[0].condition == Condition.NEW
 
 
+def test_parse_dp_item_title_and_image_populated_on_real_product_fixture() -> None:
+    """T4.1: parse_dp extracts #productTitle / a cover image so
+    scheduler._persist can resolve a still-PENDING product's placeholder
+    title without waiting on the metadata_refresh job. Same Echo Dot
+    fixture as the T2.7 test above — it has a real #productTitle and
+    #landingImage regardless of the #merchant-info gap that test covers."""
+    html = (PRODUCT_FIXTURES / "B09B96TG33-uk-dp-2026-09-04.html").read_text(
+        encoding="utf-8"
+    )
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/B09B96TG33")
+    assert len(offers) == 1
+    assert offers[0].item_title is not None
+    assert "Echo Dot" in offers[0].item_title
+    assert offers[0].item_image_url is not None
+    assert offers[0].item_image_url.startswith("https://")
+
+
+def test_parse_offer_listing_never_sets_item_title() -> None:
+    """AOD rows never carry a title/image — only the dp buy-box page does.
+    Loads a fixture with real offer rows so this isn't vacuously true over
+    an empty list."""
+    html = _load("9780241638194-uk-offer-listing-2026-05-16.html")
+    offers = parse_offer_listing(
+        html, fallback_url="https://www.amazon.co.uk/gp/offer-listing/9780241638194"
+    )
+    assert offers, "fixture produced no offers to assert over"
+    assert all(o.item_title is None and o.item_image_url is None for o in offers)
+
+
 # --- T1.5: delivery_text diagnostic capture ---------------------------------
 
 

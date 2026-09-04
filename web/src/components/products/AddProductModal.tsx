@@ -7,6 +7,16 @@
 //
 // Flow: user pastes input → debounced → POST /api/metadata/asin-lookup
 // fills title / image / brand → user confirms → POST /api/products.
+//
+// T4.1: Confirm is enabled as soon as the input looks like a valid ASIN/URL
+// (`looksLikeAsinOrUrl`), not gated on the lookup succeeding — the lookup
+// launches a browser and can 502 on a bot challenge, and there is no reason
+// add-product should block on Amazon being scrapeable right now (F7). When
+// `title` is omitted, `POST /api/products` creates the row with a
+// placeholder title and `metadata_status: "pending"`; a background job and
+// the product scraper's own next successful scrape both race to fill in
+// the real title/image later (see the pending badge on the product row,
+// `components/books/columns.tsx`).
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -139,12 +149,18 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
   const create = useCreateProduct(onDone);
 
   const onConfirm = () => {
-    if (!lookup.data) return;
+    if (!enabled) return;
     create.mutate({
-      asin_or_url: lookup.data.asin,
-      title: lookup.data.title,
-      image_url: lookup.data.image_url ?? null,
-      brand: lookup.data.brand ?? null,
+      // Raw input, not lookup.data.asin -- the lookup may not have
+      // resolved yet. The backend's `to_asin` does the same normalisation
+      // (bare ASIN or any Amazon URL shape) that the lookup endpoint uses.
+      asin_or_url: input.trim(),
+      // Omitted (not empty-string) when the lookup hasn't landed yet, so
+      // the backend generates the placeholder title and metadata_status
+      // "pending" rather than persisting a blank title.
+      title: lookup.data?.title ?? null,
+      image_url: lookup.data?.image_url ?? null,
+      brand: lookup.data?.brand ?? null,
       // OpenAPI emits track_used as required (Pydantic field has a default
       // but no Optional). Default-off is the product-side convention; user
       // flips it later on the detail page.
@@ -173,13 +189,7 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
-        {lookup.isError && (
-          <p className="text-xs text-destructive">
-            Couldn't fetch metadata: {formatErrorMessage(lookup.error)}
-          </p>
-        )}
-
-        {lookup.data && (
+        {enabled && !lookup.isLoading && lookup.data && (
           <div className="flex gap-3 rounded-md border border-border p-3">
             {lookup.data.image_url ? (
               <img
@@ -207,6 +217,17 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
+        {/* T4.1: no preview yet (lookup still failing/not-yet-resolved) is
+            not a reason to block adding the product -- Confirm is already
+            enabled below. Covers the lookup.isError case too: whichever
+            reason the preview isn't here, the product still gets added
+            with a placeholder title that fills in later. */}
+        {enabled && !lookup.isLoading && !lookup.data && (
+          <p className="text-xs text-muted-foreground">
+            Details will be filled in after the first scrape.
+          </p>
+        )}
+
         <CreateProductError error={create.error} onDone={onDone} />
       </div>
 
@@ -220,7 +241,7 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
         </Button>
         <Button
           onClick={onConfirm}
-          disabled={!lookup.data || create.isPending}
+          disabled={!enabled || create.isPending}
         >
           {create.isPending ? "Adding..." : "Add product"}
         </Button>

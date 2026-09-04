@@ -59,6 +59,18 @@ class ObservationCandidate(BaseModel):
     delivery_text: str | None = None
     currency: str
     url: str
+    # T4.1: title/image scraped incidentally off the SAME page a source
+    # already rendered to find a price. Only Amazon's `parse_dp` populates
+    # these (the buy-box page renders `#productTitle`/a cover image
+    # unconditionally; an AOD/offer-listing row never does) — `None` for
+    # every other candidate. `scheduler._persist` uses whichever candidate
+    # carries a non-None `item_title` to resolve a PENDING product's
+    # metadata without waiting on the `metadata_refresh` job. Not
+    # persisted as observation columns — read once by `_persist`, then
+    # dropped like every other candidate field that isn't part of the
+    # offer itself.
+    item_title: str | None = None
+    item_image_url: str | None = None
 
 
 class SourceError(Exception):

@@ -32,6 +32,7 @@ from book_alerter.enums import (
     BookFormat,
     Condition,
     ItemStatus,
+    MetadataStatus,
     NotificationDeliveryStatus,
     SourceRunStatus,
 )
@@ -276,6 +277,25 @@ class Product(SQLModel, table=True):
     # Per-product scrape health, same semantics as Book.
     last_scrape_attempt_at: datetime | None = None
     last_scrape_error: str | None = None
+    # T4.1: add-product never blocks on a live Amazon fetch — a product
+    # created from ASIN/URL alone starts PENDING with a placeholder title,
+    # and the `metadata_refresh` scheduler job (or the product scraper's
+    # own first successful dp parse — see scheduler._persist) resolves it.
+    # Default OK rather than PENDING: `create_product` always sets this
+    # explicitly on every insert path, so the class default only matters
+    # for a caller that forgets to — and "assume metadata is fine" is the
+    # safer failure mode than silently queuing an unintended row into the
+    # retry job forever.
+    metadata_status: MetadataStatus = Field(
+        default=MetadataStatus.OK, sa_column=Column(String, nullable=False)
+    )
+    # Retry counter for metadata_refresh's exponential backoff (see
+    # scheduler.py's _METADATA_REFRESH_MAX_ATTEMPTS) and the timestamp it
+    # backs off from. Deliberately separate from last_scrape_attempt_at /
+    # last_scrape_error, which track PRICE-scrape health — a metadata-only
+    # lookup attempt is a different concern and must not perturb those.
+    metadata_attempts: int = 0
+    metadata_last_attempt_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

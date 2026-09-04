@@ -131,3 +131,25 @@ class BrowserProfile(StrEnum):
     AMAZON = "amazon"
     AMAZON_UK_PRODUCT = "amazon_uk_product"
     BOOKFINDER = "bookfinder"
+
+
+class MetadataStatus(StrEnum):
+    """`Product.metadata_status` — whether a product's Amazon title/image has
+    been looked up yet.
+
+    `PENDING` is the initial state for a product created from an ASIN or URL
+    alone (T4.1: add-product must never block on a live Amazon fetch, which
+    returns 502 on a bot challenge — F7). Two independent paths race to
+    resolve it: the `metadata_refresh` scheduler job, and the product
+    scraper's own first successful dp parse.
+
+    `FAILED` is set once `metadata_refresh` exhausts its retry budget, and is
+    deliberately NOT terminal — a later scheduled price-scrape's dp parse can
+    still carry a title and resolve a FAILED row to OK. The budget bounds how
+    much background work one product may cost, not whether it is ever allowed
+    to acquire real metadata.
+    """
+
+    PENDING = "pending"
+    OK = "ok"
+    FAILED = "failed"

@@ -12,6 +12,7 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import func
 from sqlmodel import Session, select
 
@@ -23,11 +24,13 @@ from book_alerter.db.models import (
     ProductObservation,
     SourceRun,
 )
-from book_alerter.enums import ItemKind, ItemStatus
+from book_alerter.enums import ItemKind, ItemStatus, MetadataStatus
 from book_alerter.janitor import janitor_tick
 from book_alerter.keepa_backfill import keepa_refresh_tick
 from book_alerter.logging_setup import get_logger
+from book_alerter.metadata import fetch_amazon_uk_product_metadata
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
+from book_alerter.sources.browser import BrowserSessionBusy
 
 log = get_logger(__name__)
 
@@ -167,6 +170,12 @@ class Scheduler:
     affected ids to the right `alert_pipelines[kind]` after the source run.
     """
 
+    # T4.1 metadata-refresh backoff. Attempt N waits
+    # BASE * 2**(N-1) minutes since the last try, so six attempts span
+    # roughly 15.5 hours before a row is marked FAILED.
+    _METADATA_REFRESH_BASE_MINUTES = 30
+    _METADATA_REFRESH_MAX_ATTEMPTS = 6
+
     def __init__(
         self,
         config: Config,
@@ -248,6 +257,22 @@ class Scheduler:
                 replace_existing=True,
             )
 
+        # T4.1: retry Amazon product-metadata lookups for rows still PENDING.
+        # Add-product no longer blocks on a live fetch (F7: that returned 502
+        # on a bot challenge), so this job is what eventually fills in the
+        # title/image when the price scraper's own dp parse hasn't already.
+        # Registered unconditionally: the tick is a single indexed query when
+        # nothing is pending, and gating it behind config would mean a user
+        # could disable the only thing that ever resolves a PENDING row.
+        self._sched.add_job(
+            self._run_metadata_refresh,
+            trigger=IntervalTrigger(minutes=self._METADATA_REFRESH_BASE_MINUTES),
+            id="metadata_refresh",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
         # T6.3: weekly Keepa refresh. Registered only when explicitly enabled
         # -- unlike the janitor and backup jobs, this one talks to a third
         # party whose rate tolerance we have not measured, so it stays off
@@ -299,6 +324,106 @@ class Scheduler:
             session_factory=self._session_factory,
             app_state=self._app_state,
         )
+
+    async def _run_metadata_refresh(self) -> None:
+        """APScheduler entrypoint for the periodic product-metadata retry.
+
+        try/except like `_run_backup` rather than `_run_janitor`'s "documented
+        never to raise" contract: this one drives a browser against a live
+        third-party page, which is the least predictable surface in the app.
+        A failure must not take the scheduler down with it.
+        """
+        try:
+            await self._metadata_refresh_tick()
+        except Exception as e:
+            log.error(
+                "metadata_refresh.failed", error=str(e), tb=traceback.format_exc(),
+            )
+
+    async def _metadata_refresh_tick(self) -> None:
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            pending = session.exec(
+                select(Product).where(Product.metadata_status == MetadataStatus.PENDING)
+            ).all()
+            due_ids = [
+                p.id for p in pending
+                if p.id is not None and self._metadata_refresh_due(p, now)
+            ]
+        # Sequential, not gathered: each call drives a real browser and D24
+        # serialises them on the shared `amazon_uk_product` profile anyway, so
+        # concurrency here would only queue them behind one another while
+        # holding more of the T1.4 browser cap.
+        for pid in due_ids:
+            await self._refresh_one_product_metadata(pid)
+
+    def _metadata_refresh_due(self, product: Product, now: datetime) -> bool:
+        """Exponential-backoff gate. Attempt 1 is always due, which covers
+        both a freshly-created PENDING row and the case where the immediate
+        post-create attempt raced and lost."""
+        if product.metadata_attempts == 0 or product.metadata_last_attempt_at is None:
+            return True
+        last = product.metadata_last_attempt_at
+        # SQLite hands back naive datetimes; `now` is UTC-aware. Subtracting
+        # the two without this raises rather than mis-comparing, but the
+        # failure would be at the worst moment, so normalise here.
+        last = last if last.tzinfo is not None else last.replace(tzinfo=UTC)
+        backoff = timedelta(
+            minutes=self._METADATA_REFRESH_BASE_MINUTES
+            * (2 ** (product.metadata_attempts - 1))
+        )
+        return now - last >= backoff
+
+    async def _refresh_one_product_metadata(self, product_id: int) -> None:
+        """One retry attempt for one product.
+
+        Re-reads and re-checks `metadata_status` immediately before AND after
+        the fetch. The product scraper's own dp parse can resolve a PENDING
+        row between this tick's query and now, or while the fetch is in
+        flight -- and that flight can legitimately last minutes, because D24
+        serialises `BrowserSession` on the `amazon_uk_product` profile and a
+        scheduled run may hold it.
+        """
+        with self._session_factory() as session:
+            product = session.get(Product, product_id)
+            if product is None or product.metadata_status != MetadataStatus.PENDING:
+                return
+            asin = product.asin
+
+        try:
+            result = await fetch_amazon_uk_product_metadata(asin)
+        except BrowserSessionBusy:
+            # NOT a failed attempt: the profile is busy (D24). Retrying next
+            # tick without spending an attempt is the difference between
+            # backing off from Amazon and backing off from ourselves.
+            log.info("metadata_refresh.browser_busy", product_id=product_id)
+            return
+        except Exception as e:
+            log.warning(
+                "metadata_refresh.fetch_error", product_id=product_id, error=str(e),
+            )
+            result = None
+
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            product = session.get(Product, product_id)
+            if product is None or product.metadata_status != MetadataStatus.PENDING:
+                return
+            if result is not None:
+                product.title = result.title
+                if result.image_url is not None:
+                    product.image_url = result.image_url
+                if result.brand is not None:
+                    product.brand = result.brand
+                product.metadata_status = MetadataStatus.OK
+            else:
+                product.metadata_attempts += 1
+                product.metadata_last_attempt_at = now
+                if product.metadata_attempts >= self._METADATA_REFRESH_MAX_ATTEMPTS:
+                    product.metadata_status = MetadataStatus.FAILED
+            product.updated_at = now
+            session.add(product)
+            session.commit()
 
     def _run_keepa_refresh(self) -> None:
         """APScheduler entrypoint for the weekly Keepa refresh.
@@ -758,6 +883,22 @@ class Scheduler:
                 if fresh_item is not None:
                     fresh_item.last_scrape_attempt_at = now
                     fresh_item.last_scrape_error = None
+                    # T4.1: the price scraper's own dp parse usually beats the
+                    # 30-minute metadata_refresh job, so take the title here
+                    # rather than making a new product wait for a job tick.
+                    # Only dp candidates carry `item_title`; AOD rows never do.
+                    if (
+                        item_model is Product
+                        and fresh_item.metadata_status == MetadataStatus.PENDING
+                    ):
+                        titled = next(
+                            (c for c in candidates if c.item_title is not None), None
+                        )
+                        if titled is not None:
+                            fresh_item.title = titled.item_title
+                            if titled.item_image_url is not None:
+                                fresh_item.image_url = titled.item_image_url
+                            fresh_item.metadata_status = MetadataStatus.OK
                     session.add(fresh_item)
             session.commit()
 

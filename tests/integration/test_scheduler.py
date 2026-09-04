@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -9,7 +10,7 @@ from sqlmodel import Session, select
 import book_alerter.scheduler as scheduler_mod
 from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
-from book_alerter.enums import ItemKind
+from book_alerter.enums import ItemKind, MetadataStatus
 from book_alerter.scheduler import Scheduler
 from book_alerter.sources.base import Source, SourceError
 from book_alerter.sources.wob import WobInlineSource
@@ -671,3 +672,64 @@ async def test_keepa_refresh_job_is_registered_when_enabled(tmp_path):
         assert "keepa_refresh" in [j.id for j in sched.list_jobs()]
     finally:
         sched.shutdown()
+
+
+# --- T4.1: product metadata refresh (scheduler half) -------------------------
+
+
+async def test_metadata_refresh_job_is_always_registered(tmp_path):
+    """Registered unconditionally, unlike the keepa job. It is the only thing
+    that ever resolves a PENDING product when the price scraper's dp parse
+    doesn't, so a config switch that disabled it would strand those rows."""
+    sched = _janitor_sched(Config(sources={}), db_path=tmp_path / "b.db")
+    sched.start()
+    try:
+        assert "metadata_refresh" in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()
+
+
+def _pending_product(attempts: int, last_attempt: datetime | None) -> models.Product:
+    return models.Product(
+        asin="B09B96TG33", title="t",
+        metadata_status=MetadataStatus.PENDING,
+        metadata_attempts=attempts,
+        metadata_last_attempt_at=last_attempt,
+        created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+
+
+async def test_metadata_refresh_backoff_gate():
+    """Attempt N waits BASE * 2**(N-1) minutes. The first attempt is always
+    due, which covers both a freshly-created row and one whose immediate
+    post-create attempt raced and lost."""
+    sched = _janitor_sched(Config(sources={}))
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
+
+    assert sched._metadata_refresh_due(_pending_product(0, None), now) is True
+
+    # attempt 1 -> 30 min wait
+    assert sched._metadata_refresh_due(
+        _pending_product(1, now - timedelta(minutes=29)), now
+    ) is False
+    assert sched._metadata_refresh_due(
+        _pending_product(1, now - timedelta(minutes=30)), now
+    ) is True
+
+    # attempt 3 -> 120 min wait, so the backoff really is exponential
+    assert sched._metadata_refresh_due(
+        _pending_product(3, now - timedelta(minutes=119)), now
+    ) is False
+    assert sched._metadata_refresh_due(
+        _pending_product(3, now - timedelta(minutes=120)), now
+    ) is True
+
+
+async def test_metadata_refresh_backoff_handles_a_naive_timestamp():
+    """SQLite returns naive datetimes. Subtracting one from an aware `now`
+    raises TypeError, and it would raise inside the scheduled job rather than
+    anywhere a test would normally look."""
+    sched = _janitor_sched(Config(sources={}))
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
+    naive = datetime(2026, 9, 4, 10, 0)
+    assert sched._metadata_refresh_due(_pending_product(1, naive), now) is True
