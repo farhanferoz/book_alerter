@@ -37,8 +37,13 @@ export function PercentileChart({ item }: { item: Item }) {
   const windows = item.stats.windows ?? {};
   const current = item.stats.current_effective_total_minor;
   const shippingEstimate = item.stats.shipping_estimate_minor;
-  const usedImputedShipping =
-    item.stats.current_best_shipping_minor == null && shippingEstimate != null;
+  // T2.3: consume the backend's authoritative flags directly rather than
+  // re-deriving "was this shipping figure imputed" from the raw fields
+  // (D10) — `shipping_is_estimate` and `prime_applied` are mutually
+  // exclusive (see `stats.effective_shipping`).
+  const isEstimatedShipping = item.stats.shipping_is_estimate;
+  const primeApplied = item.stats.prime_applied;
+  const usesEffectiveTotal = isEstimatedShipping || primeApplied;
 
   const hasAnyData = WINDOW_KEYS.some((k) => windows[k]?.p5 != null);
   if (!hasAnyData) {
@@ -84,21 +89,24 @@ export function PercentileChart({ item }: { item: Item }) {
         </h2>
         {current != null && (
           <span className="text-xs text-muted-foreground">
-            {usedImputedShipping ? "Effective" : "Current"}{" "}
+            {usesEffectiveTotal ? "Effective" : "Current"}{" "}
             <span className="font-medium text-foreground">
               {formatMoneyMinor(current, item.currency)}
             </span>
-            {usedImputedShipping && (
+            {isEstimatedShipping && (
               <span className="ml-1">
                 (incl. ~{formatMoneyMinor(shippingEstimate, item.currency)} est. ship)
               </span>
+            )}
+            {primeApplied && (
+              <span className="ml-1">(Prime — free delivery)</span>
             )}
           </span>
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         Box = p25–p75 · line in box = median · whiskers = p5/p95.
-        {usedImputedShipping &&
+        {isEstimatedShipping &&
           " Distribution uses shipping-imputed totals so offers with and without listed shipping rank consistently."}
       </p>
       <svg

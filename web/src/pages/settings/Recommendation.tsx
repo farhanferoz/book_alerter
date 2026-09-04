@@ -7,6 +7,10 @@
 //   - target_tolerance_pct         (int 0–100)
 //   - alert_dedup_window_hours     (int, ≥0)
 //
+// Plus one boolean (T2.3): `amazon_prime` — "I have Amazon Prime", rendered
+// as a labelled `<Switch>` below the numeric grid (no validation; every
+// value is valid).
+//
 // Save flow: build candidate `{...serverConfig, recommendation: draft}`, call
 // `PUT /api/config?dry_run=true` to fetch the server-validated diff, show
 // `<DiffPreviewDialog>`, then on confirm re-call with `dry_run=false`. The
@@ -26,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   DiffPreviewDialog,
   type DiffRow,
@@ -42,7 +47,9 @@ import { formatErrorMessage } from "@/lib/utils";
 
 const EXPAND_KEYS = new Set(["recommendation"]);
 
-type FieldKey = keyof RecommendationConfigShape;
+// Excludes `amazon_prime` — that field is a `<Switch>` wired directly to
+// `setDraft`, not one of the `<NumberField>` rows this key drives.
+type FieldKey = Exclude<keyof RecommendationConfigShape, "amazon_prime">;
 
 const FIELD_LABELS: Record<FieldKey, { label: string; unit?: string; hint?: string }> = {
   min_observations_for_signal: {
@@ -86,7 +93,8 @@ function draftsEqual(
     a.watch_percentile === b.watch_percentile &&
     a.target_tolerance_pct === b.target_tolerance_pct &&
     a.alert_dedup_window_hours === b.alert_dedup_window_hours &&
-    a.percentile_window_days === b.percentile_window_days
+    a.percentile_window_days === b.percentile_window_days &&
+    a.amazon_prime === b.amazon_prime
   );
 }
 
@@ -176,6 +184,7 @@ export function SettingsRecommendation() {
     r.target_tolerance_pct,
     r.alert_dedup_window_hours,
     r.percentile_window_days,
+    r.amazon_prime,
   ].join("|");
 
   return <RecommendationForm key={mountKey} config={cfg.data} />;
@@ -288,6 +297,27 @@ function RecommendationForm({ config }: { config: ConfigShape }) {
           onChange={setField}
           error={validation.percentile_window_days}
           min={1}
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-background/40 p-3">
+        <div className="space-y-0.5">
+          <Label htmlFor="rec-amazon-prime" className="text-sm font-medium leading-none">
+            I have Amazon Prime (treat Amazon-fulfilled delivery as free)
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Applies only to offers Amazon itself fulfils — third-party
+            sellers on Amazon are unaffected. Changes how offers rank and
+            when alerts fire; scraped shipping figures are never rewritten.
+          </p>
+        </div>
+        <Switch
+          id="rec-amazon-prime"
+          checked={draft.amazon_prime}
+          onCheckedChange={(checked) =>
+            setDraft((d) => ({ ...d, amazon_prime: checked }))
+          }
+          aria-label="Toggle Amazon Prime shipping assumption"
         />
       </div>
 

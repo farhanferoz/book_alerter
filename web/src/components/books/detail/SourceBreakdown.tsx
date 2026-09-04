@@ -179,6 +179,24 @@ export function SourceBreakdown({
                     {isCurrentBest && (
                       <div className="text-[10px] font-medium text-primary">
                         Current best
+                        {/* T2.3: these two flags live on `item.stats` (the
+                            current-best offer only), not on each raw
+                            observation — so they can only annotate this one
+                            pinned row. `prime_applied` and
+                            `shipping_is_estimate` are mutually exclusive
+                            (see `stats.effective_shipping`). Consumed as-is
+                            per D10 — never re-derived from the row's raw
+                            shipping figure. */}
+                        {item.stats.prime_applied && (
+                          <span className="ml-1 font-normal text-muted-foreground">
+                            · Prime
+                          </span>
+                        )}
+                        {item.stats.shipping_is_estimate && (
+                          <span className="ml-1 font-normal text-muted-foreground">
+                            · est.
+                          </span>
+                        )}
                       </div>
                     )}
                   </TableCell>

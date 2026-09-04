@@ -33,6 +33,11 @@ export type RecommendationConfigShape = {
   target_tolerance_pct: number;
   alert_dedup_window_hours: number;
   percentile_window_days: number;
+  // T2.3: user has an Amazon Prime subscription — mirrors
+  // `RecommendationConfig.amazon_prime`. Read at stats time
+  // (`stats.effective_shipping`) to treat Amazon-fulfilled delivery as
+  // free; never rewrites stored observations (D10).
+  amazon_prime: boolean;
 };
 
 // Hand-typed mirror of `NotificationsConfig` (Phase 11.4). Keys match the
@@ -92,6 +97,7 @@ export const RECOMMENDATION_DEFAULTS: RecommendationConfigShape = {
   target_tolerance_pct: 5,
   alert_dedup_window_hours: 24,
   percentile_window_days: 90,
+  amazon_prime: false,
 };
 
 export type ConfigUpdateResult = components["schemas"]["ConfigUpdateResult"];

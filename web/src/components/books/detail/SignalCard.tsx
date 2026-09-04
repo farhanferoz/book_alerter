@@ -3,6 +3,19 @@
 // Signal is read from `item.stats.signal` (computed once on the backend
 // with the live recommendation config), so the pill matches exactly what
 // the alert dispatcher will fire.
+//
+// T4.4: `live_observation_count === 0` (with `observation_count > 0` —
+// mirrors the backend guard in `notifications/dispatcher.py`, though the
+// backend's own condition already makes this unreachable with zero
+// history) means every price in the window came from Keepa backfill, none
+// from a live scrape. The signal itself is still legitimate (D16 — Keepa
+// history is valid history, `compute_signal` fires on it deliberately) —
+// this is provenance context, not an error, so it renders in the same
+// muted tone as the other secondary lines below, never styled like a
+// warning. Wording matches the dispatcher's alert-message suffix verbatim
+// (adapted from a mid-sentence clause to a standalone sentence) so the
+// dashboard, detail page and alert text never drift into three different
+// phrasings of the same fact.
 
 import type { Item } from "@/lib/item";
 import { formatMoneyMinor, ordinalSuffix } from "@/lib/format";
@@ -45,6 +58,7 @@ export function SignalCard({ item }: { item: Item }) {
     s.current_best_shipping_minor == null && s.shipping_estimate_minor != null
       ? `Shipping for current row unknown; using observed median ${formatMoneyMinor(s.shipping_estimate_minor, item.currency)} for ranking.`
       : null;
+  const keepaOnly = s.observation_count > 0 && s.live_observation_count === 0;
 
   return (
     <div className="rounded-md border border-border bg-card p-4">
@@ -54,6 +68,12 @@ export function SignalCard({ item }: { item: Item }) {
         </h2>
         <SignalPill signal={signal} />
       </div>
+
+      {keepaOnly && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Based on Keepa history only — no live offer yet.
+        </p>
+      )}
 
       {signal === "INSUFFICIENT_DATA" ? (
         <p className="mt-2 text-sm text-muted-foreground">
