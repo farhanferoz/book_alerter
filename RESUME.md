@@ -7,17 +7,16 @@
 ## State
 
 ### Now
-- **Autonomous execution run in progress** (started 2026-09-04 ~15:55). User handed over the
-  whole plan and stepped away. Root session = dispatcher + verifier; workers write code.
-- **Two shipping bugs found and fixed TODAY beyond the plan**: D33 (Amazon's spend-threshold
-  "free over £35" promise recorded as free) and D35's replacement of guessed English markers
-  with Amazon's own `CONDITIONALLY_FREE` attribute. A third, **S1/D34**, is the most
-  user-visible defect in the project and is being fixed now.
-- Performance work is DONE and proven: `GET /api/books` 2101 ms → 453 ms → **63.5 ms** (~33×);
-  D23's ≤0.35 s gate closed at 0.059–0.068 s.
-- Git blocker (F21) is **RESOLVED**: history cloned from `github.com/farhanferoz/book_alerter`
-  and installed at `/home/ff235/dev/book_alerter/.git`. Working copy was byte-identical to
-  `origin/master` for every tracked file. Working branch: **`wave-execution`** (off `master`).
+- **All 40 plan tasks are RESOLVED** (39 ticked + T1.2 dropped by its own gate, D21).
+  Final gate at HEAD from an isolated worktree: **633 passed**, ruff clean, frontend
+  tsc/eslint/build clean, `smoke_check` 12/12, `bench_stats` **0.093 s** vs a 0.35 s gate.
+  Branch `wave-execution` is **pushed**; working branch off `master`.
+- **THE MERGE TO `master` IS BLOCKED.** That merge is what ships (it triggers the GHCR
+  build), and two reviews returned blocking findings after the plan was complete. Nothing
+  in the plan remains — the entire remaining path to release is those findings.
+- Four agents were live at checkpoint: stats (Wave 3 Tier 4 fixes), prime (frontend fixes),
+  capture (simplify pass), review-backend (verdict not yet returned).
+- `/keepwarm` armed: 55 min interval, 6 pings, auto-stops ~23:57.
 
 ### Run contract (binding for this autonomous run)
 - **In scope:** all 38 tasks of the 2026-09-04 plan (T0.1–T6.6) plus T6.7 (validation harness,
@@ -72,86 +71,31 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
 - Measured performance baselines to beat: `GET /api/books` **2101 ms** via the API harness;
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
-### Next
-- **Progress: 33 of 40 ticked** (+T1.2 dropped on evidence = 34 resolved). Root landed this
-  session: T1.3, T1.4, T3.2/T4.2/T5.5/T6.1/T6.2/T6.3/T6.5/T6.6 verification+ticks, S4's frontend
-  half, the janitor's missing `product-images` sweep, the e2e `last_seen_at` break, and a RUF036
-  lint break that only a current ruff sees.
-- **Six open, ALL with workers or blocked behind them:** T2.2 + T2.4 + **S1/D34** (stats worker,
-  in flight) → T2.3 (Prime UI) and T6.4 (Prime docs) unblock when it lands; T4.1 (capture worker,
-  in flight — migration 0023 + property test already on disk); T4.4 (needs `stats.py`).
-- **S1/D34 is still the most user-visible open bug.** `TARGET_HIT` fires on a total that omits
-  shipping — reproduced end-to-end twice, target £8.00 vs effective £10.79. Fix must move BOTH
-  `alerts.py:37` and `compute_signal`'s two target branches together; they interact through
-  `prev_signal`, so a half fix lets the dedup suppress the corrected alert next run.
-- Review findings status: **S3, S4, S5 fixed. S1 in flight. S2 queued behind T2.2** (cascade
-  imputes £0.00 because missingness is not random, and tier 1 shadows tier 2 — production
-  magnitude UNMEASURED, SQL in the report). **S6/S7/S8 with the browser worker.**
-- **Expect 3 red `_merge_offers` tests** while the browser worker holds `amazon.py` for S8 —
-  that is exactly the behaviour S8 changes, not a regression.
-- **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** (write-set
-  guard). Its remedy is that the orchestrator writes them — never have a worker override it.
-- **Endgame still owed:** review tiers (tracker below), full plan-adherence audit, push
-  (recipe below), `/checkpoint --final`. NAS deploy stays out of scope.
-
-### Review-tier tracker (plan §5; a DONE criterion, and nothing else tracks it)
-Tiers per §5: Wave 0 none · Waves 1, 2, 4, 5, 6 **Tier 2** (`simplify` → `find-bugs` →
-`/second-opinion` → `fp-check`) · Wave 3 **Tier 4** (property tests before the migration +
-fresh-session review).
-- **Wave 0** — n/a (artefacts only). ✅
-- **DEVIATION, stated not silent (2026-09-04):** §5's Tier 2 is a four-step pipeline
-  (`simplify` → `find-bugs` → `/second-opinion` → `fp-check`) **per wave**. Run instead: two
-  branch-wide adversarial reviews, backend and frontend, both read-only at HEAD. Reason: the
-  waves interleave heavily in the same files (`scheduler.py`, `stats.py` and `amazon.py` are
-  each touched by three waves), so a per-wave slice would review the same code repeatedly while
-  missing cross-wave interactions — which is where every real bug today has actually been.
-  **This is a substitution, not the tier as written**, and it does not discharge `simplify` or
-  `fp-check`. Judge whether it was enough from the reports, not from this bullet.
-- **Wave 1** (T1.1–T1.4) — Tier 2 **NOT RUN as specified**; covered by the backend review above.
-- **Wave 2** (T2.1–T2.6) — Tier 2 **NOT RUN**, but the shipping chain it owns had a full
-  adversarial review (S1–S8, report in the session scratchpad), which is stronger than
-  Tier 2 on the part that mattered. Findings all fixed except S2 (queued) and S8→D38.
-- **Wave 3** (T3.1–T3.4) — Tier 4: property-tests-first ✅; fresh-session review **DONE and the
-  verdict is FAIL**. Report: `<scratchpad>/tier4-wave3-review.md`. **THIS BLOCKS THE MERGE TO
-  `master`.** The forward backfill was certified sound (0 mismatches over all 12,337 rows, every
-  consumer output identical for all 13 books), but three items stand:
-  - **F-A HIGH** — `downgrade→upgrade` silently wrecks the live-offer view: 212 rows → **24**,
-    **11 of 13** current-bests change, **7 signal flips**, with `integrity_check` and FK clean
-    throughout. Both round-trip tests run on an **empty DB**, so neither can fail for it.
-  - **F-B MED** — 0021 keeps `last_seen_at` but **discards `current_url`**, reverting migration
-    0019's fix: 187 rows stale, 35 of 212 live candidates, worst case an Amazon **help page**
-    where the deleted row held the offer-listing URL. The property test's table has **no `url`
-    column**, and the migration test gives every row in a group the same URL.
-  - **F-C MED, latent** — D14's raw-`total_minor` rank still in SQL; **zero reachability measured
-    on production today**. Fix, don't oversell.
-  - Plus an undocumented behaviour change (book 6's 12-month window: rank 41→1, p25 +64%).
-  All three are with the stats worker. **Do not merge to `master` until they land.**
-- **Wave 4** (T4.1–T4.5) — Tier 2 **NOT RUN**; T4.1 still in flight.
-- **FRONTEND review DONE 2026-09-04 — 2 HIGH + 4 MED, dispatched to W-T23-prime, NONE FIXED.**
-  Report: `<scratchpad>/review-web.md`. `tsc`/`eslint`/`build` are green with every one present.
-  - **F1 HIGH, data integrity, UNRECOVERABLE** — `AddProductModal.tsx:152` guards on the
-    *debounced* input while `:157` sends the *live* one: edit ASIN A→B, Add within 450 ms, and
-    product B is created carrying A's title/image/brand. Backend stamps `metadata_status="ok"`,
-    all three repair paths filter on `PENDING`, so nothing fixes it. No title on `ProductPatch`,
-    no retry endpoint — only escape is Delete, which also destroys the Keepa history.
-  - **F2 HIGH** — `SignalCard.tsx:25` reads `current_best_total_minor` while its own pill uses
-    the effective total: pill WAIT, text "Target met". `02bdc1e` edited that file without fixing
-    it and moved `SnapshotCard` to effective, so the two cards now visibly disagree.
-    **D34's invariant, SIXTH site** — grep `web/src` for the field, don't fix one line.
-  - **F5 MED** — `columns.tsx` missed it too: dashboard £19.80 vs detail £17.00, same offer.
-  - **F6 MED** — `useConfig.ts:143-150` never invalidates `["products"]`, so the Prime toggle
-    leaves every product price stale.
-  - **F3 MED** — `columns.tsx:158` sorts `current_best_shipping_minor ?? -1`: **unknown sorts
-    below free**. Fifth time that rule has bitten.
-  - **F4 MED** — `metadata_status="failed"` renders no badge, so the permanently-broken state is
-    the one with no indicator.
-- **Wave 5** (T5.1–T5.5) — Tier 2 **NOT RUN**.
-- **Wave 6** (T6.1–T6.8) — Tier 2 **NOT RUN**.
-- **Unpinned ruff is a live reproducibility hole**: `pyproject` says `ruff>=0.8` and there is no
-  `uv.lock`, so "ruff clean" depends on when your venv was made (0.15.7 here, 0.16.6 fresh).
-  Two real errors were invisible on this machine. Pinning is the user's call — flag it.
-- Minor litter for the endgame tidy: a stale `git worktree` registered at
-  `/tmp/claude-1000/-home-ff235-dev-book-alerter/0c646d24-.../scratchpad/clean-check`.
+### Next — IN PRIORITY ORDER, all block the merge
+1. **Wave 3 Tier 4 FAIL — with the stats worker.** Report:
+   `<scratchpad>/tier4-wave3-review.md`. The forward backfill was CERTIFIED SOUND (0
+   mismatches over 12,337 rows; every consumer output identical for all 13 books). Three
+   items stand: **F-A HIGH** — `downgrade→upgrade` silently wrecks the live-offer view
+   (212 rows → **24**, 11 of 13 current-bests change, **7 signal flips**, integrity+FK
+   clean throughout); **F-B MED** — 0021 keeps `last_seen_at` but **discards `current_url`**,
+   reverting migration 0019 (187 rows stale, worst case an Amazon *help page*); **F-C MED,
+   latent** — D14's raw-`total_minor` rank still in SQL, zero production reachability.
+   **Both round-trip tests run on an EMPTY DB and the property test's table has no `url`
+   column, so neither could ever have caught F-A or F-B** — fix the tests too.
+2. **Frontend review — 2 HIGH + 4 MED, with the prime worker, NONE FIXED.** Report:
+   `<scratchpad>/review-web.md`. **F1 HIGH, unrecoverable**: the add-product debounce race
+   creates a product carrying a *different* ASIN's title/image; backend stamps it `"ok"` and
+   all repair paths filter on `PENDING`, so only Delete escapes — which also destroys the
+   Keepa history. **F2 HIGH**: `SignalCard` reads the raw total while its own pill uses the
+   effective one, and `02bdc1e` made the two cards visibly disagree. F3/F5/F6/F4 in the report.
+   **F2+F5+F3 are ONE rule** (D34: no user-facing price comparison reads
+   `current_best_total_minor`; unknown never ranks cheapest) that has leaked to **six** sites
+   and been fixed piecemeal each time — grep `web/src` for the field, don't fix one line.
+3. **W-review-backend's verdict has not returned** — chase it before merging.
+4. Then: merge to `master` (recipe below), which triggers the GHCR build, then
+   `/checkpoint --final`. **NAS deploy stays out of scope.**
+5. **D39 post-deploy obligation** — deploying does NOT fix stored prices; see README
+   → "After the first deploy carrying the shipping fixes".
 
 ### Where the container lives (answered 2026-09-04, verified by diff)
 - Live: `/share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml` on the NAS.
@@ -199,6 +143,16 @@ Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. No
 **`master`** triggers `.github/workflows/build.yml` and publishes a GHCR image — that is the step
 that makes the work deployable, and it is the last thing to do, after review.
 
+### Review-tier tracker (plan §5; a DONE criterion nothing else tracks)
+- **Wave 0** n/a · **Wave 3** Tier 4: property-tests-first ✅, fresh-session review **DONE →
+  FAIL** (see `### Next` item 1) · **Waves 1/2/4/5/6** Tier 2 **NOT RUN as specified**.
+- **DEVIATION, stated not silent:** §5's Tier 2 is `simplify` → `find-bugs` →
+  `/second-opinion` → `fp-check` **per wave**. Run instead: two branch-wide adversarial
+  reviews (backend, frontend) plus a `simplify` pass. Reason: the waves interleave in the
+  same files, so a per-wave slice re-reviews the same code while missing the cross-wave
+  interactions where every real bug has lived. **This is a substitution, not the tier** — it
+  does not discharge `/second-opinion` or `fp-check`. Judge it from the reports.
+
 ### Pending gates before the endgame
 - ~~Re-run the Docker e2e from committed HEAD~~ — **DONE and GREEN 2026-09-04**: built from an
   isolated `git worktree` at HEAD, `2 passed`. It first caught a real break — `test_docker_smoke`
@@ -213,16 +167,12 @@ that makes the work deployable, and it is the last thing to do, after review.
   `tests/e2e/test_smoke.py:243`. Only the negative-case evidence above is outstanding.
 - ~~T4.2 hard gate (7 fixtures with no test)~~ — **CLEARED**, all 8 product fixtures load.
 
-### Expected in-flight churn (do NOT mistake for regressions)
-- `stats.py`, `api/books.py`, `api/products.py`, `app.py`, `scheduler.py` carry the stats
-  worker's uncommitted **T2.2 + S1 + T3.4** work. `app.py`'s `MediansCache` import is
-  meaningless without `stats.py` — they MUST land in one commit.
-- `sources/amazon.py` carries the browser worker's D35 work.
-- **Judge the branch from a clean checkout, never from this tree.** Root broke HEAD once today
-  by committing `app.py` while it held another worker's edits: HEAD imported a symbol HEAD
-  didn't define, and the dirty tree hid it completely. Amended and verified via an isolated
-  `git worktree`. **The lesson D25 does not cover: an explicit pathspec does NOT protect a file
-  you DID name that already holds someone else's edits — run `git diff <path>` first.**
+### Judging the branch
+- **Always from a clean checkout, never the working tree** — other agents' uncommitted work
+  hides real breakage. Root broke HEAD once today by committing `app.py` while it held
+  another worker's edits. **The lesson D25 does NOT cover: an explicit pathspec does not
+  protect a file you DID name that already holds someone else's edits — run
+  `git diff <path>` first.** Verify with `git worktree add --detach <tmp> HEAD`.
 
 ### Integration status (root-verified on a clean checkout of the branch tip)
 - **FINAL GATE, 2026-09-04, HEAD `de78ec5`, isolated worktree — ALL 40 PLAN TASKS RESOLVED**
@@ -275,47 +225,10 @@ that makes the work deployable, and it is the last thing to do, after review.
   progress record**. Wave order as executed: (0 ∥ 3) → 1 → 2 → 4 → 5 → 6.
 
 ### Live jobs & tasks
-- Prod DB read-only snapshot in the session scratchpad (`proddb/book_alerter.db` + WAL), pulled
-  2026-09-04 15:54. Not in the repo. No probe rows written to production.
-
-## Session 2026-09-04
-Two phases in one day. **Morning:** read-only review of the whole codebase against a production
-copy, producing the 38-task plan and findings F1–F25.
-
-**Afternoon — autonomous execution of that plan**, four workers under a dispatcher. 22 of 40
-tasks ticked (T6.7 and T6.8 were added mid-run; T1.2 was dropped on evidence). The plan's one
-stated blocker was cleared first: git history was cloned back from the GitHub remote.
-
-The headline result is that **F1, the shipping bug the plan was written around, is fixed and
-proven**. It was not what the plan hypothesised: Amazon serves a cookieless visitor a
-*conditional* "FREE delivery … on your first order" promise, and the parser recorded £0.00 —
-8 of 9 offers wrong on a live capture. Postcode pinning (the plan's theory) does not work and
-made no difference, so T1.2 was dropped and T2.5 now maps a conditional promise to unknown
-shipping. Verified on one real 10-offer page: 8 → unknown, the genuinely-free row still free,
-the paid row untouched. Also fixed: F3 (unknown shipping ranked as free), F8 (product alerts
-written but never shown), F17 (`GET /api/books` 2101 ms → 453 ms), F2, F12, F26.
-
-Three findings corrected the plan itself (`channel="chromium"` does not clear the
-`HeadlessChrome` UA; the `#twister` marker is stale; F12 was wrong in a worse way — "Delete"
-warned about a cascading delete and silently archived). A new S1, **F26**: Amazon can serve a
-*different ASIN's* page with no bot markers, attributing one product's prices to another.
-
-Not finished: the heartbeat-compaction commit (verified but uncommitted — see `### Next`), the
-Prime toggle, add-product reliability, and the endgame (review tiers, plan audit, push).
-
-### Unstopped agents at last context boundary
-Entries below are SNAPSHOTS from a past boundary, not liveness claims. Before stopping one,
-check its subagents/agent-<id>.jsonl mtime; if TaskStop replies 'No task found', the agent is
-ALREADY dead — that is SUCCESS, not an error to retry. Delete handled lines.
-- (none recorded yet this session — four workers were live at the last update: W-T31-stats
-  on T2.2+S1, W-T11-browser on D35, W-T01-capture on S3, plus a finished shipping review.)
-
-### Stuck-subagent alerts
-- 2026-09-04T17:10:38.918631+00:00 watch: teammate W-T61-web stuck at 45min (stale 40min, 0 open tasks)
-- 2026-09-04T17:10:50.924655+00:00 watch: teammate W-ship-review stuck at 45min (stale 33min, 0 open tasks)
-- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T01-capture' — T0.1 capture script consolidation was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T01-capture-29b3b63ceaa5d381
-- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T11-browser' — T1.1 BrowserSession lifecycle was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T11-browser-04bd4b03f0c03fc6
-- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T31-stats' — T3.1 stats restructure + T3.3 + T6.2 was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T31-stats-f0ee3524496958e9
-- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T61-web' — T6.1 dashboard banner was NOT stopped (quiet 48min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T61-web-eadf5f3fe523352d
-- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-ship-review' — Adversarial shipping-chain review was NOT stopped (quiet 41min). If still live (mtime!), stop by bare id: TaskStop agent-aW-ship-review-3e344fb4ad84c2e9
-- 2026-09-04T17:42:27.365624+00:00 watch: teammate W-T11-browser stuck at 81min (stale 10min, 0 open tasks)
+<!-- /clear wipes these. Agents do NOT survive; re-dispatch from ### Next. -->
+- Agents live at checkpoint (all dead after a clear — their COMMITTED work is safe in git,
+  their in-flight work is not): stats (Wave 3 F-A/F-B/F-C), prime (frontend F1–F6),
+  capture (`simplify` pass), review-backend (verdict never returned — **re-run it**).
+- `/keepwarm` armed 55 min × 6, auto-stops ~23:57. Re-arm only if stepping away again.
+- Reports to read before acting: `<scratchpad>/tier4-wave3-review.md`,
+  `<scratchpad>/review-web.md` — both survive in the session scratchpad.
