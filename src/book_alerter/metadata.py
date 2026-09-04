@@ -356,41 +356,36 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
     miss. Cost is ~10-20s per call (browser launch + nav), so callers gate
     this behind a config flag and call it sequentially, not in the race.
     Returns None on any failure (bot challenge, navigation timeout, missing
-    static fields) — caller treats that as "no metadata available"."""
+    static fields) — caller treats that as "no metadata available".
+
+    Uses the `amazon_uk_product` `BrowserSession` profile (not a book-only
+    one) so this fallback benefits from the same returning-visitor cookie
+    jar as `AmazonUKProductInlineSource` — see `BrowserSession`'s docstring
+    for why a persistent profile matters beyond just bot-evasion.
+    """
     from playwright.async_api import (
         TimeoutError as PlaywrightTimeoutError,
     )
-    from playwright.async_api import (
-        async_playwright,
-    )
+
+    from book_alerter.enums import BrowserProfile
+    from book_alerter.sources.browser import BrowserSession  # local import — heavy
 
     url = amazon_uk_dp_url(isbn13)
     try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
+        async with BrowserSession(BrowserProfile.AMAZON_UK_PRODUCT) as context:
+            page = await context.new_page()
             try:
-                context = await browser.new_context(
-                    viewport={"width": 1366, "height": 768},
-                    locale="en-GB",
+                await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            except PlaywrightTimeoutError:
+                log.warning("metadata.amazon_fallback.nav_timeout", url=url)
+                return None
+            try:
+                await page.wait_for_selector(
+                    "#productTitle", timeout=8_000, state="attached"
                 )
-                page = await context.new_page()
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-                except PlaywrightTimeoutError:
-                    log.warning("metadata.amazon_fallback.nav_timeout", url=url)
-                    return None
-                try:
-                    await page.wait_for_selector(
-                        "#productTitle", timeout=8_000, state="attached"
-                    )
-                except PlaywrightTimeoutError:
-                    log.info("metadata.amazon_fallback.no_title_selector", url=url)
-                html = await page.content()
-            finally:
-                await browser.close()
+            except PlaywrightTimeoutError:
+                log.info("metadata.amazon_fallback.no_title_selector", url=url)
+            html = await page.content()
     except Exception as exc:
         log.warning("metadata.amazon_fallback.error", url=url, error=str(exc))
         return None
@@ -471,41 +466,35 @@ def _parse_amazon_product_metadata(html: str, *, asin: str) -> ProductMetadata |
 async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
     """Playwright-rendered Amazon UK product dp scrape. Returns None on any
     failure (bot challenge, navigation timeout, no title selector). Cost is
-    ~10-20s per call — caller should not invoke this in tight loops."""
+    ~10-20s per call — caller should not invoke this in tight loops.
+
+    Uses the `amazon_uk_product` `BrowserSession` profile — the same one
+    `AmazonUKProductInlineSource` scrapes with — so a returning visitor
+    profile benefits this one-shot lookup too.
+    """
     from playwright.async_api import (
         TimeoutError as PlaywrightTimeoutError,
     )
-    from playwright.async_api import (
-        async_playwright,
-    )
+
+    from book_alerter.enums import BrowserProfile
+    from book_alerter.sources.browser import BrowserSession  # local import — heavy
 
     url = amazon_uk_product_dp_url(asin)
     try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
+        async with BrowserSession(BrowserProfile.AMAZON_UK_PRODUCT) as context:
+            page = await context.new_page()
             try:
-                context = await browser.new_context(
-                    viewport={"width": 1366, "height": 768},
-                    locale="en-GB",
+                await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            except PlaywrightTimeoutError:
+                log.warning("metadata.asin_lookup.nav_timeout", url=url)
+                return None
+            try:
+                await page.wait_for_selector(
+                    "#productTitle", timeout=8_000, state="attached"
                 )
-                page = await context.new_page()
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-                except PlaywrightTimeoutError:
-                    log.warning("metadata.asin_lookup.nav_timeout", url=url)
-                    return None
-                try:
-                    await page.wait_for_selector(
-                        "#productTitle", timeout=8_000, state="attached"
-                    )
-                except PlaywrightTimeoutError:
-                    log.info("metadata.asin_lookup.no_title_selector", url=url)
-                html = await page.content()
-            finally:
-                await browser.close()
+            except PlaywrightTimeoutError:
+                log.info("metadata.asin_lookup.no_title_selector", url=url)
+            html = await page.content()
     except Exception as exc:
         log.warning("metadata.asin_lookup.error", url=url, error=str(exc))
         return None

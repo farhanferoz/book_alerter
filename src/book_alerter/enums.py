@@ -95,3 +95,20 @@ class BookFormat(StrEnum):
     PAPERBACK = "paperback"
     HARDCOVER = "hardcover"
     ANY = "any"
+
+
+class BrowserProfile(StrEnum):
+    """Persistent Playwright profile-directory key for `BrowserSession`
+    (`sources/browser.py`), stored under `data/browser-profiles/<value>/`.
+
+    Every browser-backed `Source` passes its own `self.name` when opening a
+    `BrowserSession` — `self.name` is already a free string sourced from the
+    closed set of `sources/registry.py` keys, so it needs no enum coercion.
+    This enum exists for call sites that pick a profile without holding a
+    Source instance to read `.name` from — currently `metadata.py`'s Amazon
+    fallback lookups, which both use the `amazon_uk_product` profile so a
+    returning-visitor cookie jar benefits every Amazon dp-page scrape."""
+
+    AMAZON = "amazon"
+    AMAZON_UK_PRODUCT = "amazon_uk_product"
+    BOOKFINDER = "bookfinder"
