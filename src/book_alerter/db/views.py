@@ -1,19 +1,37 @@
 """Canonical DDL for SQL views. Imported by Alembic migrations and by
 integration tests (SQLModel.metadata.create_all does not create views).
 
-`book_stats` and `product_stats` are mirror views — identical CTE logic over
-`priceobservation`/`book` vs `productobservation`/`product`, differing only in
-the entity table/column names (and which natural-key column is surfaced:
-`isbn13` vs `asin`). They are rendered from ONE template, `_STATS_VIEW_TEMPLATE`,
-so the freshness / current-best logic lives in a single place. An earlier
-version kept two hand-written strings "for readability"; the last-seen rework
-(migration 0018) made that logic complex enough that two copies were a standing
-drift hazard — a fix applied to one view but not the other would silently skew
-products from books. Parameterising the handful of entity tokens removes the
-duplication; `test_compute_product_stats_window_percentile_matches_book_path`
-asserts the two render to equivalent behaviour.
+As of migration 0020 (plan task T3.1), the LIVE production views are
+`book_live_offers` / `product_live_offers` (candidates: one row per live
+offer, freshness-gated) and `book_history_summary` / `product_history_summary`
+(observation_count / last_observed_at / days_of_history / last_polled_at).
+`stats.compute_stats_for_items` selects the current-best offer from the
+former in Python instead of a `current_best` SQL CTE — that's what let the
+per-item `book_stats`/`product_stats` views collapse into three batched
+queries total for a whole list request. See that function's docstring for
+the selection algorithm.
 
-The template has no literal braces, so `str.format` substitution is safe.
+The `_STATS_VIEW_TEMPLATE` block below (and `BOOK_STATS_VIEW_SQL` /
+`PRODUCT_STATS_VIEW_SQL`) is FROZEN, byte-for-byte, at the pre-0020 shape.
+It is no longer live production DDL — kept only because migrations
+0016-0019 import these names (each of them drops + recreates book_stats/
+product_stats as part of their own upgrade path; whatever content of
+theirs the final 0019 shape overwrote is exactly reproduced by this frozen
+copy, so a fresh `alembic upgrade head` still round-trips correctly) and
+because migration 0020's `downgrade()` recreates book_stats/product_stats
+from these same constants. Do not edit this block to "fix" it going
+forward — new view logic belongs in `_LIVE_OFFERS_VIEW_TEMPLATE` /
+`_HISTORY_SUMMARY_VIEW_TEMPLATE` below.
+
+Both eras render their book/product pair from ONE template each so the
+freshness logic lives in a single place — an earlier version kept two
+hand-written strings "for readability"; the last-seen rework (migration
+0018) made that logic complex enough that two copies were a standing drift
+hazard. `test_compute_product_stats_window_percentile_matches_book_path`
+asserts the book/product sides render to equivalent behaviour.
+
+Every template here has no literal braces, so `str.format` substitution is
+safe.
 """
 from __future__ import annotations
 
@@ -186,3 +204,128 @@ PRODUCT_STATS_VIEW_SQL = _stats_view_sql(
     extra_col="asin",
 )
 DROP_PRODUCT_STATS_VIEW_SQL = "DROP VIEW IF EXISTS product_stats"
+
+
+# ---------------------------------------------------------------------------
+# Live views (migration 0020 onward). `_LIVE_OFFERS_VIEW_TEMPLATE` is the
+# candidate half of the old `current_best` CTE chain — everything through
+# `latest_per_offer`, unchanged — filtered to `rn = 1` and stopped there: one
+# row per live offer (freshness-gated exactly as before), no ranking. Ranking
+# by effective total (price + observed-or-cascade shipping) and the
+# alphabetical tie-break both move to `stats.compute_stats_for_items`.
+# ---------------------------------------------------------------------------
+
+_LIVE_OFFERS_VIEW_TEMPLATE = """
+CREATE VIEW {view} AS
+WITH non_dupes AS (
+    SELECT * FROM {obs} WHERE is_duplicate_of IS NULL
+),
+buyable_last_seen AS (
+    SELECT COALESCE(is_duplicate_of, id) AS canonical_id,
+           MAX(observed_at) AS last_seen,
+           url AS current_url
+    FROM {obs}
+    WHERE source != 'keepa'
+    GROUP BY COALESCE(is_duplicate_of, id)
+),
+live_offers AS (
+    SELECT o.{id}, o.source, o.total_minor, o.price_minor, o.shipping_minor,
+           o.condition, o.seller, ls.current_url AS url, o.id, ls.last_seen
+    FROM non_dupes o
+    JOIN buyable_last_seen ls ON ls.canonical_id = o.id
+    WHERE o.source != 'keepa'
+),
+latest_scrape_per_source AS (
+    SELECT {id}, source, MAX(last_seen) AS latest_seen
+    FROM live_offers
+    GROUP BY {id}, source
+),
+entity_latest AS (
+    SELECT {id}, MAX(latest_seen) AS global_latest
+    FROM latest_scrape_per_source
+    GROUP BY {id}
+),
+-- One row per offer present in its source's most recent scrape, from a source
+-- fresh relative to the entity. The ROW_NUMBER tiebreaker keeps the cheapest
+-- when a (source, condition, seller) partition carries two live prices in one
+-- scrape (e.g. WOB "Very Good £21" + "Like New £22", both used_vg).
+latest_per_offer AS (
+    -- Partition seller via COALESCE(seller,'') so a NULL-seller and an
+    -- ''-seller offer (same source+condition) land in the SAME partition —
+    -- otherwise both could win rn=1 and be handed to the Python selection as
+    -- two distinct candidates for what's really one offer.
+    SELECT lo.{id}, lo.source, lo.total_minor, lo.price_minor, lo.shipping_minor,
+           lo.condition, lo.seller, lo.url,
+           ROW_NUMBER() OVER (
+               PARTITION BY lo.{id}, lo.source, lo.condition, COALESCE(lo.seller, '')
+               ORDER BY lo.last_seen DESC, lo.total_minor ASC, lo.id ASC
+           ) AS rn
+    FROM live_offers lo
+    JOIN latest_scrape_per_source l
+      ON l.{id} = lo.{id} AND l.source = lo.source
+    JOIN entity_latest g ON g.{id} = lo.{id}
+    WHERE lo.last_seen = l.latest_seen
+      AND julianday(g.global_latest) - julianday(l.latest_seen) <= 1.0
+)
+SELECT {id}, source, total_minor, price_minor, shipping_minor, condition, seller, url
+FROM latest_per_offer
+WHERE rn = 1
+"""
+
+# `_HISTORY_SUMMARY_VIEW_TEMPLATE` is the old view's `agg_history` (full
+# canonical history, gates INSUFFICIENT_DATA) + `polled` (last_polled_at over
+# EVERY row including dups — the dashboard's "Last seen") CTEs, unchanged,
+# minus the join against {main} (title/isbn13/asin were never read by
+# `compute_*_stats`; callers already have the Book/Product row).
+_HISTORY_SUMMARY_VIEW_TEMPLATE = """
+CREATE VIEW {view} AS
+WITH non_dupes AS (
+    SELECT * FROM {obs} WHERE is_duplicate_of IS NULL
+),
+agg_history AS (
+    SELECT {id},
+           COUNT(*)         AS observation_count,
+           MAX(observed_at) AS last_observed_at,
+           CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
+    FROM non_dupes
+    GROUP BY {id}
+),
+polled AS (
+    SELECT {id}, MAX(observed_at) AS last_polled_at
+    FROM {obs}
+    GROUP BY {id}
+)
+SELECT ah.{id}, ah.observation_count, ah.last_observed_at, ah.days_of_history,
+       pol.last_polled_at
+FROM agg_history ah
+LEFT JOIN polled pol ON pol.{id} = ah.{id}
+"""
+
+
+def _live_offers_view_sql(*, view: str, id_col: str, obs_table: str) -> str:
+    return _LIVE_OFFERS_VIEW_TEMPLATE.format(view=view, id=id_col, obs=obs_table)
+
+
+def _history_summary_view_sql(*, view: str, id_col: str, obs_table: str) -> str:
+    return _HISTORY_SUMMARY_VIEW_TEMPLATE.format(view=view, id=id_col, obs=obs_table)
+
+
+BOOK_LIVE_OFFERS_VIEW_SQL = _live_offers_view_sql(
+    view="book_live_offers", id_col="book_id", obs_table="priceobservation",
+)
+DROP_BOOK_LIVE_OFFERS_VIEW_SQL = "DROP VIEW IF EXISTS book_live_offers"
+
+PRODUCT_LIVE_OFFERS_VIEW_SQL = _live_offers_view_sql(
+    view="product_live_offers", id_col="product_id", obs_table="productobservation",
+)
+DROP_PRODUCT_LIVE_OFFERS_VIEW_SQL = "DROP VIEW IF EXISTS product_live_offers"
+
+BOOK_HISTORY_SUMMARY_VIEW_SQL = _history_summary_view_sql(
+    view="book_history_summary", id_col="book_id", obs_table="priceobservation",
+)
+DROP_BOOK_HISTORY_SUMMARY_VIEW_SQL = "DROP VIEW IF EXISTS book_history_summary"
+
+PRODUCT_HISTORY_SUMMARY_VIEW_SQL = _history_summary_view_sql(
+    view="product_history_summary", id_col="product_id", obs_table="productobservation",
+)
+DROP_PRODUCT_HISTORY_SUMMARY_VIEW_SQL = "DROP VIEW IF EXISTS product_history_summary"
