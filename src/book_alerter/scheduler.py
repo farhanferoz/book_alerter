@@ -629,8 +629,8 @@ class Scheduler:
         # and idempotent either way: `invalidate()` just clears the cache,
         # and nothing recomputes until the next `GET /api/books`/`/products`
         # actually reads it. `self._app_state` is the same optional hook
-        # `_run_janitor_tick` uses for `janitor_last_run_at` — None in tests
-        # that don't wire a real app, hence the getattr guard.
+        # `_run_janitor` uses for `janitor_last_run_at` — None in tests that
+        # don't wire a real app, hence the getattr guard.
         medians_cache = getattr(self._app_state, "medians_cache", None)
         if medians_cache is not None:
             medians_cache.invalidate()

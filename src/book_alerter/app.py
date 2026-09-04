@@ -30,6 +30,7 @@ from book_alerter.notifications.inapp import InAppNotifier
 from book_alerter.notifications.ntfy import NtfyNotifier
 from book_alerter.scheduler import Scheduler
 from book_alerter.sources.registry import build_sources
+from book_alerter.stats import MediansCache
 
 log = get_logger(__name__)
 
@@ -88,6 +89,13 @@ def _build_runtime(
     app.state.scheduler = scheduler
     app.state.engine = engine
     app.state.notifiers = {n.name: n for n in notifiers}
+    # T3.4: 60s-TTL cache for source_seller_global_shipping_medians, the
+    # cross-item shipping-cascade tier `list_books`/`list_products` used to
+    # recompute (a full observation-table scan) on every dashboard render.
+    # Rebuilt fresh here (not preserved across `rebuild_runtime`) so a
+    # `min_global_median_observations` config change never serves a value
+    # computed under the old threshold.
+    app.state.medians_cache = MediansCache()
 
 
 def rebuild_runtime(app: FastAPI) -> None:

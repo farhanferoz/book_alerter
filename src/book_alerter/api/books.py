@@ -26,7 +26,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -46,7 +46,6 @@ from book_alerter.stats import (
     compute_book_stats,
     compute_signal,
     compute_stats_for_items,
-    source_seller_global_shipping_medians,
 )
 
 router = APIRouter(prefix="/api/books", tags=["books"])
@@ -316,6 +315,7 @@ class BookOut(BaseModel):
 
 @router.get("", response_model=list[BookOut])
 def list_books(
+    request: Request,
     session: SessionDep,
     cfg: ConfigDep,
     include_archived: bool = False,
@@ -324,8 +324,9 @@ def list_books(
     if not include_archived:
         stmt = stmt.where(models.Book.status != ItemStatus.ARCHIVED)
     books = session.exec(stmt).all()
-    medians = source_seller_global_shipping_medians(
+    medians = request.app.state.medians_cache.get_or_compute(
         session,
+        schema=_BOOK_SCHEMA,
         min_observations=cfg.recommendation.min_global_median_observations,
     )
     ids = [b.id or 0 for b in books]

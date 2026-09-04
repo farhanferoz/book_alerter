@@ -74,6 +74,85 @@ def test_get_books_list_returns_books_with_stats(api_client):
     assert body[0]["stats"]["observation_count"] == 0
 
 
+def test_get_books_list_reuses_medians_cache_within_ttl(api_client, engine_with_view):
+    """GET /api/books must read `app.state.medians_cache` (T3.4) rather than
+    recomputing `source_seller_global_shipping_medians` on every render:
+    a shipping-median shift after the first call must NOT show up in the
+    second call's cascade estimate while the cache is still fresh, and MUST
+    show up immediately after `invalidate()`.
+
+    The cascade's tier-1 (`book_source_medians`, this book's own
+    observations for the source) is deliberately NOT cached — it's cheap
+    (already fetched by `compute_stats_for_items`'s query 2) and must
+    always reflect this book's latest data. Only tier-2
+    (`source_seller_global_shipping_medians`, cross-book) is cached, so
+    the shipping observations driving the median shift must live on a
+    *different* book (`donor_bid`) than the one whose stats we read
+    (`bid`) — otherwise the shift would show up via tier-1 regardless of
+    caching and the test would prove nothing about the cache.
+    """
+    bid = _seed_book(api_client)
+    donor_bid = api_client.post(
+        "/api/books",
+        json={"isbn": "9780099490548", "title": "Donor", "author": "A"},
+    ).json()["id"]
+    now = datetime.now(UTC)
+
+    def _amazon_obs(shipping: int, i: int) -> models.PriceObservation:
+        return models.PriceObservation(
+            book_id=donor_bid, source="amazon", seller="Amazon", condition="new",
+            price_minor=1000, currency="GBP", shipping_minor=shipping,
+            total_minor=1000 + shipping, url=f"https://amazon/{i}",
+            observed_at=now - timedelta(days=i), last_seen_at=now - timedelta(days=i),
+            raw={},
+        )
+
+    with Session(engine_with_view) as s:
+        # 5 rows on the DONOR book clear the default
+        # min_global_median_observations=5 threshold; all at shipping=100
+        # -> global median = 100. `bid` itself gets none, so its own
+        # book_source_medians (tier 1) is empty and it must fall through
+        # to tier 2.
+        for i in range(5):
+            s.add(_amazon_obs(100, i + 1))
+        # The current live offer on `bid`: same (source, seller) bucket,
+        # shipping UNKNOWN -> its effective total depends on the cascade's
+        # tier-2 (source, seller_class) global median.
+        s.add(models.PriceObservation(
+            book_id=bid, source="amazon", seller="Amazon", condition="new",
+            price_minor=2000, currency="GBP", shipping_minor=None,
+            total_minor=2000, url="https://amazon/live",
+            observed_at=now, last_seen_at=now, raw={},
+        ))
+        s.commit()
+
+    def _stats_for(bid: int) -> dict:
+        body = api_client.get("/api/books").json()
+        return next(b["stats"] for b in body if b["id"] == bid)
+
+    first = _stats_for(bid)
+    assert first["shipping_estimate_minor"] == 100
+
+    with Session(engine_with_view) as s:
+        # 5 more rows on the DONOR book at shipping=900 would shift the
+        # global median to 500 if recomputed now (ten values: five 100s,
+        # five 900s) -- `bid`'s own data is untouched.
+        for i in range(5):
+            s.add(_amazon_obs(900, i + 10))
+        s.commit()
+
+    second = _stats_for(bid)
+    assert second["shipping_estimate_minor"] == 100, (
+        "medians cache should still be serving the pre-TTL-expiry value"
+    )
+
+    api_client.app.state.medians_cache.invalidate()
+    third = _stats_for(bid)
+    assert third["shipping_estimate_minor"] == 500, (
+        "invalidate() must force a recompute reflecting the new rows"
+    )
+
+
 def test_get_book_by_id_happy_path(api_client):
     created = api_client.post(
         "/api/books",

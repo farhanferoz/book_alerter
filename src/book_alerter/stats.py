@@ -28,6 +28,7 @@ the alert message once T2.2 lands). See its docstring for the Prime seam.
 from __future__ import annotations
 
 import statistics
+import time
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -329,6 +330,60 @@ def source_seller_global_shipping_medians(
         for k, v in by_key.items()
         if len(v) >= min_observations
     }
+
+
+_MEDIANS_CACHE_TTL_SECONDS = 60
+
+
+@dataclass
+class _MediansCacheEntry:
+    medians: dict[tuple[str, SellerClass], int]
+    computed_at: float  # time.monotonic()
+
+
+class MediansCache:
+    """Per-app-instance cache for `source_seller_global_shipping_medians`,
+    keyed by schema (book vs product). T3.4 (plan 2026-09-04): without it,
+    every dashboard render re-scans the whole observation table for this
+    cross-item tier of the shipping cascade; a 60s TTL removes that scan
+    from all but one render per minute.
+
+    `app.py`'s `_build_runtime` attaches one instance to
+    `app.state.medians_cache`, rebuilt fresh on every config reload (same
+    lifecycle as the scheduler) — so a `min_observations` change (from a
+    config edit) always starts a clean cache rather than serving a stale
+    value computed under the old threshold; entries are keyed on schema
+    alone because `min_observations` is otherwise constant for the life of
+    one cache instance. `scheduler.Scheduler` invalidates it after
+    persisting new observations so a fresh scrape's shipping data doesn't
+    wait out the TTL.
+    """
+
+    def __init__(self, *, ttl_seconds: float = _MEDIANS_CACHE_TTL_SECONDS) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[str, _MediansCacheEntry] = {}
+
+    def get_or_compute(
+        self,
+        session: Session,
+        *,
+        schema: _ItemSchema,
+        min_observations: int,
+    ) -> dict[tuple[str, SellerClass], int]:
+        entry = self._entries.get(schema.observation_table)
+        now = time.monotonic()
+        if entry is not None and (now - entry.computed_at) < self._ttl_seconds:
+            return entry.medians
+        medians = source_seller_global_shipping_medians(
+            session, min_observations=min_observations, schema=schema,
+        )
+        self._entries[schema.observation_table] = _MediansCacheEntry(
+            medians=medians, computed_at=now,
+        )
+        return medians
+
+    def invalidate(self) -> None:
+        self._entries.clear()
 
 
 # `Stats` is the item-kind-agnostic alias for the dataclass — books and
