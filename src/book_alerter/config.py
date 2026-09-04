@@ -190,6 +190,25 @@ class JanitorConfig(BaseModel):
     compress_backups: bool = True
 
 
+class KeepaConfig(BaseModel):
+    """Periodic Keepa chart refresh (T6.3).
+
+    **Off by default, and that is a decision rather than caution.** Whether
+    Keepa's chart-PNG endpoint tolerates one request per tracked item per
+    week has NOT been measured by this project, and it is somebody else's
+    service to be careful with. Enabling it is an explicit choice by whoever
+    is willing to establish that.
+
+    When on, the job re-runs the backfill for every ACTIVE item and inserts
+    only chart points not already stored (see `keepa_backfill.backfill_blocking`'s
+    `refresh` mode). Scheduled after the backup and janitor jobs so the three
+    never contend for the database.
+    """
+
+    refresh_enabled: bool = False
+    refresh_schedule: str = "0 5 * * 0"  # Sundays 05:00 UTC, after the janitor
+
+
 class SchedulerConfig(BaseModel):
     """Process-wide scheduler limits (T1.4).
 
@@ -235,6 +254,7 @@ class Config(BaseModel):
     backup: BackupConfig = Field(default_factory=BackupConfig)
     janitor: JanitorConfig = Field(default_factory=JanitorConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    keepa: KeepaConfig = Field(default_factory=KeepaConfig)
 
     @classmethod
     def load(cls, path: Path) -> Config:

@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_chart
 from book_alerter.db import models
+from book_alerter.enums import ItemStatus
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.normalizers import amazon_uk_dp_url, amazon_uk_product_dp_url
 
@@ -63,10 +64,23 @@ def backfill_blocking(
     session_factory: Callable[[], Session],
     *,
     schema: KeepaBackfillSchema,
+    refresh: bool = False,
 ) -> int:
     """Fetch Keepa PNG, extract observations, persist. Returns rows inserted.
 
-    Idempotent: skips if any source='keepa' row already exists for the item.
+    Idempotent in both modes, but by different means.
+
+    Default (`refresh=False`): skips entirely if ANY source='keepa' row
+    already exists for the item. That is the first-backfill guard.
+
+    `refresh=True` (T6.3's weekly job): skips that guard and instead drops
+    individual extractions whose (seller, condition, observed_at) already
+    exists, so a re-run adds only genuinely new chart points. **The plan
+    assumed this per-date dedup already existed; it did not.** Before this,
+    the coarse guard was the only protection, so a periodic re-run would
+    either do nothing at all (guard intact) or duplicate the entire history
+    on every run (guard removed) -- which is why the refresh mode had to
+    bring the dedup with it.
     Splits sessions around the OCR call so the DB connection isn't pinned
     across the ~3-5s extraction.
 
@@ -93,7 +107,7 @@ def backfill_blocking(
             )
             .limit(1)
         ).first()
-        if existing is not None:
+        if existing is not None and not refresh:
             return 0
 
     png = schema.fetch_png(identifier)
@@ -126,6 +140,26 @@ def backfill_blocking(
 
     inserted = 0
     with session_factory() as session:
+        seen: set[tuple[str | None, str, object]] = set()
+        if refresh:
+            # One query, not one per extraction: a chart carries ~400 points
+            # and this job runs over every active item.
+            #
+            # Keyed on the DATE, not the datetime. A Keepa chart carries one
+            # point per day, and the two sides are not directly comparable
+            # anyway: SQLite hands back a naive datetime while
+            # `observed_at_to_datetime` produces a UTC-aware one, so a tuple
+            # comparison silently never matches and every run re-inserts the
+            # whole history. Caught by the dedup test.
+            seen = {
+                (row.seller, str(row.condition), row.observed_at.date())
+                for row in session.exec(
+                    select(schema.observation_model).where(
+                        fk_col == item_id,
+                        schema.observation_model.source == "keepa",
+                    )
+                ).all()
+            }
         for ext in extractions:
             seller, condition = keepa_chart.SERIES_TO_SELLER_CONDITION[ext.series]
             # A Keepa row reconstructs a single historical price point from the
@@ -136,6 +170,8 @@ def backfill_blocking(
             # table, keepa included: stamping now would make a book with only
             # backfilled history claim it had just been polled.
             when = keepa_chart.observed_at_to_datetime(ext.observed_at)
+            if refresh and (seller, str(condition), when.date()) in seen:
+                continue
             session.add(
                 schema.observation_model(
                     **{schema.fk_attr: item_id},
@@ -155,3 +191,59 @@ def backfill_blocking(
             inserted += 1
         session.commit()
     return inserted
+
+
+def keepa_refresh_tick(
+    session_factory: Callable[[], Session],
+    *,
+    enabled: bool,
+) -> int:
+    """T6.3: re-run the Keepa backfill for every ACTIVE item, adding only
+    chart points we don't already have. Returns rows inserted.
+
+    Ships **default-off** (`keepa.refresh_enabled`), and deliberately so:
+    whether Keepa's PNG endpoint tolerates one request per tracked item per
+    week is **not something this codebase has measured**, and it is not a
+    fact worth guessing about someone else's service. Turning it on is an
+    explicit choice by whoever is willing to find out. The plan says the same.
+
+    Never raises: a failing refresh must not take the scheduler down, and a
+    single item's failure must not abandon the rest. Mirrors `janitor_tick`.
+    """
+    if not enabled:
+        log.info("keepa_refresh.disabled")
+        return 0
+
+    total = 0
+    for schema, id_attr in ((BOOK_SCHEMA, "isbn13"), (PRODUCT_SCHEMA, "asin")):
+        try:
+            with session_factory() as session:
+                items = [
+                    (row.id, getattr(row, id_attr))
+                    for row in session.exec(
+                        select(schema.item_model).where(
+                            schema.item_model.status == ItemStatus.ACTIVE
+                        )
+                    ).all()
+                ]
+        except Exception as e:
+            log.error("keepa_refresh.query_failed", error=str(e))
+            continue
+        for item_id, identifier in items:
+            if item_id is None:
+                continue
+            try:
+                total += backfill_blocking(
+                    item_id, identifier, session_factory,
+                    schema=schema, refresh=True,
+                )
+            except Exception as e:
+                # One bad chart (Keepa 404, OCR failure, a rate-limit page)
+                # must not cost the remaining items their refresh.
+                log.warning(
+                    "keepa_refresh.item_failed",
+                    identifier=identifier,
+                    error=str(e),
+                )
+    log.info("keepa_refresh.finished", rows_inserted=total)
+    return total

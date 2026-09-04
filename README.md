@@ -231,6 +231,22 @@ Sessions beyond the cap wait rather than failing. **Changing an existing
 first boot, so an install created before this change keeps whatever schedules it
 already has.
 
+There is also an **off-by-default** weekly job that re-fetches Keepa price
+history for every tracked item:
+
+```yaml
+keepa:
+  refresh_enabled: false        # off unless you turn it on
+  refresh_schedule: "0 5 * * 0" # Sundays 05:00 UTC, after the janitor
+```
+
+It is off for a reason worth stating plainly: **nobody has measured whether
+Keepa's chart endpoint is happy to serve one request per tracked item per
+week.** Keepa is a free third-party service here, and that is their call to
+make, not ours to assume. Turn it on only if you are willing to find out and to
+back off if the answer is no. When it does run it only adds chart points you
+don't already have, so re-running it is cheap and never duplicates history.
+
 See `.env.example` for every supported env var. The notable ones:
 
 | Var | Purpose | Default |

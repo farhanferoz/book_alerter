@@ -645,3 +645,29 @@ async def test_heavily_challenged_run_engages_backoff_despite_a_success(
     # succeeding item reset this to 0 and no backoff ever engaged.
     assert sched._consecutive_errors["amazon"] == 1
     assert "amazon" in sched._backoff_until, "backoff must engage"
+
+
+# --- T6.3: weekly Keepa refresh registration ---------------------------------
+
+
+async def test_keepa_refresh_job_is_not_registered_by_default(tmp_path):
+    """Default-off is the shipped state. Unlike the janitor and backup jobs
+    this one talks to a third party whose rate tolerance we have not
+    measured, so it must not appear unless someone opts in."""
+    sched = _janitor_sched(Config(sources={}), db_path=tmp_path / "b.db")
+    sched.start()
+    try:
+        assert "keepa_refresh" not in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()
+
+
+async def test_keepa_refresh_job_is_registered_when_enabled(tmp_path):
+    cfg = Config(sources={})
+    cfg.keepa.refresh_enabled = True
+    sched = _janitor_sched(cfg, db_path=tmp_path / "b.db")
+    sched.start()
+    try:
+        assert "keepa_refresh" in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()

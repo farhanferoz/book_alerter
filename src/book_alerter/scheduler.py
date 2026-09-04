@@ -25,6 +25,7 @@ from book_alerter.db.models import (
 )
 from book_alerter.enums import ItemKind, ItemStatus
 from book_alerter.janitor import janitor_tick
+from book_alerter.keepa_backfill import keepa_refresh_tick
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 
@@ -247,6 +248,23 @@ class Scheduler:
                 replace_existing=True,
             )
 
+        # T6.3: weekly Keepa refresh. Registered only when explicitly enabled
+        # -- unlike the janitor and backup jobs, this one talks to a third
+        # party whose rate tolerance we have not measured, so it stays off
+        # until someone opts in.
+        kcfg = self._cfg.keepa
+        if kcfg.refresh_enabled:
+            self._sched.add_job(
+                self._run_keepa_refresh,
+                trigger=CronTrigger.from_crontab(
+                    kcfg.refresh_schedule, timezone="UTC"
+                ),
+                id="keepa_refresh",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+
         self._sched.start()
         log.info("scheduler.started", n_jobs=len(self._sched.get_jobs()))
 
@@ -280,6 +298,16 @@ class Scheduler:
             backup_dir=Path(self._cfg.backup.directory),
             session_factory=self._session_factory,
             app_state=self._app_state,
+        )
+
+    def _run_keepa_refresh(self) -> None:
+        """APScheduler entrypoint for the weekly Keepa refresh.
+
+        No try/except, same as `_run_janitor`: `keepa_refresh_tick` is
+        documented never to raise and logs per-item failures itself."""
+        keepa_refresh_tick(
+            self._session_factory,
+            enabled=self._cfg.keepa.refresh_enabled,
         )
 
     def list_jobs(self) -> list[Any]:
