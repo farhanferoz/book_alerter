@@ -114,6 +114,20 @@ _OFFER_LISTING_PAGE_MARKERS: tuple[str, ...] = (
     "#olpOfferList",
     "#olpProductInformation",
 )
+# T4.2: a currently-unavailable product's offer-listing request doesn't
+# render an AOD container at all — Amazon serves the dp-shaped "currently
+# unavailable" page instead (verified on a real capture,
+# tests/fixtures/amazon/products/B0GX54WT36-uk-aod-2026-09-04.html: no
+# #aod-container/#aod-offer-list, but #outOfStockBuyBox_feature_div=1, and
+# its own canonical link matches the ASIN that was requested — a genuine
+# "nothing to list" response, not Amazon serving the wrong page). Kept as
+# its own narrow marker rather than folding into _DP_PAGE_MARKERS: a bare
+# dp-page match would also swallow the F26 wrong-variant-redirect case
+# (tests/fixtures/amazon/products/B0CYT8WL1G-uk-aod-2026-09-04.html is
+# ALSO dp-shaped, but its canonical points at a different ASIN entirely —
+# that one must stay an error, caught upstream by _render_amazon_page's
+# canonical-ASIN check, not be silently reinterpreted as "empty" here).
+_UNAVAILABLE_PAGE_MARKERS: tuple[str, ...] = ("#outOfStockBuyBox_feature_div",)
 
 
 def _matches_any_selector(tree: HTMLParser, selectors: tuple[str, ...]) -> bool:
@@ -692,15 +706,22 @@ def parse_offer_listing(
         offer = _parse_offer_row(row, fallback_url)
         if offer is not None:
             offers.append(offer)
-    if not offers and not _matches_any_selector(tree, _OFFER_LISTING_PAGE_MARKERS):
-        # No rows found AND no recognised offer-listing container — Amazon
-        # almost certainly served an anti-bot or unrelated variant. Raise
-        # rather than report 0; see `_OFFER_LISTING_PAGE_MARKERS` rationale.
+    if (
+        not offers
+        and not _matches_any_selector(tree, _OFFER_LISTING_PAGE_MARKERS)
+        and not _matches_any_selector(tree, _UNAVAILABLE_PAGE_MARKERS)
+    ):
+        # No rows found AND no recognised offer-listing container AND no
+        # "currently unavailable" marker either — Amazon almost certainly
+        # served an anti-bot or unrelated variant. Raise rather than report
+        # 0; see `_OFFER_LISTING_PAGE_MARKERS` / `_UNAVAILABLE_PAGE_MARKERS`
+        # rationale.
         write_debug_capture(source_name, html)
         raise SourceError(
             source_name,
             "offer-listing page did not match any known Amazon UK layout "
-            "(no #aod-container / #aod-offer-list / #olpOfferList); "
+            "(no #aod-container / #aod-offer-list / #olpOfferList / "
+            "#outOfStockBuyBox_feature_div); "
             "treating as anti-bot variant rather than reporting 0 offers",
         )
     return offers
