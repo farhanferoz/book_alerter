@@ -24,6 +24,7 @@ import {
   formatCondition,
   formatMoneyMinor,
   formatRelativeTime,
+  formatShippingMinor,
   formatShippingMinorWithEstimate,
   isBookfinderSourcedLabel,
 } from "@/lib/format";
@@ -113,6 +114,20 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                   Pending
                 </span>
               )}
+              {/* F4: "failed" is the state that never self-heals (the
+                  retry job and the scraper backfill both filter on
+                  "pending", and there's no title field on the patch
+                  endpoint to fix it by hand) -- so it's the one that most
+                  needs a visible, distinct-from-"pending" indicator. The
+                  placeholder title stays forever once this fires. */}
+              {item.kind === "product" && item.metadata_status === "failed" && (
+                <span
+                  className="inline-flex items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
+                  title="Amazon title/image lookup gave up after repeated failures — this product keeps its placeholder title/image until it's re-added or fixed by hand"
+                >
+                  Failed
+                </span>
+              )}
               {item.last_scrape_error && (
                 <span
                   role="img"
@@ -137,17 +152,33 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
       header: "Best price",
       cell: ({ row }) => {
         const item = toItem(row.original);
+        const s = item.stats;
+        // F5: headline the effective total under Prime, same as
+        // `SnapshotCard` on the detail page -- `current_best_total_minor`
+        // can still carry an observed paid-shipping figure the Prime rule
+        // overrides, so the raw total is stale (not just uncertain) in
+        // that one case. The cascade-estimate case keeps the raw
+        // (item-only) price for the same reason `SnapshotCard` does: that
+        // number is a guess, not a fact, so it isn't headlined as a total.
+        const displayTotal = s.prime_applied
+          ? s.current_effective_total_minor
+          : s.current_best_total_minor;
         return (
           <div>
             <span className="font-medium">
-              {formatMoneyMinor(item.stats.current_best_total_minor, item.currency)}
+              {formatMoneyMinor(displayTotal, item.currency)}
             </span>
-            <div className="mt-0.5 flex items-center">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1">
               <SourceBadge
-                source={item.stats.current_best_source}
-                seller={item.stats.current_best_seller}
+                source={s.current_best_source}
+                seller={s.current_best_seller}
               />
-              <ConditionPill condition={item.stats.current_best_condition} />
+              <ConditionPill condition={s.current_best_condition} />
+              {s.prime_applied && (
+                <span className="text-[9px] font-medium uppercase text-muted-foreground">
+                  Prime
+                </span>
+              )}
             </div>
           </div>
         );
@@ -155,28 +186,54 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
     },
     {
       id: "shipping",
-      accessorFn: (row) => toItem(row).stats.current_best_shipping_minor ?? -1,
+      // F3: unknown shipping must never sort as cheaper than free (D20/D34)
+      // -- `?? -1` put it below £0.00. Fall back to the estimate pence
+      // value when there's no observed figure, matching what the cell
+      // actually displays (`~+£2.80*`), and only fall through to "sorts
+      // last" for a row with no live offer at all (mirrors every other
+      // comparator in this file via `sortableTotalMinor`/`rank3mOrInf`).
+      accessorFn: (row) => {
+        const s = toItem(row).stats;
+        return (
+          s.current_best_shipping_minor ??
+          s.shipping_estimate_minor ??
+          Number.MAX_SAFE_INTEGER
+        );
+      },
       header: "Shipping",
       cell: ({ row }) => {
         const item = toItem(row.original);
-        const imputed =
-          item.stats.current_best_shipping_minor == null &&
-          item.stats.shipping_estimate_minor != null;
+        const s = item.stats;
+        // F5: read the backend's flags directly (D10) instead of
+        // re-deriving "is this imputed" from the raw fields, and disclose
+        // the Prime rule -- previously this cell showed a plain `+£2.80`
+        // for a Prime-waived Amazon offer with no indication the charge
+        // isn't actually being paid.
+        if (s.prime_applied) {
+          return (
+            <span
+              className="tabular-nums text-muted-foreground"
+              title="Free under Amazon Prime — this offer's own shipping charge, if any, is waived"
+            >
+              {formatShippingMinor(0, item.currency)}
+            </span>
+          );
+        }
         return (
           <span
             className="tabular-nums text-muted-foreground"
             title={
-              imputed
+              s.shipping_is_estimate
                 ? `Shipping unknown for this listing; using observed median ${formatMoneyMinor(
-                    item.stats.shipping_estimate_minor,
+                    s.shipping_estimate_minor,
                     item.currency,
                   )} for signal & percentile (* marks the estimate).`
                 : undefined
             }
           >
             {formatShippingMinorWithEstimate(
-              item.stats.current_best_shipping_minor,
-              item.stats.shipping_estimate_minor,
+              s.current_best_shipping_minor,
+              s.shipping_estimate_minor,
               item.currency,
             )}
           </span>

@@ -40,7 +40,14 @@ import {
 
 type BookPatch = components["schemas"]["BookPatch"];
 type ItemPatch = BookPatch & { track_used?: boolean };
-type AlertKind = "target_hit" | "percentile_cross" | "new_low";
+// F13: read off the generated schema rather than hand-writing the same
+// three literals -- if the backend ever adds a kind, `ALERT_KINDS` below
+// and the `.filter()` type guard would otherwise still compile clean while
+// silently dropping the user's stored setting for the new kind on next
+// save (the filter discards anything outside this list, and the PATCH
+// sends `[...disabledKinds]` as the whole list). A generated-type mismatch
+// at least surfaces as a compile error instead.
+type AlertKind = components["schemas"]["AlertKind"];
 
 const ALERT_KINDS: ReadonlyArray<{ kind: AlertKind; label: string }> = [
   { kind: "target_hit", label: "Target hit" },

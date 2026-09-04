@@ -132,7 +132,11 @@ function useCreateProduct(onSuccess: (p: ProductOut) => void) {
 function AddProductBody({ onDone }: { onDone: () => void }) {
   const [input, setInput] = useState("");
   const debounced = useDebouncedValue(input, 450);
-  const enabled = looksLikeAsinOrUrl(debounced);
+  // Confirm-enablement reads the LIVE input, matching the header comment's
+  // stated intent ("enabled as soon as the input looks like a valid
+  // ASIN/URL") -- the debounce exists to throttle the Playwright-backed
+  // lookup query below, not to gate the button.
+  const enabled = looksLikeAsinOrUrl(input);
 
   const lookup = useQuery<ProductMetadata, ApiError>({
     queryKey: ["product-asin-lookup", debounced],
@@ -142,9 +146,22 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
       });
       return res as ProductMetadata;
     },
-    enabled,
+    enabled: looksLikeAsinOrUrl(debounced),
     retry: false,
   });
+
+  // `lookup.data` describes `debounced`, which lags up to 450ms behind
+  // `input`. Editing the field again before the debounce catches up (or
+  // just after a paste) leaves `lookup.data` describing a DIFFERENT
+  // ASIN/URL than what `input` now holds. Gating on `debounced === input`
+  // -- i.e. the debounce has genuinely caught up -- is what stops a stale
+  // preview from ever being attached to a submission for a different
+  // product: found in review as a real, unrecoverable bug (F1) where
+  // editing ASIN A -> B and confirming inside the debounce window created
+  // product B carrying A's title/image/brand, with no repair path once
+  // the backend accepts a title and marks metadata_status "ok".
+  const metadataIsCurrent = debounced === input;
+  const preview = metadataIsCurrent ? lookup.data : undefined;
 
   const create = useCreateProduct(onDone);
 
@@ -155,12 +172,14 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
       // resolved yet. The backend's `to_asin` does the same normalisation
       // (bare ASIN or any Amazon URL shape) that the lookup endpoint uses.
       asin_or_url: input.trim(),
-      // Omitted (not empty-string) when the lookup hasn't landed yet, so
-      // the backend generates the placeholder title and metadata_status
-      // "pending" rather than persisting a blank title.
-      title: lookup.data?.title ?? null,
-      image_url: lookup.data?.image_url ?? null,
-      brand: lookup.data?.brand ?? null,
+      // `preview`, not `lookup.data` -- omitted (not empty-string) both
+      // when the lookup hasn't landed yet AND when it landed for a since-
+      // edited input, so the backend generates the placeholder title and
+      // metadata_status "pending" (self-healing) rather than persisting a
+      // stale or blank title as "ok" (permanent, per F1).
+      title: preview?.title ?? null,
+      image_url: preview?.image_url ?? null,
+      brand: preview?.brand ?? null,
       // OpenAPI emits track_used as required (Pydantic field has a default
       // but no Optional). Default-off is the product-side convention; user
       // flips it later on the detail page.
@@ -189,11 +208,11 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
-        {enabled && !lookup.isLoading && lookup.data && (
+        {enabled && !lookup.isLoading && preview && (
           <div className="flex gap-3 rounded-md border border-border p-3">
-            {lookup.data.image_url ? (
+            {preview.image_url ? (
               <img
-                src={lookup.data.image_url}
+                src={preview.image_url}
                 alt=""
                 className="h-20 w-20 rounded object-cover"
               />
@@ -207,22 +226,23 @@ function AddProductBody({ onDone }: { onDone: () => void }) {
             )}
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium truncate">
-                {lookup.data.title}
+                {preview.title}
               </div>
               <div className="text-xs text-muted-foreground">
-                {lookup.data.brand ?? <em>no brand</em>} · ASIN{" "}
-                {lookup.data.asin}
+                {preview.brand ?? <em>no brand</em>} · ASIN{" "}
+                {preview.asin}
               </div>
             </div>
           </div>
         )}
 
-        {/* T4.1: no preview yet (lookup still failing/not-yet-resolved) is
-            not a reason to block adding the product -- Confirm is already
-            enabled below. Covers the lookup.isError case too: whichever
-            reason the preview isn't here, the product still gets added
-            with a placeholder title that fills in later. */}
-        {enabled && !lookup.isLoading && !lookup.data && (
+        {/* T4.1: no preview yet (lookup still failing/not-yet-resolved, or
+            stale for a since-edited input -- see `preview` above) is not a
+            reason to block adding the product -- Confirm is already enabled
+            below. Covers the lookup.isError case too: whichever reason the
+            preview isn't here, the product still gets added with a
+            placeholder title that fills in later. */}
+        {enabled && !lookup.isLoading && !preview && (
           <p className="text-xs text-muted-foreground">
             Details will be filled in after the first scrape.
           </p>

@@ -152,6 +152,14 @@ export function useUpdateConfig() {
         // (the alerts feed itself doesn't refresh, but invalidating here is
         // cheap and keeps the next paint coherent if a dispatch fires).
         void qc.invalidateQueries({ queryKey: ["books"] });
+        // F6: products are stats-computed from this same `RecommendationConfig`
+        // via the same `prime`/percentile fields (`ProductOut.stats` is the
+        // same `BookStatsOut` DTO `books` uses) -- omitting this left every
+        // product signal/price showing the pre-change config until the cache
+        // aged out or the page was hard-reloaded. `amazon_uk_product` is the
+        // product-side source the Prime toggle actually targets, so this
+        // gap mattered most for exactly the toggle this hook now exposes.
+        void qc.invalidateQueries({ queryKey: ["products"] });
         void qc.invalidateQueries({ queryKey: ["alerts"] });
       }
     },

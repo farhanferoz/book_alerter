@@ -35,7 +35,14 @@ function percentileSummary(item: Item): string | null {
 
 function targetDistance(item: Item): string | null {
   if (item.target_price_minor == null) return null;
-  const current = item.stats.current_best_total_minor;
+  // `current_effective_total_minor`, not `current_best_total_minor` (F2 /
+  // D34: "every user-facing price comparison reads the effective total,
+  // never the raw one" -- `stats.py`'s `compute_signal` derives the pill
+  // above from this same field, so a raw-total comparison here can show
+  // the opposite of the pill on the same screen: e.g. £9.50 raw with an
+  // unlisted-shipping estimate landing effective at £12.30 against a
+  // £10.00 target reads "Target met" beside a WAIT/WATCH pill).
+  const current = item.stats.current_effective_total_minor;
   if (current == null) return null;
   const delta = current - item.target_price_minor;
   const pct = Math.round((delta / item.target_price_minor) * 100);
