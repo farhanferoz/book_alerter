@@ -38,7 +38,7 @@ def test_fetch_returns_observation_candidates(monkeypatch: pytest.MonkeyPatch) -
     """Mock the Playwright render and verify the Source contract end-to-end."""
     html = FIXTURE_GB.read_text(encoding="utf-8")
 
-    async def fake_render(self, playwright_factory, url: str) -> str:
+    async def fake_render(self, context, url: str) -> str:
         # Smoke-check the URL we'd hit so a regressed URL builder fails this test.
         assert "keywords=9780747532699" in url
         assert "destination=GB" in url
@@ -47,6 +47,10 @@ def test_fetch_returns_observation_candidates(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(BookfinderInlineSource, "_render", fake_render)
     src = BookfinderInlineSource(region="UK")
+    # `_render` is fully replaced above, so the context it would have used
+    # is never touched — `fetch()` still asserts `prepare()` ran before it
+    # does anything else, so inject a sentinel.
+    src._context = object()
     offers = asyncio.run(src.fetch(_hp_book()))
     assert len(offers) == 3
     assert all(o.price_minor > 0 for o in offers)
@@ -58,8 +62,8 @@ def test_waf_challenge_raises_source_error() -> None:
     the challenge markers — `_render` must raise SourceError so the caller can
     alert, not silently emit zero offers (indistinguishable from 'no listings').
 
-    Drives the real `_render` against a fake Playwright that returns WAF HTML,
-    so the production WAF-detection branch is exercised.
+    Drives the real `_render` against a fake Playwright context that returns
+    WAF HTML, so the production WAF-detection branch is exercised.
     """
     from book_alerter.sources.base import SourceError
 
@@ -71,8 +75,14 @@ def test_waf_challenge_raises_source_error() -> None:
     src = BookfinderInlineSource(region="UK")
     fake_factory = make_fake_playwright_factory(waf_html)
 
+    async def _drive() -> None:
+        async with fake_factory() as pw:
+            browser = await pw.chromium.launch()
+            context = await browser.new_context()
+            await src._render(context, "https://www.bookfinder.com/")
+
     with pytest.raises(SourceError, match="WAF challenge persisted"):
-        asyncio.run(src._render(fake_factory, "https://www.bookfinder.com/"))
+        asyncio.run(_drive())
 
 
 def test_search_url_includes_required_params() -> None:
@@ -98,8 +108,16 @@ def test_live_fetch_against_bookfinder() -> None:
     """Real Playwright + real network. Confirms the AWS WAF actually lets a
     headless Chromium through. Skipped unless BOOKFINDER_LIVE=1 because it's
     slow (~3-5s), needs Chromium installed, and is network-flakey."""
-    src = BookfinderInlineSource(region="UK", timeout_s=45.0)
-    offers = asyncio.run(src.fetch(_hp_book()))
+
+    async def _drive() -> list:
+        src = BookfinderInlineSource(region="UK", timeout_s=45.0)
+        await src.prepare()
+        try:
+            return await src.fetch(_hp_book())
+        finally:
+            await src.cleanup()
+
+    offers = asyncio.run(_drive())
     assert len(offers) >= 1, "live bookfinder returned no offers — WAF blocked or DOM changed"
     for o in offers:
         assert o.price_minor > 0

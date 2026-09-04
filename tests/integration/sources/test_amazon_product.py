@@ -22,6 +22,7 @@ from book_alerter.enums import Condition, ItemKind
 from book_alerter.sources.amazon import AmazonUKProductInlineSource
 from tests.integration.sources.test_amazon import (
     _install_fake_render_page,  # type: ignore[attr-defined]
+    _prepared,  # type: ignore[attr-defined]
 )
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "amazon"
@@ -104,7 +105,7 @@ def test_fetch_with_track_used_false_filters_used_grades(
         },
     )
 
-    src = AmazonUKProductInlineSource(region="UK")
+    src = _prepared(AmazonUKProductInlineSource(region="UK"))
     offers = asyncio.run(src.fetch(_hp_product(track_used=False)))
 
     # Both pages still rendered — track_used filtering happens AFTER merge,
@@ -132,7 +133,7 @@ def test_fetch_with_track_used_true_returns_all_conditions(
         },
     )
 
-    src = AmazonUKProductInlineSource(region="UK")
+    src = _prepared(AmazonUKProductInlineSource(region="UK"))
     offers = asyncio.run(src.fetch(_hp_product(track_used=True)))
 
     assert len(calls) == 2
@@ -158,7 +159,7 @@ def test_fetch_uses_product_asin_directly_in_urls(
         },
     )
 
-    src = AmazonUKProductInlineSource(region="UK")
+    src = _prepared(AmazonUKProductInlineSource(region="UK"))
     asyncio.run(src.fetch(_hp_product()))
 
     # Both calls should have B07XYZ1234 in the URL, not a derived ISBN-10.

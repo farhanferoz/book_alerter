@@ -278,88 +278,103 @@ class Scheduler:
         affected_by_kind: dict[ItemKind, list[int]] = {}
         kind_exceptions: list[tuple[ItemKind, Exception]] = []
         try:
-            for kind in kinds_to_run:
-                try:
-                    ids, attempted, succeeded = await self._run_kind_for_source(
-                        source_name, src, sc, kind,
-                    )
-                except Exception as e:
-                    # Per-kind isolation: a crash inside one kind's iteration
-                    # must NOT swallow the alert pipelines of sibling kinds
-                    # whose observations already committed. Record the failure
-                    # and continue; the SourceRun row reflects partial /
-                    # error based on `succeeded_total` below.
-                    log.error(
-                        "source.kind.exception",
-                        source=source_name,
-                        kind=kind.value,
-                        error=str(e),
-                        tb=traceback.format_exc(),
-                    )
-                    kind_exceptions.append((kind, e))
-                    continue
-                affected_by_kind[kind] = ids
-                attempted_total += attempted
-                succeeded_total += succeeded
+            # prepare()/cleanup() bracket the whole iteration below (not the
+            # no_kinds_to_run early-return above, which fetches nothing).
+            # `prepare()` is INSIDE the inner try (not before it) so that a
+            # `prepare()` failure still reaches the `finally` below — cleanup()
+            # must run even if the source only got as far as opening (part of)
+            # its browser session. A failure inside cleanup() is caught and
+            # logged rather than propagated, so it can never mask whatever
+            # this try/finally would otherwise have raised or returned.
+            try:
+                await src.prepare()
+                for kind in kinds_to_run:
+                    try:
+                        ids, attempted, succeeded = await self._run_kind_for_source(
+                            source_name, src, sc, kind,
+                        )
+                    except Exception as e:
+                        # Per-kind isolation: a crash inside one kind's iteration
+                        # must NOT swallow the alert pipelines of sibling kinds
+                        # whose observations already committed. Record the failure
+                        # and continue; the SourceRun row reflects partial /
+                        # error based on `succeeded_total` below.
+                        log.error(
+                            "source.kind.exception",
+                            source=source_name,
+                            kind=kind.value,
+                            error=str(e),
+                            tb=traceback.format_exc(),
+                        )
+                        kind_exceptions.append((kind, e))
+                        continue
+                    affected_by_kind[kind] = ids
+                    attempted_total += attempted
+                    succeeded_total += succeeded
 
-            with self._session_factory() as session:
-                run = session.get(SourceRun, run_id)
-                run.finished_at = datetime.now(UTC)
-                run.books_attempted = attempted_total
-                run.books_succeeded = succeeded_total
-                if kind_exceptions and succeeded_total == 0:
-                    # Every kind that didn't crash also had zero successes
-                    # (or no kinds ran clean) — treat as error.
-                    run.status = "error"
-                    run.error_message = "; ".join(
-                        f"[{k.value}] {e}" for k, e in kind_exceptions
-                    )
-                    run.error_traceback = traceback.format_exc()
-                elif kind_exceptions:
-                    # At least one kind succeeded; others crashed.
-                    run.status = "partial"
-                    run.error_message = "; ".join(
-                        f"[{k.value}] {e}" for k, e in kind_exceptions
-                    )
-                elif attempted_total == 0:
-                    run.status = "success"  # zero items is success, not partial
-                elif succeeded_total == attempted_total:
-                    run.status = "success"
-                elif succeeded_total > 0:
-                    run.status = "partial"
+                with self._session_factory() as session:
+                    run = session.get(SourceRun, run_id)
+                    run.finished_at = datetime.now(UTC)
+                    run.books_attempted = attempted_total
+                    run.books_succeeded = succeeded_total
+                    if kind_exceptions and succeeded_total == 0:
+                        # Every kind that didn't crash also had zero successes
+                        # (or no kinds ran clean) — treat as error.
+                        run.status = "error"
+                        run.error_message = "; ".join(
+                            f"[{k.value}] {e}" for k, e in kind_exceptions
+                        )
+                        run.error_traceback = traceback.format_exc()
+                    elif kind_exceptions:
+                        # At least one kind succeeded; others crashed.
+                        run.status = "partial"
+                        run.error_message = "; ".join(
+                            f"[{k.value}] {e}" for k, e in kind_exceptions
+                        )
+                    elif attempted_total == 0:
+                        run.status = "success"  # zero items is success, not partial
+                    elif succeeded_total == attempted_total:
+                        run.status = "success"
+                    elif succeeded_total > 0:
+                        run.status = "partial"
+                    else:
+                        run.status = "error"
+                    session.commit()
+
+                if succeeded_total > 0 or (attempted_total == 0 and not kind_exceptions):
+                    self._consecutive_errors[source_name] = 0
+                    self._backoff_until.pop(source_name, None)
                 else:
-                    run.status = "error"
-                session.commit()
-
-            if succeeded_total > 0 or (attempted_total == 0 and not kind_exceptions):
-                self._consecutive_errors[source_name] = 0
-                self._backoff_until.pop(source_name, None)
-            else:
-                self._consecutive_errors[source_name] = (
-                    self._consecutive_errors.get(source_name, 0) + 1
-                )
-                self._apply_backoff(source_name)
-            # Run alert pipelines AFTER the audit row commits, with their own
-            # try/except so a pipeline bug can't corrupt the run record.
-            for kind, ids in affected_by_kind.items():
-                if not ids:
-                    continue
-                pipeline = self._alert_pipelines.get(kind)
-                if pipeline is None:
-                    log.warning(
-                        "alert_pipeline.missing",
-                        source=source_name,
-                        kind=kind.value,
+                    self._consecutive_errors[source_name] = (
+                        self._consecutive_errors.get(source_name, 0) + 1
                     )
-                    continue
+                    self._apply_backoff(source_name)
+                # Run alert pipelines AFTER the audit row commits, with their own
+                # try/except so a pipeline bug can't corrupt the run record.
+                for kind, ids in affected_by_kind.items():
+                    if not ids:
+                        continue
+                    pipeline = self._alert_pipelines.get(kind)
+                    if pipeline is None:
+                        log.warning(
+                            "alert_pipeline.missing",
+                            source=source_name,
+                            kind=kind.value,
+                        )
+                        continue
+                    try:
+                        await pipeline(ids)
+                    except Exception:
+                        log.exception(
+                            "alert_pipeline.failed",
+                            source=source_name,
+                            kind=kind.value,
+                        )
+            finally:
                 try:
-                    await pipeline(ids)
+                    await src.cleanup()
                 except Exception:
-                    log.exception(
-                        "alert_pipeline.failed",
-                        source=source_name,
-                        kind=kind.value,
-                    )
+                    log.exception("source.cleanup.failed", source=source_name)
         except Exception as e:
             log.error(
                 "source.run.exception",

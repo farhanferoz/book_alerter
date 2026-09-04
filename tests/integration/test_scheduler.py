@@ -8,8 +8,46 @@ from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
 from book_alerter.enums import ItemKind
 from book_alerter.scheduler import Scheduler
+from book_alerter.sources.base import Source, SourceError
 from book_alerter.sources.wob import WobInlineSource
 from tests.integration.conftest import WOB_CARRIED_ISBN
+
+
+class _RecordingSource(Source):
+    """A fake `Source` that counts `prepare()`/`cleanup()` calls instead of
+    opening a real `BrowserSession` — used to assert the scheduler's
+    prepare/cleanup wiring (`_run_source_locked`) without a browser.
+
+    `prepare_error` / `fetch_error`, if set, are raised (once recorded)
+    from the respective method — lets a single fixture drive both the
+    "everything succeeds" and "something raises" scheduler test cases.
+    """
+
+    name = "fake_browser_source"
+
+    def __init__(
+        self,
+        *,
+        prepare_error: Exception | None = None,
+        fetch_error: Exception | None = None,
+    ) -> None:
+        self.prepare_calls = 0
+        self.cleanup_calls = 0
+        self._prepare_error = prepare_error
+        self._fetch_error = fetch_error
+
+    async def prepare(self) -> None:
+        self.prepare_calls += 1
+        if self._prepare_error is not None:
+            raise self._prepare_error
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+
+    async def fetch(self, item):
+        if self._fetch_error is not None:
+            raise self._fetch_error
+        return []
 
 
 async def test_scheduler_registers_jobs_from_config():
@@ -313,3 +351,79 @@ async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine
     assert len(dupes) == len(variants) - 1
     for d in dupes:
         assert d.is_duplicate_of == canonical[0].id
+
+
+async def test_scheduler_calls_prepare_and_cleanup_once_when_fetch_raises(
+    sqlite_engine, make_book,
+):
+    """T1.1: `_run_source_locked` must call `prepare()` before iterating
+    kinds and `cleanup()` in a `finally` — and cleanup must run even when
+    an item's `fetch()` raises, not just on the happy path."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+
+    src = _RecordingSource(fetch_error=SourceError("fake_browser_source", "boom"))
+    cfg = Config(
+        sources={
+            "fake_browser_source": SourceConfig(
+                enabled=True, region="UK",
+                per_book_delay_seconds=(0, 0),
+                concurrency=1,
+            ),
+        },
+    )
+    scheduler = Scheduler(
+        config=cfg,
+        sources={"fake_browser_source": src},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
+    )
+
+    run_id = await scheduler.trigger_now("fake_browser_source")
+
+    assert src.prepare_calls == 1
+    assert src.cleanup_calls == 1
+
+    with Session(sqlite_engine) as s:
+        run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
+    # Every item's fetch raised, so the kind "ran" but succeeded nothing —
+    # existing status logic reports this as an error, not a crash of the
+    # whole run (kind_exceptions stays empty; only per-item fetch failed).
+    assert run.status == "error"
+    assert run.books_attempted == 1
+    assert run.books_succeeded == 0
+
+
+async def test_scheduler_calls_cleanup_once_when_prepare_raises(sqlite_engine, make_book):
+    """A `prepare()` failure (e.g. the browser fails to launch) must still
+    reach `cleanup()` exactly once — `prepare()` sits inside the same
+    try/finally as the iteration it guards, not before it."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000002")
+
+    src = _RecordingSource(prepare_error=RuntimeError("chromium launch failed"))
+    cfg = Config(
+        sources={
+            "fake_browser_source": SourceConfig(
+                enabled=True, region="UK",
+                per_book_delay_seconds=(0, 0),
+                concurrency=1,
+            ),
+        },
+    )
+    scheduler = Scheduler(
+        config=cfg,
+        sources={"fake_browser_source": src},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
+    )
+
+    run_id = await scheduler.trigger_now("fake_browser_source")
+
+    assert src.prepare_calls == 1
+    assert src.cleanup_calls == 1
+
+    with Session(sqlite_engine) as s:
+        run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
+    assert run.status == "error"
+    assert "chromium launch failed" in (run.error_message or "")

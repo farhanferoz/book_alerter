@@ -44,6 +44,11 @@ def _install_fake_render_page(monkeypatch: pytest.MonkeyPatch, by_url: dict[str,
     """Patch `_render_amazon_page` to return canned HTML keyed by url-substring;
     return the call log. Patches the module-level helper that both the book and
     product sources route through, so a single patch covers both fetch paths.
+
+    `_render_amazon_page` is fully replaced, so the `context` it would have
+    used is never touched here — callers still need `src._context` set to
+    any non-None sentinel (see `_prepared`) because `fetch()` asserts
+    `prepare()` ran before it does anything else.
     """
     calls: list[str] = []
 
@@ -66,13 +71,18 @@ def _install_fake_render_page(monkeypatch: pytest.MonkeyPatch, by_url: dict[str,
         "book_alerter.sources.amazon._render_amazon_page",
         fake_render_amazon_page,
     )
-    # Also bypass the real browser launch — `fetch` opens a chromium context;
-    # we replace `async_playwright` with the fake factory so no binary is needed.
-    monkeypatch.setattr(
-        "book_alerter.sources.amazon.async_playwright",
-        make_fake_playwright_factory(""),
-    )
     return calls
+
+
+def _prepared(src):
+    """Inject a fake `BrowserSession` context so `fetch()`'s
+    `prepare() must run before fetch()` assertion passes without a real
+    browser. Only a sentinel — the tests that use this always also patch
+    `_render_amazon_page` (see `_install_fake_render_page`), which never
+    touches the context itself.
+    """
+    src._context = object()
+    return src
 
 
 def test_dp_url_and_offer_listing_url() -> None:
@@ -113,7 +123,7 @@ def test_fetch_renders_both_pages_and_merges_with_dedup(
         },
     )
 
-    src = AmazonUKInlineSource(region="UK")
+    src = _prepared(AmazonUKInlineSource(region="UK"))
     offers = asyncio.run(src.fetch(_hp_book()))
 
     assert len(calls) == 2
@@ -154,7 +164,7 @@ def test_fetch_returns_dp_only_when_offer_listing_empty(
         },
     )
 
-    src = AmazonUKInlineSource(region="UK")
+    src = _prepared(AmazonUKInlineSource(region="UK"))
     offers = asyncio.run(src.fetch(_hp_book()))
 
     assert len(calls) == 2
@@ -178,7 +188,7 @@ def test_fetch_returns_offer_listing_only_when_dp_has_no_buybox(
         },
     )
 
-    src = AmazonUKInlineSource(region="UK")
+    src = _prepared(AmazonUKInlineSource(region="UK"))
     offers = asyncio.run(src.fetch(_hp_book()))
 
     assert len(calls) == 2
@@ -226,8 +236,16 @@ def test_live_fetch_against_amazon() -> None:
     consistently blocks this path — kept as a canary for if/when the
     protection eases or our stealth game improves. Skipped unless
     AMAZON_LIVE=1."""
-    src = AmazonUKInlineSource(region="UK", timeout_s=45.0)
-    offers = asyncio.run(src.fetch(_hp_book()))
+
+    async def _drive() -> list:
+        src = AmazonUKInlineSource(region="UK", timeout_s=45.0)
+        await src.prepare()
+        try:
+            return await src.fetch(_hp_book())
+        finally:
+            await src.cleanup()
+
+    offers = asyncio.run(_drive())
     assert len(offers) >= 1, "live amazon returned no offers — bot-protection or DOM change"
     for o in offers:
         assert o.price_minor > 0

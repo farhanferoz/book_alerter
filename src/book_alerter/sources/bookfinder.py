@@ -4,10 +4,10 @@ import re
 import urllib.parse
 
 from playwright.async_api import (
-    TimeoutError as PlaywrightTimeoutError,
+    BrowserContext,
 )
 from playwright.async_api import (
-    async_playwright,
+    TimeoutError as PlaywrightTimeoutError,
 )
 from selectolax.parser import HTMLParser, Node
 
@@ -17,6 +17,7 @@ from book_alerter.sources.base import (
     SourceError,
     TrackedItem,
 )
+from book_alerter.sources.browser import BrowserSessionMixin
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
 
@@ -62,11 +63,14 @@ _SEARCH_PAGE_MARKERS: tuple[str, ...] = (
 _SEARCH_PAGE_TITLE_FRAGMENT = "BookFinder.com:"
 
 
-class BookfinderInlineSource(InlineSource):
+class BookfinderInlineSource(BrowserSessionMixin, InlineSource):
     """Bookfinder.com scraper backed by headless Chromium (Playwright).
 
     See module docstring for why a real browser is required (AWS WAF mp_verify).
     Region selects destination/currency: UK→GB/GBP, anything else→US/USD.
+    Browser lifecycle comes from `BrowserSessionMixin` — the scheduler calls
+    `prepare()`/`cleanup()` around a run; `fetch()` reuses the context
+    `prepare()` opened rather than launching its own.
     """
 
     def __init__(
@@ -114,46 +118,40 @@ class BookfinderInlineSource(InlineSource):
 
     async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
         assert isinstance(item, Book), f"{self.name} only handles books"
+        assert self._context is not None, (
+            f"{self.name}.prepare() must run before fetch()"
+        )
         book = item
         url = self.search_url(book.isbn13)
-        html = await self._render(async_playwright, url)
+        html = await self._render(self._context, url)
         return parse_offers(html, url)
 
-    async def _render(self, playwright_factory, url: str) -> str:
-        """Open headless Chromium, navigate to url, return rendered HTML.
+    async def _render(self, context: BrowserContext, url: str) -> str:
+        """Open a page in `context`, navigate to url, return rendered HTML.
 
-        Split out so tests can monkeypatch the playwright_factory.
+        Split out so tests can monkeypatch `_render` directly. `context` is
+        the source's shared `BrowserSession` context (opened once per
+        scheduler run by `BrowserSessionMixin.prepare()`), not a per-call
+        browser launch.
         """
-        async with playwright_factory() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        page = await context.new_page()
+        try:
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=self.timeout_s * 1000
             )
-            try:
-                context = await browser.new_context(
-                    viewport={"width": 1366, "height": 768},
-                    locale="en-GB" if self.region.upper() == "UK" else "en-US",
-                )
-                page = await context.new_page()
-                try:
-                    await page.goto(
-                        url, wait_until="domcontentloaded", timeout=self.timeout_s * 1000
-                    )
-                except PlaywrightTimeoutError as e:
-                    raise SourceError(self.name, f"navigation timed out: {e}") from e
-                # Wait for offers to render. Selector-timeout means the book has
-                # no listings; capture content and let the parser report empty.
-                try:
-                    await page.wait_for_selector(
-                        '[data-test-id^="search-offer-card-"]',
-                        timeout=self.timeout_s * 1000,
-                        state="attached",
-                    )
-                except PlaywrightTimeoutError:
-                    pass
-                html = await page.content()
-            finally:
-                await browser.close()
+        except PlaywrightTimeoutError as e:
+            raise SourceError(self.name, f"navigation timed out: {e}") from e
+        # Wait for offers to render. Selector-timeout means the book has
+        # no listings; capture content and let the parser report empty.
+        try:
+            await page.wait_for_selector(
+                '[data-test-id^="search-offer-card-"]',
+                timeout=self.timeout_s * 1000,
+                state="attached",
+            )
+        except PlaywrightTimeoutError:
+            pass
+        html = await page.content()
 
         if "awsWafCookieDomainList" in html or "gokuProps" in html:
             raise SourceError(

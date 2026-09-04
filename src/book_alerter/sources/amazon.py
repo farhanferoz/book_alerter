@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 
 from playwright.async_api import (
-    TimeoutError as PlaywrightTimeoutError,
+    BrowserContext,
 )
 from playwright.async_api import (
-    async_playwright,
+    TimeoutError as PlaywrightTimeoutError,
 )
 from selectolax.parser import HTMLParser, Node
 
@@ -17,6 +17,7 @@ from book_alerter.sources.base import (
     SourceError,
     TrackedItem,
 )
+from book_alerter.sources.browser import BrowserSessionMixin
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
 from book_alerter.sources.normalizers import (
@@ -29,7 +30,11 @@ from book_alerter.sources.normalizers import (
 # that doesn't render JS in a real browser (verified 2026-05-14: headless
 # Chromium + stealth flags + cookie warm-up still got served the
 # "To discuss automated access to Amazon" interstitial). So this source
-# drives headless Chromium via Playwright for every lookup.
+# drives headless Chromium via Playwright, through a `BrowserSession`
+# (sources/browser.py) that the scheduler opens once per run via
+# `prepare()`/`cleanup()` and shares across every item's fetch — see
+# `BrowserSession`'s docstring for why a persistent profile also fixes a
+# data-accuracy bug (first-order promo shipping prices), not just blocking.
 #
 # Strategy: render BOTH /dp/<ISBN> and /gp/offer-listing/<ISBN>?condition=all
 # on every fetch and merge. The dp buy-box almost always also appears as a
@@ -114,14 +119,16 @@ def _matches_any_selector(tree: HTMLParser, selectors: tuple[str, ...]) -> bool:
     return any(tree.css_first(sel) is not None for sel in selectors)
 
 
-class AmazonUKInlineSource(InlineSource):
+class AmazonUKInlineSource(BrowserSessionMixin, InlineSource):
     """Amazon UK scraper backed by headless Chromium (Playwright).
 
     Renders both the dp and the offer-listing pages on every fetch and
     merges the offers, deduping rows that appear on both. Books-only —
     `AmazonUKProductInlineSource` handles products. Both share the lower-
     level `_fetch_offers_for_asin` helper so DOM contract changes only need
-    to land in one place.
+    to land in one place. Browser lifecycle comes from `BrowserSessionMixin`
+    — the scheduler calls `prepare()`/`cleanup()` around a run; `fetch()`
+    reuses the context `prepare()` opened rather than launching its own.
     """
 
     def __init__(
@@ -149,10 +156,14 @@ class AmazonUKInlineSource(InlineSource):
         # item_kinds, but a misconfigured Source instance is the kind of
         # thing we'd rather hit hard than silently no-op.
         assert isinstance(item, Book), f"{self.name} only handles books"
+        assert self._context is not None, (
+            f"{self.name}.prepare() must run before fetch()"
+        )
         # Books always track every condition Amazon publishes — the used
         # market is the whole point of the book pipeline.
         return await _fetch_offers_for_asin(
             asin_for_amazon_uk(item.isbn13),
+            context=self._context,
             source_name=self.name,
             timeout_s=self.timeout_s,
             track_used=True,
@@ -188,7 +199,7 @@ def _offer_listing_url_for_asin(asin: str) -> str:
 
 
 async def _render_amazon_page(
-    context,
+    context: BrowserContext,
     url: str,
     *,
     wait_selector: str,
@@ -226,11 +237,16 @@ async def _render_amazon_page(
 async def _fetch_offers_for_asin(
     asin: str,
     *,
+    context: BrowserContext,
     source_name: str,
     timeout_s: float,
     track_used: bool,
 ) -> list[ObservationCandidate]:
-    """Render Amazon UK dp + offer-listing for `asin`, merge + dedup.
+    """Render Amazon UK dp + offer-listing for `asin` in `context`, merge + dedup.
+
+    `context` is the source's shared `BrowserSession` context (opened once
+    per scheduler run by `BrowserSessionMixin.prepare()`), not a per-call
+    browser launch — every item fetched by this source run reuses it.
 
     `track_used=False` filters out non-NEW conditions before merging — used
     by `AmazonUKProductInlineSource` because most non-book products have no
@@ -241,54 +257,43 @@ async def _fetch_offers_for_asin(
     """
     dp_url = f"https://www.amazon.co.uk/dp/{asin}"
     offer_url = _offer_listing_url_for_asin(asin)
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
-        try:
-            context = await browser.new_context(
-                viewport={"width": 1366, "height": 768},
-                locale="en-GB",
-            )
-            dp_html = await _render_amazon_page(
-                context,
-                dp_url,
-                wait_selector=(
-                    "#corePriceDisplay_desktop_feature_div, "
-                    "#corePrice_feature_div, "
-                    ".a-price .a-offscreen"
-                ),
-                # Buy-box renders fast — cap the wait so a buy-box-less
-                # listing doesn't burn the full Playwright timeout.
-                wait_ms=min(10_000, int(timeout_s * 1000)),
-                navigation_timeout_s=timeout_s,
-                source_name=source_name,
-            )
-            dp_offers = parse_dp(dp_html, dp_url, source_name=source_name)
-            offer_html = await _render_amazon_page(
-                context,
-                offer_url,
-                wait_selector="#aod-offer-list, .olpOfferList",
-                wait_ms=int(timeout_s * 1000),
-                navigation_timeout_s=timeout_s,
-                source_name=source_name,
-            )
-            offer_listing_offers = parse_offer_listing(
-                offer_html, offer_url, source_name=source_name,
-            )
-            merged = _merge_offers([*dp_offers, *offer_listing_offers])
-            if not track_used:
-                merged = [o for o in merged if o.condition == Condition.NEW]
-            return merged
-        finally:
-            await browser.close()
+    dp_html = await _render_amazon_page(
+        context,
+        dp_url,
+        wait_selector=(
+            "#corePriceDisplay_desktop_feature_div, "
+            "#corePrice_feature_div, "
+            ".a-price .a-offscreen"
+        ),
+        # Buy-box renders fast — cap the wait so a buy-box-less
+        # listing doesn't burn the full Playwright timeout.
+        wait_ms=min(10_000, int(timeout_s * 1000)),
+        navigation_timeout_s=timeout_s,
+        source_name=source_name,
+    )
+    dp_offers = parse_dp(dp_html, dp_url, source_name=source_name)
+    offer_html = await _render_amazon_page(
+        context,
+        offer_url,
+        wait_selector="#aod-offer-list, .olpOfferList",
+        wait_ms=int(timeout_s * 1000),
+        navigation_timeout_s=timeout_s,
+        source_name=source_name,
+    )
+    offer_listing_offers = parse_offer_listing(
+        offer_html, offer_url, source_name=source_name,
+    )
+    merged = _merge_offers([*dp_offers, *offer_listing_offers])
+    if not track_used:
+        merged = [o for o in merged if o.condition == Condition.NEW]
+    return merged
 
 
-class AmazonUKProductInlineSource(InlineSource):
+class AmazonUKProductInlineSource(BrowserSessionMixin, InlineSource):
     """Amazon UK scraper for non-book products. ASIN comes straight from
     `Product.asin` (no ISBN conversion). Honours `Product.track_used` for
-    the per-row used-market opt-in.
+    the per-row used-market opt-in. Browser lifecycle from
+    `BrowserSessionMixin` — see `AmazonUKInlineSource`.
     """
 
     name = "amazon_uk_product"
@@ -316,8 +321,12 @@ class AmazonUKProductInlineSource(InlineSource):
 
     async def fetch(self, item: TrackedItem) -> list[ObservationCandidate]:
         assert isinstance(item, Product), f"{self.name} only handles products"
+        assert self._context is not None, (
+            f"{self.name}.prepare() must run before fetch()"
+        )
         return await _fetch_offers_for_asin(
             item.asin,
+            context=self._context,
             source_name=self.name,
             timeout_s=self.timeout_s,
             track_used=item.track_used,
