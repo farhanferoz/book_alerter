@@ -7,19 +7,20 @@
 ## State
 
 ### Now
-- **All 40 plan tasks resolved** (39 ticked + T1.2 dropped by its own gate, D21) **and all four
-  reviews' findings resolved**, bar a frontend tail in flight (see `### Next`).
-  - Tier 4 Wave 3: F-A, F-B, F-C, F-D, F-E — **5/5**.
-  - Backend review: F-B1…F-B10 — **10/10**. Cross-wave items → D41 (deferred, pre-existing)
-    and D44 (refuted by measurement).
-  - Shipping-chain review: S1…S8 — **8/8**.
-  - Frontend review: F1–F6, F11 fixed, F13 partial; **F7/F8/F9/F10/F12/F13-rest/F14 in flight.**
-- Branch `wave-execution` at `e12b88f`. **`master` is an ancestor of HEAD → the merge is a clean
-  fast-forward**, 140 commits, no conflicts possible.
-- **The merge to `master` is the only remaining release action.** It triggers the GHCR build
-  (verified: `.github/workflows/build.yml` fires on push to `master` for `src/**`, `web/**`,
-  `Dockerfile`, `pyproject.toml`, `alembic.ini`, `docker-entrypoint.sh`; `workflow_dispatch`
-  is the manual fallback).
+- **RELEASE SHIPPED 2026-09-04.** `master` fast-forwarded to `917996b` and pushed; the GHCR build
+  (run `33905984011`) completed **success** in 3m47s and pushed
+  `ghcr.io/farhanferoz/book_alerter` at digest `sha256:e82d53fc7e670f4b40f0833ee9d9677d3efc1027b8945f22dc10257ff3830082`,
+  tags `latest` / `sha-917996b`, revision label matching the release commit. `master` is now at
+  `3857a5a` (a docs-only follow-up; README is outside the workflow's paths filter, so it correctly
+  did NOT rebuild — the image still corresponds to `917996b`).
+- **All 40 plan tasks resolved** (39 ticked + T1.2 dropped by its own gate, D21) **and all 37
+  findings across four reviews resolved**: Tier 4 5/5, backend 10/10, shipping-chain 8/8,
+  frontend 14/14.
+- **Gates at the release commit, all green:** `pytest -q` **656 passed / 3 skipped** · ruff clean ·
+  `tsc -b` + `eslint` + `npm run build` clean · **Docker e2e 2 passed** (image rebuilt from a clean
+  checkout at HEAD) · migrations 0019→head on a production copy clean (FK + integrity ok,
+  90,172 → 12,337 rows) · `smoke_check` **12/12 in 0.81 s** · `bench_stats` **0.086 s** vs the
+  0.35 s gate (D23) · `git status --short` clean.
 
 ### Run contract (binding for this autonomous run)
 - **In scope:** the 2026-09-04 plan (T0.1–T6.6 + T6.7), and the fix passes for all four reviews.
@@ -49,16 +50,21 @@ Run from `/home/ff235/dev/book_alerter`.
   — the **original pre-migration** copy at revision `0019`, 90,172 rows. Copy it; never work in place.
 
 ### Next
-1. **Wait for `W-T23-prime` to commit** the frontend tail (F7/D40 dead-hook removal + `useItems`
-   repoint, F8 `ScrapeHealthBanner` + `ProductsDashboard`, F9, F10, F12, F13 remainder, F14).
-2. **Full-suite gate on a clean tree.** The `test_scope_guard` hook blocks whole-suite runs while
-   the working tree is dirty; it allows everything once clean, so this resolves itself after (1).
-   Its documented release escapes (`CCLAUDE_TESTSCOPE_RANGE`, `.claude-testscope-range`) did **not**
-   take effect from an isolated worktree — the hook resolves the repo root from the main tree.
-   Do **not** use `CCLAUDE_TESTSCOPE_MODE=off`: the hook states that hatch is human-only.
-3. **Frontend gate** (`tsc -b`, `eslint`, `npm run build`) — needs prime's commit first.
-4. **Merge to `master`** (fast-forward), push, confirm the GHCR build starts.
-5. `/checkpoint --final`.
+**Nothing blocks the release — it is shipped.** What remains is operator work, deliberately out of
+scope for the autonomous run (the bar set was *ready for* deployment):
+
+1. **Deploy to the NAS** when you want it live: README → "Deploying to the NAS". Back up first
+   (this release carries migration `0021`), then `compose pull && up -d`, then the **mandatory
+   `VACUUM`** — 0021 deletes 86% of `priceobservation` and SQLite will not return the pages
+   without it.
+2. **D39's post-deploy obligation — do NOT skip.** Deploying does not correct stored prices.
+   Re-measured at HEAD: **2,780 zero-shipping rows across all 13 books**, so the app will keep
+   showing free delivery for every tracked book until scrapes re-run. **Then re-measure the
+   cascade**: those legacy zeros stay in the 365-day window and can drag the estimate for
+   newly-unknown rows toward £0, reintroducing the same harm by another route. If it does, a
+   *dated* exclusion (rows written before T2.5) is the justified fix — a fact about which parser
+   wrote them, not a heuristic about the data.
+3. **Optional, user's call:** the two tooling gaps under "Tooling gaps found 2026-09-04".
 
 ### Pushing
 ```bash
