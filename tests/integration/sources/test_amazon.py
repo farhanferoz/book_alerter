@@ -117,8 +117,18 @@ def test_fetch_renders_both_pages_and_merges_with_dedup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both dp + offer-listing populated. The Amazon buy-box appears on both
-    pages; the merged result must collapse it to a single row, preferring
-    the offer-listing's concrete shipping_minor=0 over the dp's None."""
+    pages; the merged result must collapse it to a single row.
+
+    S8 (2026-09-04): this used to assert the offer-listing's concrete
+    shipping_minor=0 wins over the dp's None ("a known value beats no
+    information"). Since T2.5/D33/D35, a disagreeing 0 is not more
+    informative than an honest None — the 0 might itself just be a miss on
+    that render — so None now wins a None-vs-0 disagreement specifically
+    (a real non-zero charge still beats None, unchanged). Flipped
+    deliberately here for the same reason as the two `_merge_offers` unit
+    tests in test_amazon_parser.py; see that file's S8 tests for the full
+    both-directions reasoning.
+    """
     calls = _install_fake_render_page(
         monkeypatch,
         {
@@ -140,7 +150,7 @@ def test_fetch_renders_both_pages_and_merges_with_dedup(
     sellers = {o.seller for o in offers}
     assert sellers == {"Amazon", "BetterWorldBooksUK", "WorldOfBooks Ltd", "MusicMagpie"}
     amazon_row = next(o for o in offers if o.seller == "Amazon")
-    assert amazon_row.shipping_minor == 0  # offer-listing's value wins over dp's None
+    assert amazon_row.shipping_minor is None  # S8: None wins a None-vs-0 disagreement
     used_conditions = {o.condition for o in offers if o.seller != "Amazon"}
     assert used_conditions == {"used_vg", "used_g", "used_acceptable"}
 

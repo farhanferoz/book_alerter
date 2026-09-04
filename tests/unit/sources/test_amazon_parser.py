@@ -107,6 +107,35 @@ def test_parse_delivery_text_conditional_free_promise_uses_concrete_charge() -> 
     assert _parse_delivery_text("£5.00 delivery (or FREE over £25)") == 500
 
 
+def test_parse_delivery_text_spend_threshold_is_not_read_as_a_charge() -> None:
+    """S7 regression: "FREE delivery ... over £35" used to read the £35
+    THRESHOLD as a £35.00 delivery CHARGE — `_DELIVERY_PRICE_GBP_RE` has no
+    way to tell "the charge is £X" from "free once you spend over £X" on
+    its own; both are just a bare £-amount to it. Verbatim wording from
+    tests/fixtures/amazon/products/B0CYT8WL1G-uk-dp-2026-09-04.html.
+
+    Masked in production today because `_extract_shipping_minor` reads the
+    short `data-csa-c-delivery-price` attribute (just "FREE" or "£X.XX",
+    never a threshold mention) before ever calling this function on the
+    long sentence — this protects the fallback path for when that
+    attribute is absent (the legacy `#aod-offer-shipping`-only layout, or
+    a future template variant), which no capture on file exercises today.
+    """
+    from book_alerter.sources.amazon import _parse_delivery_text
+
+    assert _parse_delivery_text(
+        "FREE delivery Tuesday, 8 September on orders dispatched by Amazon over £35"
+    ) == 0
+    assert _parse_delivery_text("FREE delivery on orders over £10") == 0
+    assert _parse_delivery_text("Free delivery ON ORDERS OVER  £ 25.00") == 0
+    # A genuine charge earlier in the same sentence must still win over a
+    # LATER threshold mention — the exclusion is per-match, not "give up
+    # entirely if the word 'over' appears anywhere in the text".
+    assert _parse_delivery_text(
+        "£3.49 delivery. Free delivery on orders over £35."
+    ) == 349
+
+
 def test_extract_dp_condition_non_resale_seller_defaults_to_new() -> None:
     """Substring "warehouse" appearing in a legitimate marketplace name
     must NOT trigger the Used classification — only the literal
@@ -415,10 +444,18 @@ def _cand(
     )
 
 
-def test_merge_dedups_overlapping_offer_preferring_concrete_shipping() -> None:
-    """The dp buy-box (shipping_minor=None) duplicates a row on the
-    offer-listing page (shipping_minor=0). The merged result must collapse
-    the pair to a single row carrying the concrete shipping value."""
+def test_merge_dedups_overlapping_offer_prefers_unknown_over_a_disagreeing_zero() -> None:
+    """S8 (2026-09-04): this test used to assert the OPPOSITE outcome
+    ("the merged result must collapse the pair to a single row carrying
+    the concrete shipping value", i.e. 0) — that was correct pre-T2.5, when
+    a `None` only ever meant "we didn't observe shipping" and a concrete
+    `0` was strictly more informative. Since T2.5/D33/D35, `None` can also
+    mean "we positively confirmed this promise is conditional", and
+    preferring a disagreeing `0` in that case would silently discard
+    exactly the finding those fixes exist to surface — the `0` might
+    itself just be a miss on this particular render. Flipped deliberately,
+    reported rather than silently adjusted: see the D35 follow-up
+    (S6/S7/S8) commit for the full reasoning."""
     dp_row = _cand("Amazon", "new", 799, shipping_minor=None)
     ol_amazon = _cand("Amazon", "new", 799, shipping_minor=0)
     ol_wob = _cand("WorldOfBooks Ltd", "used_g", 399, shipping_minor=280)
@@ -427,8 +464,23 @@ def test_merge_dedups_overlapping_offer_preferring_concrete_shipping() -> None:
 
     assert len(merged) == 2
     by_seller = {o.seller: o for o in merged}
-    assert by_seller["Amazon"].shipping_minor == 0
+    assert by_seller["Amazon"].shipping_minor is None
     assert by_seller["WorldOfBooks Ltd"].price_minor == 399
+
+
+def test_merge_still_prefers_a_genuine_nonzero_charge_over_unknown() -> None:
+    """S8's OTHER half, unchanged from before: a real non-zero charge
+    (e.g. from a hydration-skeletoned dp slot's sibling AOD row) is still
+    strictly more informative than an honest "we don't know" — T2.5/D33/
+    D35 never null out a non-zero shipping value, only exactly 0, so a
+    disagreement against a non-zero value was never the case S8 is about."""
+    dp_row = _cand("Amazon", "new", 799, shipping_minor=None)
+    ol_amazon = _cand("Amazon", "new", 799, shipping_minor=280)
+
+    merged = _merge_offers([dp_row, ol_amazon])
+
+    assert len(merged) == 1
+    assert merged[0].shipping_minor == 280
 
 
 def test_merge_treats_different_conditions_as_distinct() -> None:
@@ -444,14 +496,22 @@ def test_merge_treats_different_conditions_as_distinct() -> None:
 
 def test_merge_seller_match_is_case_and_whitespace_insensitive() -> None:
     """Amazon sometimes returns the seller as " Amazon " or "amazon" across
-    page templates. Treat them as the same seller for dedup purposes."""
+    page templates. Treat them as the same seller for dedup purposes.
+
+    The shipping assertion below only proves the two rows actually merged
+    into one (len==1); WHICH shipping value survives is S8's concern, not
+    this test's — see test_merge_dedups_overlapping_offer_prefers_unknown_
+    over_a_disagreeing_zero for that. Updated from `== 0` to `is None` in
+    the same S8 commit since this fixture happens to hit that exact
+    None-vs-0 boundary too.
+    """
     dp_row = _cand(" Amazon ", "new", 799, shipping_minor=None)
     ol_row = _cand("amazon", "new", 799, shipping_minor=0)
 
     merged = _merge_offers([dp_row, ol_row])
 
     assert len(merged) == 1
-    assert merged[0].shipping_minor == 0
+    assert merged[0].shipping_minor is None
 
 
 def test_merge_preserves_dp_row_when_no_offer_listing_match() -> None:

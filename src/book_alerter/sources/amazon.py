@@ -456,11 +456,25 @@ def _merge_offers(offers: list[ObservationCandidate]) -> list[ObservationCandida
     Match on (normalized seller, condition, price_minor). Shipping is left
     out of the key because the dp delivery block and the offer-listing
     `#aod-offer-shipping` line can disagree representationally for the
-    same buy-box offer (the dp slot may be hydration-skeletoned to
-    shipping_minor=None while the offer-listing row resolves to 0 from
-    "FREE delivery"). When a duplicate is found, the entry with concrete
-    shipping data wins over one with shipping_minor=None — a known value
-    beats no information.
+    same buy-box offer.
+
+    Two DIFFERENT reasons a duplicate can disagree on shipping, resolved
+    oppositely (S8):
+
+    - One side is `None` because it never observed anything at all (the dp
+      slot hydration-skeletoned) and the other has a genuine non-zero
+      charge (e.g. 280). The charge is strictly more informative than no
+      data — it wins, unchanged since before T2.5.
+    - One side is `None` because T2.5/D33/D35 positively confirmed the
+      promise is conditional, and the other is exactly `0`. Since T2.5,
+      `0` disagreeing with `None` is NOT "a known value beats no
+      information" — the `0` might itself just be a miss (that render's
+      layout lacked the attribute or qualifying text the other one had),
+      and the `None` is the more recently-earned, positive finding.
+      Preferring the concrete `0` here would silently discard exactly the
+      finding T2.5/D33/D35 exist to surface. `None` wins in this specific
+      case — never a non-zero concrete value, only `0`, since a real paid
+      charge is never something T2.5/D33/D35 would have nulled out.
     """
     by_key: dict[tuple[str, str, int], ObservationCandidate] = {}
     for o in offers:
@@ -469,7 +483,10 @@ def _merge_offers(offers: list[ObservationCandidate]) -> list[ObservationCandida
         if existing is None:
             by_key[key] = o
             continue
-        if existing.shipping_minor is None and o.shipping_minor is not None:
+        e_ship, o_ship = existing.shipping_minor, o.shipping_minor
+        if e_ship is None and o_ship is not None and o_ship != 0:
+            by_key[key] = o
+        elif e_ship == 0 and o_ship is None:
             by_key[key] = o
     return list(by_key.values())
 
@@ -493,13 +510,33 @@ _DELIVERY_BLOCK_SELECTORS: tuple[str, ...] = (
 )
 
 
-def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
-    """Pull the buy-box delivery cost in pence from `tree`, or None.
+def _find_dp_delivery_block(tree: HTMLParser) -> Node | None:
+    """The ONE delivery block `_extract_dp_shipping_minor`,
+    `_extract_dp_delivery_text` and `_extract_dp_delivery_condition_attrs`
+    all read from (S6 fix).
 
-    Returns 0 when the delivery line says "FREE delivery", an integer pence
-    value when it says "£X.XX delivery", and None when no populated delivery
-    block is present — None means "we didn't observe shipping" rather than
-    "free", so downstream can choose to fall back honestly.
+    Before this, the three scanned `_DELIVERY_BLOCK_SELECTORS`
+    independently with different "which block wins" rules:
+    `_extract_dp_shipping_minor` skipped a non-empty block that didn't
+    parse as FREE or a £X.XX charge and kept looking, while
+    `_extract_dp_delivery_text` returned the first non-empty block
+    regardless of whether it matched anything — a documented invariant
+    ("the captured text always corresponds to the block that produced
+    shipping_minor") that could be, and on a synthetic two-block page
+    reproducibly was, false: `_extract_dp_shipping_minor` could return a
+    value from block 2 while `_extract_dp_delivery_text` returned block
+    1's unrelated text, silently blinding the conditional-delivery rule
+    to whatever qualifier actually applied. Verified before this fix that
+    every capture on file (real and synthetic) already had all three
+    functions agreeing on which block to use, so unifying them here does
+    not change any existing parse result — it only replaces "probably
+    agrees" with "provably the same node".
+
+    Selection rule is `_extract_dp_shipping_minor`'s original, stricter
+    one — first block that is non-empty AND recognisably parses as either
+    a free or a paid promise — since `delivery_text` and the D35 attribute
+    pair exist specifically to describe whatever produced `shipping_minor`,
+    not to independently guess at "the first block with any text in it".
     """
     for sel in _DELIVERY_BLOCK_SELECTORS:
         node = tree.css_first(sel)
@@ -508,22 +545,39 @@ def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
         text = (node.text() or "").strip()
         if not text:
             continue
-        if _FREE_DELIVERY_RE.search(text):
-            return 0
-        m = _PAID_DELIVERY_RE.search(text)
-        if m:
-            try:
-                return round(float(m.group(1)) * 100)
-            except ValueError:
-                continue
+        if _FREE_DELIVERY_RE.search(text) or _PAID_DELIVERY_RE.search(text):
+            return node
+    return None
+
+
+def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
+    """Pull the buy-box delivery cost in pence from `tree`, or None.
+
+    Returns 0 when the delivery line says "FREE delivery", an integer pence
+    value when it says "£X.XX delivery", and None when no populated delivery
+    block is present — None means "we didn't observe shipping" rather than
+    "free", so downstream can choose to fall back honestly.
+    """
+    node = _find_dp_delivery_block(tree)
+    if node is None:
+        return None
+    text = (node.text() or "").strip()
+    if _FREE_DELIVERY_RE.search(text):
+        return 0
+    m = _PAID_DELIVERY_RE.search(text)
+    if m:
+        # `_PAID_DELIVERY_RE`'s captured group is always `\d+(\.\d{1,2})?`,
+        # which `float()` can never reject — nothing to catch here.
+        return round(float(m.group(1)) * 100)
     return None
 
 
 def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     """The buy-box delivery line's raw text (T1.5 diagnostic capture),
     independent of `_extract_dp_shipping_minor`'s parse of it into pence.
-    Same selector scan and "first non-empty wins" rule, so the captured
-    text always corresponds to the block that produced `shipping_minor`.
+    Reads the SAME block `_extract_dp_shipping_minor` used (S6 fix — see
+    `_find_dp_delivery_block`), so the captured text is guaranteed, not
+    just expected, to correspond to whatever produced `shipping_minor`.
 
     Whitespace is collapsed to single spaces (`_extract_offer_seller`'s
     existing convention for the same reason) — not truncated, not
@@ -533,14 +587,11 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     must not silently miss a phrase that happens to wrap mid-sentence in
     the raw HTML.
     """
-    for sel in _DELIVERY_BLOCK_SELECTORS:
-        node = tree.css_first(sel)
-        if node is None:
-            continue
-        text = " ".join((node.text() or "").split())
-        if text:
-            return text
-    return None
+    node = _find_dp_delivery_block(tree)
+    if node is None:
+        return None
+    text = " ".join((node.text() or "").split())
+    return text or None
 
 
 # D35: Amazon renders a machine-readable verdict inside the exact element
@@ -565,28 +616,26 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
 def _extract_dp_delivery_condition_attrs(tree: HTMLParser) -> tuple[bool | None, str | None]:
     """`(attribute_says_conditional, raw_condition_text)` for the dp buy-box.
 
-    Same selector scan as `_extract_dp_delivery_text` (see that function's
-    docstring, and S6 in the shipping-chain review, for the known caveat
-    that this doesn't always land on the exact block
-    `_extract_dp_shipping_minor` used — latent, not observed on any capture
-    on file). `None` means the attribute itself is absent on every scanned
-    block (a layout Amazon hasn't tagged this way at all, e.g. the
-    synthetic test fixtures) — the caller falls back to the English-marker
-    regex in that case rather than treating `None` as "unconditional".
+    Reads the SAME block `_extract_dp_shipping_minor`/`_extract_dp_delivery_
+    text` used (S6 fix — see `_find_dp_delivery_block`), so this can never
+    disagree with them about which physical block the row's delivery data
+    lives in. `None` means the attribute itself is absent within that block
+    (a layout Amazon hasn't tagged this way at all, e.g. the synthetic test
+    fixtures, or no delivery block was found at all) — the caller falls
+    back to the English-marker regex in that case rather than treating
+    `None` as "unconditional".
     """
-    for sel in _DELIVERY_BLOCK_SELECTORS:
-        block = tree.css_first(sel)
-        if block is None:
-            continue
-        node = block.css_first("[data-csa-c-mir-sub-type]")
-        if node is None:
-            continue
-        sub_type = (node.attributes.get("data-csa-c-mir-sub-type") or "").strip()
-        condition_text = (
-            node.attributes.get("data-csa-c-delivery-condition") or ""
-        ).strip() or None
-        return sub_type == "CONDITIONALLY_FREE", condition_text
-    return None, None
+    block = _find_dp_delivery_block(tree)
+    if block is None:
+        return None, None
+    node = block.css_first("[data-csa-c-mir-sub-type]")
+    if node is None:
+        return None, None
+    sub_type = (node.attributes.get("data-csa-c-mir-sub-type") or "").strip()
+    condition_text = (
+        node.attributes.get("data-csa-c-delivery-condition") or ""
+    ).strip() or None
+    return sub_type == "CONDITIONALLY_FREE", condition_text
 
 
 def _extract_offer_delivery_condition_attrs(row: Node) -> tuple[bool | None, str | None]:
@@ -994,6 +1043,15 @@ _DELIVERY_PRICE_GBP_RE = re.compile(
 # Word-boundary "free" — avoid matching "Free delivery on orders over £25"
 # as zero shipping when a concrete charge is also present.
 _FREE_DELIVERY_RE_DELIVERY = re.compile(r"\bfree\s+delivery\b", re.IGNORECASE)
+# S7: a £-amount immediately after "over" (D33's own "over £<amount>"
+# spend-threshold wording, e.g. "orders dispatched by Amazon over £35") is
+# a threshold this text is conditional on, not a delivery charge — the two
+# share the exact same "£<number>" shape but mean opposite things. Checked
+# against the text immediately BEFORE each `_DELIVERY_PRICE_GBP_RE` match
+# (not the whole string), so a genuine charge earlier in the same sentence
+# ("£3.49 delivery. Free delivery over £25.") still matches on its own,
+# unrelated £3.49 — only the specific match that follows "over" is skipped.
+_THRESHOLD_PREFIX_RE = re.compile(r"over\s*$", re.IGNORECASE)
 
 
 def _parse_delivery_text(raw: str) -> int | None:
@@ -1007,15 +1065,29 @@ def _parse_delivery_text(raw: str) -> int | None:
     promise can never mask a real shipping charge — the prior version
     accepted any substring "free" as zero, which a "free over £X.XX"
     qualifier would silently trigger.
+
+    S7 fix: a £-amount is only accepted as the charge if it is NOT
+    immediately preceded by "over" — "FREE delivery ... on orders
+    dispatched by Amazon over £35" used to read the £35 *threshold* as a
+    £35.00 *charge* (`_DELIVERY_PRICE_GBP_RE` has no way to tell "the
+    charge is £X" from "free once you spend over £X" on its own; both are
+    just a £-amount to it). Masked in production today because
+    `_extract_shipping_minor` reads the short `data-csa-c-delivery-price`
+    attribute (just "FREE" or "£X.XX", never a threshold mention) before
+    ever calling this function on the long human-readable sentence — this
+    fix protects the fallback path for when that attribute is absent (the
+    legacy `#aod-offer-shipping`-only layout, or a future template
+    variant), which no capture on file currently exercises.
     """
     text = raw.strip()
     if not text:
         return None
-    m = _DELIVERY_PRICE_GBP_RE.search(text)
-    if m:
+    for m in _DELIVERY_PRICE_GBP_RE.finditer(text):
+        if _THRESHOLD_PREFIX_RE.search(text[: m.start()]):
+            continue
         return round(float(m.group(1).replace(",", "")) * 100)
-    # No concrete price seen — accept "FREE" / "free delivery" as
-    # genuinely-free delivery. Bare "FREE" appears in the
+    # No concrete (non-threshold) price seen — accept "FREE" / "free
+    # delivery" as genuinely-free delivery. Bare "FREE" appears in the
     # `data-csa-c-delivery-price` data attribute (controlled vocabulary).
     if text.strip().upper() == "FREE":
         return 0
