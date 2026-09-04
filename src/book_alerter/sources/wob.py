@@ -144,6 +144,21 @@ def _is_recognized_product_page(tree: HTMLParser) -> bool:
     return any(tree.css_first(sel) is not None for sel in _PRODUCT_PAGE_MARKERS)
 
 
+# World of Books charges economy delivery on orders below £5 and nothing at or
+# above it. See https://help.wob.com/support/solutions/articles/75000057344.
+# The tracker prices single items, so the order total is the item price; there is
+# deliberately no basket-level logic here.
+_WOB_FREE_DELIVERY_THRESHOLD_MINOR = 500
+_WOB_ECONOMY_DELIVERY_MINOR = 99
+
+
+def _delivery_minor_for(price_minor: int) -> int:
+    """Delivery charge in pence for a single-item WoB order at `price_minor`."""
+    if price_minor >= _WOB_FREE_DELIVERY_THRESHOLD_MINOR:
+        return 0
+    return _WOB_ECONOMY_DELIVERY_MINOR
+
+
 def _condition_from_title(public_title: str) -> Condition:
     """public_title is `REGION / CONDITION / SUPPLIER` — extract the middle slug."""
     parts = public_title.split("/")
@@ -242,7 +257,7 @@ class WobInlineSource(InlineSource):
                     seller="World of Books",
                     condition=condition,
                     price_minor=price_minor,
-                    shipping_minor=0,
+                    shipping_minor=_delivery_minor_for(price_minor),
                     currency="GBP",
                     url=url,
                 )
