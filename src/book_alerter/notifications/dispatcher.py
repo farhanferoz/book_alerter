@@ -358,9 +358,24 @@ class AlertPipeline:
                     f", {display_pct}% {direction} "
                     f"{window_str} median {p50 / 100:.2f}"
                 )
+        # T4.4: an item whose whole window is Keepa backfill has never been
+        # seen for sale by this app at all — the signal is still legitimate
+        # (D16: Keepa history is valid history), but saying so is the
+        # difference between "this price is available" and "this price
+        # existed at some point according to a chart".
+        # Guarded on `observation_count` too: with no history at all, "based
+        # on Keepa history only" would be simply false. In practice such an
+        # item never reaches an alert (compute_signal returns
+        # INSUFFICIENT_DATA), so this is about the sentence being true rather
+        # than about a reachable case.
+        caveat = (
+            " — based on Keepa history only, no live offer yet"
+            if stats.observation_count > 0 and stats.live_observation_count == 0
+            else ""
+        )
         return (
             f"[{kind.upper()}] {item.title} — "
-            f"total {current / 100:.2f} {ccy}{breakdown}{delta}"
+            f"total {current / 100:.2f} {ccy}{breakdown}{delta}{caveat}"
         )
 
     async def _deliver(

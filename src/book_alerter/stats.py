@@ -112,6 +112,13 @@ class BookStats:
     # Window used to derive the percentile distribution for signal logic.
     # The matching key under `windows` (1m/3m/12m) carries the p25/p50/p75 and
     # `rank` for this window — callers use `windows[label_for(percentile_window_days)]`.
+    # T4.4: canonical rows in the window from a LIVE source, i.e. excluding
+    # Keepa backfill. Keepa history is valid history for signals (D16), so
+    # `compute_signal` still fires on it — but an item whose entire history
+    # is reconstructed from a chart has never actually been seen for sale at
+    # that price by this app, and the UI and alerts say so rather than
+    # presenting it as an observed offer.
+    live_observation_count: int = 0
     percentile_window_days: int = 90
     # Rank for the configured window, including non-canonical custom values
     # (e.g. 60 days) that don't map to a `windows` key. Mirrors
@@ -745,6 +752,9 @@ def _stats_for_one_item(
     observation_count, last_observed_at, days_of_history, last_polled_at = (
         history if history is not None else (0, None, 0, None)
     )
+    # Counted off the window rows already in hand (index 1 is `source`), so
+    # this costs one pass over a list, not another query.
+    live_observation_count = sum(1 for r in imputed_rows if r[1] != "keepa")
 
     return BookStats(
         book_id=item_id,
@@ -758,6 +768,7 @@ def _stats_for_one_item(
         all_time_min_total_minor=all_time_min,
         all_time_max_total_minor=all_time_max,
         observation_count=observation_count or 0,
+        live_observation_count=live_observation_count,
         last_observed_at=last_observed_at,
         days_of_history=days_of_history or 0,
         last_polled_at=last_polled_at,

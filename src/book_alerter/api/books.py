@@ -137,6 +137,9 @@ class BookStatsOut(BaseModel):
     all_time_min_total_minor: int | None
     all_time_max_total_minor: int | None
     observation_count: int
+    # T4.4: excludes Keepa backfill. Zero means every price we hold for
+    # this item was reconstructed from a chart, never seen live.
+    live_observation_count: int
     days_of_history: int
     last_observed_at: UtcDateTime | None
     last_polled_at: UtcDateTime | None
@@ -185,6 +188,7 @@ class BookStatsOut(BaseModel):
             all_time_min_total_minor=s.all_time_min_total_minor,
             all_time_max_total_minor=s.all_time_max_total_minor,
             observation_count=s.observation_count,
+            live_observation_count=s.live_observation_count,
             days_of_history=s.days_of_history,
             last_observed_at=s.last_observed_at,
             last_polled_at=s.last_polled_at,

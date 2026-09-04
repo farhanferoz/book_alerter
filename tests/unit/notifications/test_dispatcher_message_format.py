@@ -47,6 +47,8 @@ def _stats(
     p50_90d: int | None,
     effective: int | object | None = _USE_CURRENT,
     shipping_estimate: int | None = None,
+    live_observation_count: int = 10,
+    observation_count: int = 10,
 ) -> BookStats:
     if effective is _USE_CURRENT:
         effective = current
@@ -62,7 +64,10 @@ def _stats(
         current_best_url="https://x",
         all_time_min_total_minor=None,
         all_time_max_total_minor=None,
-        observation_count=10,
+        observation_count=observation_count,
+        # A normal book's history came from live scrapes. Tests that want the
+        # Keepa-only caveat (T4.4) pass live_observation_count=0.
+        live_observation_count=live_observation_count,
         days_of_history=30,
         last_observed_at=None,
         percentile_window_days=90,
@@ -205,3 +210,40 @@ def test_message_pct_uses_effective_total_against_imputed_median() -> None:
     msg = _format(s)
     assert "10% below 90d median 12.00" in msg
     assert "33%" not in msg
+
+
+# --- T4.4: Keepa-only history caveat -----------------------------------------
+
+_KEEPA_CAVEAT = "based on Keepa history only, no live offer yet"
+
+
+def test_message_flags_an_item_whose_history_is_entirely_keepa() -> None:
+    """T4.4. Keepa history IS valid history for signals (D16), so the alert
+    still fires — but every price we hold was reconstructed from a chart and
+    none was ever seen for sale by this app. Saying so is the difference
+    between "this price is available" and "a chart says this price existed"."""
+    s = _stats(
+        current=1270, item_minor=1020, ship_minor=250, p50_90d=2000,
+        live_observation_count=0,
+    )
+    assert _KEEPA_CAVEAT in _format(s)
+
+
+def test_message_omits_the_caveat_when_any_live_observation_exists() -> None:
+    """One live sighting is enough — the claim is "no live offer yet", not
+    "mostly Keepa"."""
+    s = _stats(
+        current=1270, item_minor=1020, ship_minor=250, p50_90d=2000,
+        live_observation_count=1,
+    )
+    assert _KEEPA_CAVEAT not in _format(s)
+
+
+def test_message_omits_the_caveat_when_there_is_no_history_at_all() -> None:
+    """With zero observations the sentence would be false rather than merely
+    unhelpful — there is no Keepa history to have based anything on."""
+    s = _stats(
+        current=1270, item_minor=1020, ship_minor=250, p50_90d=2000,
+        observation_count=0, live_observation_count=0,
+    )
+    assert _KEEPA_CAVEAT not in _format(s)
