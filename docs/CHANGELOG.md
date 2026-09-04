@@ -41,6 +41,18 @@ what shipped and the findings that changed the plan.
 
 ### Shipped
 
+- **T2.5 — the headline fix.** A free-reading Amazon delivery price whose promise text is
+  conditional (`on your first order`) is now recorded as **unknown** rather than £0.00, so the
+  cascade estimate applies and the offer ranks on what a returning customer would actually pay.
+  Verified on one real 10-offer capture: 8 conditional rows → unknown, the genuinely-free row
+  still free, the paid row untouched. Only the marker with evidence behind it is matched; the
+  plan's two other guessed markers appear nowhere near a delivery line in any capture and were
+  deliberately left out. (`e27b60c`)
+- **F26 guard** — an offer-listing response whose canonical ASIN disagrees with the requested one
+  is now a `SourceError` instead of silently parsed. The discriminator is the ASIN mismatch, not
+  the URL shape: every genuine response canonicalises to `/dp/`, including the correct
+  empty-listing case. (`b5af348`)
+
 - **T1.1** — `BrowserSession`: one persistent Chromium profile per source, `channel="chromium"`,
   derived UA with no `Headless` token, `prepare()`/`cleanup()` lifecycle. `async_playwright` now
   appears in exactly one module. The live Amazon canary passed for the first time.
