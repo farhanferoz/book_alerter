@@ -158,3 +158,4 @@ Wave 5's `tests/e2e/test_products_ui.py` was never built; three undocumented min
 Reports: `/tmp/claude-1000/-home-ff235-dev-book-alerter/6e5ea529-3b4e-438a-a9db-8081f283488c/scratchpad/R-{backend,frontend,adherence}/findings.md`.
 Open questions answered in chat (Q2: £35 / £10-of-books, secondary sources; Q4: recommend not wiring
 Sentry; T6.3 Keepa: weekly refresh ≤ existing on-view load). No agents left running.
+
