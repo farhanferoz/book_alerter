@@ -177,6 +177,10 @@ class AlertPipeline:
             source_seller_global_medians=medians,
             default_shipping_minor=self.cfg.recommendation.default_shipping_minor,
             min_global_median_observations=self.cfg.recommendation.min_global_median_observations,
+            # T2.2: without this the alert message is the ONE surface that
+            # ignores the Prime toggle — it would quote a delivery charge the
+            # user does not pay, while the dashboard shows the offer as free.
+            prime=self.cfg.recommendation.amazon_prime,
         )
 
         # Prior state — absent on first eval (no transition fires yet).
