@@ -169,3 +169,44 @@ async def test_scheduler_skips_backup_when_disabled(tmp_path):
         assert "weekly_backup" not in ids
     finally:
         sched.shutdown()
+
+
+def test_backup_compresses_and_restores_to_a_working_database(tmp_path):
+    """Plan section 8: "Backups compressed; retention enforced; restore path
+    documented and tested once against a copy." The restore half was
+    documented in the README but never exercised — so nothing proved the
+    compressed artefact could actually be turned back into a usable database,
+    which is the only property a backup really has to have.
+
+    Walks the exact path the README prescribes: back up, let the janitor
+    compress it in place, then decompress and open the result.
+    """
+    import gzip
+
+    from book_alerter.config import JanitorConfig
+    from book_alerter.janitor import sweep_backups
+
+    db_path = tmp_path / "book_alerter.db"
+    backup_dir = tmp_path / "backups"
+    _seed_db(db_path)
+
+    created = run_weekly_backup(db_path, backup_dir, retain=7)
+    assert _is_valid_sqlite(created)
+
+    result = sweep_backups(backup_dir, JanitorConfig(compress_backups=True))
+    assert result.files_removed == 1, "the uncompressed copy is replaced"
+    gz = created.with_suffix(created.suffix + ".gz")
+    assert gz.exists() and not created.exists()
+
+    # The README's restore step: `gunzip -c <backup>.db.gz > book_alerter.db`.
+    restored = tmp_path / "restored.db"
+    with gzip.open(gz, "rb") as fin:
+        restored.write_bytes(fin.read())
+
+    assert _is_valid_sqlite(restored), "a restored backup must pass integrity_check"
+    conn = sqlite3.connect(str(restored))
+    try:
+        rows = conn.execute("SELECT isbn13, title FROM book").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("9780000000001", "t")], "the data must survive the round trip"

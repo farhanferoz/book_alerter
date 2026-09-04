@@ -26,7 +26,6 @@ from tests.integration.sources.test_amazon import (
 )
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "amazon"
-FIXTURE_DP = FIXTURE_DIR / "B07XYZ1234-dp.html"  # may not exist; sub for FIXTURE_DP from book tests
 # Fall back to the book fixture if no product-specific capture yet — the dp
 # format is identical for both, only the seller/title strings change.
 FIXTURE_DP_FALLBACK = FIXTURE_DIR / "9780747532699-uk-dp-2026-05-14.html"
