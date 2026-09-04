@@ -6,6 +6,9 @@ data/
 # covered by the blanket `data/` rule above; called out explicitly because
 # they hold session state that must never be committed, mode 700 on disk.
 data/browser-profiles/
+# Failure-page HTML dumps, written only on a failed or unrecognised scrape
+# and bounded by the janitor. Same story: already covered by `data/`.
+data/debug/
 
 # Scenario artifacts (test DB + per-scenario config)
 tests/scenarios/.test.db
@@ -46,6 +49,5 @@ web/.vite/
 # Claude
 .claude/settings.local.json
 
-# Go build artifacts (cli_bins should be source-only)
-cli_bins/**/bin/
-cli_bins/**/*.exe
+# Hypothesis' example database — regenerated on demand, never shared.
+.hypothesis/
