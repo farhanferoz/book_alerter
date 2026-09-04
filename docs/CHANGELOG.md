@@ -70,7 +70,12 @@ what shipped and the findings that changed the plan.
 
 - Four workers sharing one working tree collided on the git index three times (a bare
   `git commit` sweeps whatever anyone else has staged). All were caught and repaired without
-  data loss; explicit-pathspec commits are now mandatory (D25).
+  data loss; explicit-pathspec commits are now mandatory (D25). **The orchestrator then made the
+  same mistake**: commit `07421ce` is titled "docs: document the data directory and its retention
+  rules" but also contains the whole T0.4/T0.5 fixture set and a `capture_amazon_fixture.py`
+  change. Nothing was lost and the content is correct; only the attribution is wrong. Left
+  unrewritten deliberately — rebasing a branch that several agents are actively committing to is a
+  worse risk than a mislabelled commit.
 - `alembic -x db_url=...` is silently ignored by this project's `env.py`; use
   `BOOK_ALERTER_DATABASE_URL`. Forgetting it migrates the app's own database and looks exactly
   like a broken migration.
