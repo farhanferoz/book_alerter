@@ -6,6 +6,77 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ---
 
+## 2026-09-04
+
+Execution of `docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`.
+Progress and per-task evidence live in that document's checkboxes; this entry records
+what shipped and the findings that changed the plan.
+
+### Findings that corrected the plan
+
+- **The Amazon shipping flip is not location-dependent (T0.2, Q1 settled, F1c rejected).**
+  Amazon serves a cookieless visitor a *conditional* promise — `FREE delivery <dates> on your
+  first order to UK or Ireland`, with `data-csa-c-delivery-price="FREE"` — and the parser stores
+  it as £0.00. Proven by running the production `parse_offer_listing` over a live capture:
+  **8 of 9 offers recorded as free shipping**, the only correct row being the one whose promise
+  carried no condition. **F1 and F14 are one defect**: a fresh browser per fetch guarantees Amazon
+  keeps treating every scrape as a first-time visitor. Postcode pinning does not work for a
+  logged-out headless session and made no difference to the promises, so **T1.2 was dropped by its
+  own gate** and T2.5 takes the conditional-promise branch.
+- **`channel="chromium"` does not clear the `HeadlessChrome` user agent (T0.3).** It restores
+  `navigator.plugins` (0→5) and `window.chrome`, which are stronger detection signals, but the
+  explicit UA override is required rather than redundant. The Docker base image already ships the
+  full Chromium build, so no `playwright install` step was added.
+- **F26 (new, S1): Amazon silently serves the wrong page for an offer-listing request.** Two
+  requests returned normal dp pages with **no bot markers**, one canonical-linked to a *different
+  ASIN*. Parsing that attributes one product's prices to another. The existing bot-marker check is
+  structurally unable to see it.
+- **F12 was wrong.** The products UI did have both buttons; the real defect was that "Delete" sent
+  `DELETE` without `?hard=true`, so it warned about a cascading permanent delete and silently
+  archived instead.
+- **The `#twister` variant marker is stale** — it matches zero nodes on both a genuine variant page
+  and a non-variant page. Real markers are `#twister_feature_div` / `#inline-twister-row-*`.
+- **T0.5 found no unmapped Bookfinder grades**, so the T2.6 mapping ships as an evidence-free
+  best-effort plus a diagnostic that logs the raw grade when mapping fails.
+
+### Shipped
+
+- **T1.1** — `BrowserSession`: one persistent Chromium profile per source, `channel="chromium"`,
+  derived UA with no `Headless` token, `prepare()`/`cleanup()` lifecycle. `async_playwright` now
+  appears in exactly one module. The live Amazon canary passed for the first time.
+  (`016862c`, `9ed78de`, `cbde587`; D24 profile lock `e2c1949`)
+- **T3.1 / T3.3** — current-best selection moved from SQL into Python behind an `effective_shipping`
+  seam; three queries total regardless of batch size. `GET /api/books` **2101 ms → 453 ms**.
+  Verified against production data: the new views reproduce the old `current_best` for all 13
+  books, zero mismatches. (`0bd1f09`, `6b07e64`, `e68f591`, `065e1d8`)
+- **T2.1** — World of Books economy delivery is charged below the £5 threshold instead of being
+  hard-coded to zero. (`f4084d8`)
+- **T2.4 (ranking half)** — unknown shipping can no longer rank as free. (`197d40a`)
+- **T2.6** — Bookfinder grade mapping plus an unmapped-grade diagnostic. (`c25b455`)
+- **T4.3** — Keepa dates clamped to today, future rows dropped and counted. (`75145c7`)
+- **T4.5** — product alerts finally surface: the feed is a union over both tables driven by the
+  existing `_AlertModels` registry, and alerts are addressed by `(item_kind, id)` because ids
+  collide across tables. (`f75c7a1`)
+- **T4.6** — the products "Delete" button actually deletes. (`07421ce` docs, fix in the same wave)
+- **T5.1** — shared `Item` type and `useItems`/`useItem` hooks. (`23b1f8c`)
+- **T6.5 (most)** — janitor bounding every runtime directory under `data/`, with limits as config
+  values and a `janitor_last_run_at` health field. (`67f09ed`)
+- **T6.7 (added during execution)** — `scripts/smoke_check.py`: 12 real end-to-end checks against a
+  production copy in ~2 s. It caught a cross-cutting regression that the unit tests missed.
+  (`9dcb8a5`)
+- **T0.1** — the three one-shot capture scripts collapsed into one. (`7d3a3c4`)
+
+### Process notes
+
+- Four workers sharing one working tree collided on the git index three times (a bare
+  `git commit` sweeps whatever anyone else has staged). All were caught and repaired without
+  data loss; explicit-pathspec commits are now mandatory (D25).
+- `alembic -x db_url=...` is silently ignored by this project's `env.py`; use
+  `BOOK_ALERTER_DATABASE_URL`. Forgetting it migrates the app's own database and looks exactly
+  like a broken migration.
+
+---
+
 ## 2026-05-24
 
 ### Follow-up — history chart plots cheapest-LIVE, not cheapest-first-seen
