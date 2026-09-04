@@ -33,6 +33,18 @@ _OPENLIBRARY_URL = "https://openlibrary.org/api/books"
 _GOOGLEBOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 _TIMEOUT = httpx.Timeout(5.0)
 
+# Both Amazon fallbacks below are on the interactive path (the add-book
+# dialog and the ASIN-lookup endpoint block on them), sharing the
+# `amazon_uk_product` BrowserSession profile with the scheduled product
+# source (T1.1 D24). A scheduled run can legitimately hold that profile for
+# minutes; a human should not wait anywhere near that long for a spinner.
+# 10s is long enough to absorb the common case (the previous holder is
+# already finishing up — a single fetch cycle, not a whole run) while
+# staying well inside ordinary UI/HTTP-client patience; past that, telling
+# the user "try again shortly" beats leaving them staring at a spinner with
+# no explanation for however long a scheduled run has left to run.
+_METADATA_BROWSER_ACQUIRE_TIMEOUT_S = 10.0
+
 
 class BookMetadata(BaseModel):
     title: str
@@ -356,7 +368,11 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
     miss. Cost is ~10-20s per call (browser launch + nav), so callers gate
     this behind a config flag and call it sequentially, not in the race.
     Returns None on any failure (bot challenge, navigation timeout, missing
-    static fields) — caller treats that as "no metadata available".
+    static fields) — caller treats that as "no metadata available" —
+    EXCEPT `BrowserSessionBusy`, which propagates: the profile is shared
+    with the scheduled `amazon_uk_product` source, which can hold it for
+    minutes, so `_METADATA_BROWSER_ACQUIRE_TIMEOUT_S` bounds this
+    interactive path's wait rather than blocking indefinitely.
 
     Uses the `amazon_uk_product` `BrowserSession` profile (not a book-only
     one) so this fallback benefits from the same returning-visitor cookie
@@ -368,11 +384,17 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
     )
 
     from book_alerter.enums import BrowserProfile
-    from book_alerter.sources.browser import BrowserSession  # local import — heavy
+    from book_alerter.sources.browser import (  # local import — heavy
+        BrowserSession,
+        BrowserSessionBusy,
+    )
 
     url = amazon_uk_dp_url(isbn13)
     try:
-        async with BrowserSession(BrowserProfile.AMAZON_UK_PRODUCT) as context:
+        async with BrowserSession(
+            BrowserProfile.AMAZON_UK_PRODUCT,
+            acquire_timeout=_METADATA_BROWSER_ACQUIRE_TIMEOUT_S,
+        ) as context:
             page = await context.new_page()
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
@@ -386,6 +408,12 @@ async def _fetch_amazon_uk_metadata(isbn13: str) -> BookMetadata | None:
             except PlaywrightTimeoutError:
                 log.info("metadata.amazon_fallback.no_title_selector", url=url)
             html = await page.content()
+    except BrowserSessionBusy:
+        # Distinct from every other failure below: this isn't "no metadata
+        # available", it's "the browser profile is busy right now" — let it
+        # propagate so an interactive caller can answer with that specific
+        # reason (e.g. a 503) instead of a silent None.
+        raise
     except Exception as exc:
         log.warning("metadata.amazon_fallback.error", url=url, error=str(exc))
         return None
@@ -465,8 +493,10 @@ def _parse_amazon_product_metadata(html: str, *, asin: str) -> ProductMetadata |
 
 async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
     """Playwright-rendered Amazon UK product dp scrape. Returns None on any
-    failure (bot challenge, navigation timeout, no title selector). Cost is
-    ~10-20s per call — caller should not invoke this in tight loops.
+    failure (bot challenge, navigation timeout, no title selector) EXCEPT
+    `BrowserSessionBusy`, which propagates — see `_fetch_amazon_uk_metadata`
+    for why. Cost is ~10-20s per call — caller should not invoke this in
+    tight loops.
 
     Uses the `amazon_uk_product` `BrowserSession` profile — the same one
     `AmazonUKProductInlineSource` scrapes with — so a returning visitor
@@ -477,11 +507,17 @@ async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
     )
 
     from book_alerter.enums import BrowserProfile
-    from book_alerter.sources.browser import BrowserSession  # local import — heavy
+    from book_alerter.sources.browser import (  # local import — heavy
+        BrowserSession,
+        BrowserSessionBusy,
+    )
 
     url = amazon_uk_product_dp_url(asin)
     try:
-        async with BrowserSession(BrowserProfile.AMAZON_UK_PRODUCT) as context:
+        async with BrowserSession(
+            BrowserProfile.AMAZON_UK_PRODUCT,
+            acquire_timeout=_METADATA_BROWSER_ACQUIRE_TIMEOUT_S,
+        ) as context:
             page = await context.new_page()
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
@@ -495,6 +531,10 @@ async def fetch_amazon_uk_product_metadata(asin: str) -> ProductMetadata | None:
             except PlaywrightTimeoutError:
                 log.info("metadata.asin_lookup.no_title_selector", url=url)
             html = await page.content()
+    except BrowserSessionBusy:
+        # Distinct from every other failure below — see
+        # _fetch_amazon_uk_metadata's identical handling for why.
+        raise
     except Exception as exc:
         log.warning("metadata.asin_lookup.error", url=url, error=str(exc))
         return None

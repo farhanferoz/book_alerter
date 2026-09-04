@@ -281,3 +281,52 @@ def test_prune_debug_dir_keep_files_zero_removes_everything(tmp_path: Path) -> N
     browser_mod._prune_debug_dir(debug_dir, keep_files=0)
 
     assert list(debug_dir.iterdir()) == []
+
+
+# --- bounded acquire_timeout (interactive path) -----------------------------
+
+
+async def test_browser_session_acquire_timeout_fails_cleanly_without_poisoning_the_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Three-part contract: (1) a session with a short acquire_timeout on an
+    already-held profile directory raises BrowserSessionBusy rather than
+    hanging or racing Chromium's ProcessSingleton; (2) it leaves nothing
+    behind (no lock held, no Playwright driver, _context still None); and
+    (3) a later caller still succeeds once the original holder closes —
+    the timeout must not poison the lock for anyone after it."""
+    fake_pw = _FakePlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+
+    session1 = BrowserSession("amazon", profile_root=tmp_path)
+    await session1.start()
+
+    session2 = BrowserSession("amazon", profile_root=tmp_path, acquire_timeout=0.05)
+    with pytest.raises(browser_mod.BrowserSessionBusy) as exc_info:
+        await session2.start()
+    assert exc_info.value.profile == "amazon"
+    assert session2._context is None
+    assert session2._playwright is None
+    assert session2._held_lock is None
+
+    resolved = (tmp_path / "amazon").resolve()
+    lock = browser_mod._profile_dir_lock(resolved)
+    assert lock.locked(), "session1 still holds it — session2's timeout must not touch it"
+
+    await session1.close()
+    assert not lock.locked()
+
+    session3 = BrowserSession("amazon", profile_root=tmp_path, acquire_timeout=1.0)
+    await session3.start()
+    await session3.close()
+
+    # session1 + session3 launched; session2 never did.
+    assert fake_pw.chromium.persistent_launch_calls == 2
+
+
+async def test_browser_session_acquire_timeout_none_waits_indefinitely() -> None:
+    """The default (acquire_timeout=None) is what scheduled source runs
+    get — spot-check it doesn't accidentally inherit a default bound."""
+    session = BrowserSession("amazon")
+    assert session._acquire_timeout is None

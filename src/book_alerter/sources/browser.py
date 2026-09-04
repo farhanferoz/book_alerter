@@ -238,6 +238,26 @@ def write_debug_capture(
     return path
 
 
+class BrowserSessionBusy(Exception):
+    """`BrowserSession.start()`'s `acquire_timeout` expired while waiting
+    for another session already using the same profile directory.
+
+    Distinct from a generic failure on purpose: an interactive caller
+    (the ASIN-lookup / metadata-fallback endpoints) can catch this
+    specifically and answer with a clear, honest reason ("a scheduled
+    scrape is using the browser profile right now") instead of either
+    hanging indefinitely or surfacing a bare, unexplained timeout.
+    """
+
+    def __init__(self, profile: str, timeout_s: float) -> None:
+        super().__init__(
+            f"browser profile {profile!r} is busy — another session held it "
+            f"for over {timeout_s:g}s"
+        )
+        self.profile = profile
+        self.timeout_s = timeout_s
+
+
 class BrowserSession:
     """Async context manager owning one persistent Chromium `BrowserContext`.
 
@@ -266,6 +286,14 @@ class BrowserSession:
     directory simply waits for the first session to close instead of
     crashing with "Failed to create a ProcessSingleton". Different profile
     directories never block each other.
+
+    `acquire_timeout` bounds that wait — `None` (the default) waits
+    indefinitely, correct for a scheduled source run, which has nowhere
+    better to be. An interactive caller should pass a number; on expiry
+    `start()` raises `BrowserSessionBusy` and leaves nothing behind (no
+    lock held, no Playwright driver running, `_context` still `None`) —
+    same invariant the release-on-failed-start path below already
+    protects, reused rather than duplicated.
     """
 
     def __init__(
@@ -275,11 +303,13 @@ class BrowserSession:
         locale: str = "en-GB",
         timezone_id: str = "Europe/London",
         profile_root: Path | None = None,
+        acquire_timeout: float | None = None,
     ) -> None:
         self._profile = profile
         self._locale = locale
         self._timezone_id = timezone_id
         self._profile_root = profile_root or _PROFILE_ROOT
+        self._acquire_timeout = acquire_timeout
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
         self._held_lock: asyncio.Lock | None = None
@@ -299,7 +329,16 @@ class BrowserSession:
         # a plain `async with`, because the lock has to span two separate
         # method calls (start() acquires, close() releases), not one block.
         lock = _profile_dir_lock(user_data_dir)
-        await lock.acquire()
+        if self._acquire_timeout is None:
+            await lock.acquire()
+        else:
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=self._acquire_timeout)
+            except TimeoutError as e:
+                # Verified empirically: a cancelled `Lock.acquire()` removes
+                # its own waiter and never leaves `_locked` set — nothing to
+                # release here, the lock genuinely was not acquired.
+                raise BrowserSessionBusy(self._profile, self._acquire_timeout) from e
         try:
             playwright = await async_playwright().start()
             try:
