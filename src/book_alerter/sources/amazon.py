@@ -540,29 +540,50 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     return None
 
 
-# T2.5: the project's worst data bug (finding F1). A cookieless visitor gets
-# shown Amazon's first-order promotional "FREE delivery" promise — a price
-# the household would not actually pay on a repeat order — and the old
-# parser recorded it as shipping_minor=0 indistinguishably from a genuine
-# free-shipping offer. Confirmed live twice: the wave0 probe's capture of a
-# different ASIN, and `tests/fixtures/amazon/products/B0F3NVWM37-uk-aod-
-# 2026-09-04.html` (8 of 10 real AOD rows), both reading verbatim `FREE
-# delivery <dates> on your first order to UK or Ireland`. Only "on your
-# first order" is matched — the plan also guessed at "on orders over" and
-# "with Prime" as further conditional markers, but neither appears in any
-# capture on file as an actual delivery promise: "on orders over" doesn't
-# appear at all, and "with Prime" only ever shows up in unrelated product-
-# variant JSON ("PRIME_SAVINGS_UPSELL":"With Prime"), never near a delivery
-# line. Match evidence, not guesses; widen this only against a new capture.
-_CONDITIONAL_DELIVERY_RE = re.compile(r"on your first order", re.IGNORECASE)
+# T2.5 (D20) + D33: the project's worst data bug (finding F1). A visitor
+# gets shown one of Amazon's conditional "FREE delivery" promises — a price
+# this particular order would not actually qualify for — and the old parser
+# recorded it as shipping_minor=0 indistinguishably from a genuine
+# free-shipping offer. Two markers are evidenced, both from real captures,
+# not guessed:
+#
+# 1. First-order promo: "on your first order" — the wave0 probe's capture
+#    of one ASIN, and `tests/fixtures/amazon/products/B0F3NVWM37-uk-aod-
+#    2026-09-04.html` (8 of 10 real AOD rows), both reading verbatim `FREE
+#    delivery <dates> on your first order to UK or Ireland`.
+# 2. Spend-threshold promo (D33): `tests/fixtures/amazon/products/
+#    B0CYT8WL1G-uk-dp-2026-09-04.html` reads verbatim `FREE delivery
+#    Tuesday, 8 September on orders dispatched by Amazon over £35` — a
+#    single sub-threshold item does not qualify, so this is the same
+#    defect class as F1, found incidentally while covering that fixture
+#    for a different task (T4.2) and confirmed as a real bug (D33), not
+#    folded in silently.
+#
+# The rule keys on CONDITIONALITY, not on any specific threshold value —
+# matching literal "£35" would be exactly the kind of guess this task
+# exists to avoid, and Q2 (whether the real threshold is £35 general or
+# £10 of books, or varies by category) stays open and not load-bearing:
+# `over £<any amount>` is itself the evidence of a condition the scraper
+# cannot verify for a single item, regardless of what the amount is.
+#
+# The plan also guessed at "with Prime" as a further conditional marker;
+# it doesn't appear in any capture on file as an actual delivery promise —
+# only ever in unrelated product-variant JSON
+# ("PRIME_SAVINGS_UPSELL":"With Prime"), never near a delivery line. Widen
+# this set only against a new capture, per D20's own revisit trigger.
+_CONDITIONAL_DELIVERY_RE = re.compile(
+    r"on your first order|over\s*£\s*\d",
+    re.IGNORECASE,
+)
 
 
 def _conditional_free_shipping_to_unknown(
     shipping_minor: int | None, delivery_text: str | None
 ) -> int | None:
-    """T2.5: when `shipping_minor` reads as free (0) but `delivery_text`
-    is a conditional promise (currently: "on your first order"), the
-    shipping cost is unknown, not zero — return `None` so downstream
+    """T2.5/D33: when `shipping_minor` reads as free (0) but `delivery_text`
+    is a conditional promise (currently: "on your first order", or a
+    spend-threshold promise worded as "... over £<amount>"), the shipping
+    cost is unknown, not zero — return `None` so downstream
     (`effective_shipping`) substitutes the cascade estimate and reports
     `is_estimate=True` instead of ranking the offer on a price the buyer
     won't actually get. A genuinely unconditional "FREE delivery" (no

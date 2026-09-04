@@ -808,3 +808,59 @@ def test_parse_dp_first_order_promo_becomes_unknown_shipping() -> None:
     paid_html = _load("9780747532699-uk-dp-paid-delivery.html")
     paid_offers = parse_dp(paid_html, fallback_url="https://www.amazon.co.uk/dp/x")
     assert paid_offers[0].shipping_minor == 280
+
+
+def test_parse_dp_spend_threshold_promo_becomes_unknown_shipping() -> None:
+    """D33, books side: the spend-threshold conditional promo (found on
+    the products side, B0CYT8WL1G) applies equally to books' dp buy-box —
+    a single sub-threshold book doesn't qualify for "free over £35" either."""
+    html = _load("9780747532699-uk-dp-spend-threshold-delivery.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    o = offers[0]
+    assert o.delivery_text is not None
+    assert "over £35" in o.delivery_text.lower()
+    assert o.shipping_minor is None
+
+    # Same controls as the first-order test above — this marker addition
+    # must not touch the genuinely free/paid fixtures either.
+    free_html = _load("9780747532699-uk-dp-free-delivery.html")
+    free_offers = parse_dp(free_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert free_offers[0].shipping_minor == 0
+
+    paid_html = _load("9780747532699-uk-dp-paid-delivery.html")
+    paid_offers = parse_dp(paid_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert paid_offers[0].shipping_minor == 280
+
+
+def test_parse_offer_listing_spend_threshold_promo_becomes_unknown_shipping() -> None:
+    """D33 on the AOD/offer-listing path: no real capture on file has this
+    exact wording on an offer-listing row (B0CYT8WL1G's aod fetch renders
+    dp-shaped content, not a real AOD row — see
+    test_amazon_product_fixtures.py), so this is a synthetic row built to
+    the same DOM contract as the other AOD parser tests, exercising
+    _extract_offer_delivery_text + _conditional_free_shipping_to_unknown
+    on the row path specifically (parse_dp's test above already covers the
+    dp path)."""
+    html = """
+    <html><body><div id="aod-container"><div id="aod-offer-list">
+      <div id="aod-offer">
+        <div id="aod-offer-heading"><h5>New</h5></div>
+        <span class="a-price"><span class="a-offscreen">£12.00</span></span>
+        <span data-csa-c-delivery-price="FREE"></span>
+        <div id="aod-offer-shipping" class="aod-delivery-promise">
+          FREE delivery Tuesday, 8 September on orders dispatched by Amazon over £35
+        </div>
+        <div id="aod-offer-soldBy"><a aria-label="BookCurl. Opens a new page">BookCurl</a></div>
+      </div>
+    </div></div></body></html>
+    """
+    offers = parse_offer_listing(
+        html, fallback_url="https://x.example/", source_name="amazon_uk_product"
+    )
+    assert len(offers) == 1
+    o = offers[0]
+    assert o.seller == "BookCurl"
+    assert o.delivery_text is not None
+    assert "over £35" in o.delivery_text.lower()
+    assert o.shipping_minor is None

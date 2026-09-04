@@ -184,17 +184,20 @@ def test_b0cyt8wl1g_dp_returns_the_selected_variants_buybox() -> None:
     assert o.condition == Condition.NEW
     assert o.seller is None  # no #merchant-info on this capture either
 
-    # Not a T2.5 case: the delivery text IS conditional ("on orders
-    # dispatched by Amazon over £35"), a genuinely different conditional
-    # phrase from "on your first order" that T2.5's marker does not match
-    # — flagged in the T4.2 report as a new finding, not silently patched
-    # here (T2.5 is a separately-reviewed, closed task).
+    # D33 update: this delivery text ("on orders dispatched by Amazon over
+    # £35") was flagged in the original T4.2 report as a known gap in
+    # T2.5's marker set — genuinely conditional (a spend threshold, not
+    # the first-order promo) and, at the time, NOT converted to unknown
+    # shipping. Team-lead ratified it as the same defect class as F1/T2.5
+    # (D33) and authorized extending the marker set; amazon.py's
+    # _CONDITIONAL_DELIVERY_RE now also matches "over £<any amount>", so
+    # this assertion changed from `== 0` (documenting the gap) to `is None`
+    # (confirming the fix) in the same commit that closed the gap.
     assert o.delivery_text is not None
     assert "on orders dispatched by amazon over" in o.delivery_text.lower()
-    assert o.shipping_minor == 0, (
-        "documents CURRENT behaviour (not converted to None) — this exact "
-        "conditional phrasing is a known gap in T2.5's marker set, not "
-        "something this task silently fixed"
+    assert o.shipping_minor is None, (
+        "D33: a spend-threshold promise is conditional on something a "
+        "single-item scrape cannot verify, so this must be unknown, not free"
     )
 
 
