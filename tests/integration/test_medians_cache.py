@@ -73,6 +73,31 @@ def test_invalidate_forces_recompute_regardless_of_ttl(engine_with_view, make_bo
     assert after_invalidate == {("amazon", "amazon_fulfilled"): 150}
 
 
+def test_min_observations_change_is_not_served_stale(engine_with_view, make_book):
+    """F-E (Tier 4 review of Wave 3): entries used to key on
+    `schema.observation_table` alone, so a second call on the same
+    instance with a DIFFERENT `min_observations` — still within the TTL —
+    silently returned the value computed under the first threshold.
+    Reproduces the review's demonstration: 5 rows clear a threshold of 5
+    but not 10; a threshold-10 call right after must recompute (excluding
+    the bucket, since only 5 rows exist) rather than reuse the
+    threshold-5 result."""
+    with Session(engine_with_view) as s:
+        book = make_book(s)
+        for i in range(5):
+            _seed_shipping_row(s, book.id, 100 + i, f"Amazon{i}" if i else "Amazon")
+
+        cache = MediansCache(ttl_seconds=60)
+        at_five = cache.get_or_compute(s, schema=_BOOK_SCHEMA, min_observations=5)
+        at_ten = cache.get_or_compute(s, schema=_BOOK_SCHEMA, min_observations=10)
+
+    assert at_five == {("amazon", "amazon_fulfilled"): 102}
+    assert at_ten == {}, (
+        "a different min_observations within the TTL must recompute, not "
+        "reuse the other threshold's cached result"
+    )
+
+
 def test_book_and_product_schemas_cache_independently(engine_with_view, make_book, make_product):
     with Session(engine_with_view) as s:
         book = make_book(s)

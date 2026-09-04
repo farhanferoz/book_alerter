@@ -394,16 +394,24 @@ class MediansCache:
     `app.state.medians_cache`, rebuilt fresh on every config reload (same
     lifecycle as the scheduler) — so a `min_observations` change (from a
     config edit) always starts a clean cache rather than serving a stale
-    value computed under the old threshold; entries are keyed on schema
-    alone because `min_observations` is otherwise constant for the life of
-    one cache instance. `scheduler.Scheduler` invalidates it after
-    persisting new observations so a fresh scrape's shipping data doesn't
-    wait out the TTL.
+    value computed under the old threshold. Entries are ALSO keyed on
+    `min_observations` itself (Tier 4 review, F-E): the rebuild-on-reload
+    behaviour is real (`api/config.py`'s and `api/sources.py`'s
+    config-writing endpoints both call `rebuild_runtime`), but that
+    invariant lived entirely outside this class — anyone calling
+    `get_or_compute` with a different `min_observations` on the same
+    instance within the TTL (a second call site, a future caller, a test)
+    would silently get a value computed under the WRONG threshold with no
+    signal that anything was stale. Keying on the pair makes the cache
+    correct on its own terms rather than by depending on how its one
+    current caller happens to be wired. `scheduler.Scheduler` invalidates
+    it after persisting new observations so a fresh scrape's shipping data
+    doesn't wait out the TTL.
     """
 
     def __init__(self, *, ttl_seconds: float = _MEDIANS_CACHE_TTL_SECONDS) -> None:
         self._ttl_seconds = ttl_seconds
-        self._entries: dict[str, _MediansCacheEntry] = {}
+        self._entries: dict[tuple[str, int], _MediansCacheEntry] = {}
 
     def get_or_compute(
         self,
@@ -412,14 +420,15 @@ class MediansCache:
         schema: _ItemSchema,
         min_observations: int,
     ) -> dict[tuple[str, SellerClass], int]:
-        entry = self._entries.get(schema.observation_table)
+        key = (schema.observation_table, min_observations)
+        entry = self._entries.get(key)
         now = time.monotonic()
         if entry is not None and (now - entry.computed_at) < self._ttl_seconds:
             return entry.medians
         medians = source_seller_global_shipping_medians(
             session, min_observations=min_observations, schema=schema,
         )
-        self._entries[schema.observation_table] = _MediansCacheEntry(
+        self._entries[key] = _MediansCacheEntry(
             medians=medians, computed_at=now,
         )
         return medians
@@ -892,10 +901,19 @@ def compute_signal(
     # total_minor`, never `current_best_total_minor` — `_persist` stores
     # `total = price + (shipping or 0)`, so an unknown-shipping row's raw
     # total silently folds to the bare price instead of the cascade
-    # estimate. `effective` is None only when both the current row and the
-    # item's history lack any shipping signal to estimate from (see
-    # `_stats_for_one_item`) — in that case NO price comparison, target or
-    # percentile, has a trustworthy figure to compare against.
+    # estimate. In `_stats_for_one_item`, `effective` is set to None in
+    # exactly the same branch as `current_total` (`if current_total is
+    # None: effective = None`); the `else` branch always assigns
+    # `price + best_eff_shipping`, and `_imputed_shipping`'s own docstring
+    # guarantees its terminal `default_shipping` tier is "never None". So
+    # via the real pipeline `effective is None` iff `current_best_total_
+    # minor is None`, which the guard above already caught — this check
+    # cannot fire there. It stays as defence in depth for a `BookStats`
+    # built some other way (every test in this file constructs one
+    # directly via `transient_stats`, which allows exactly this
+    # combination if a future test passes `current_effective_total_minor=
+    # None` explicitly): degrade to INSUFFICIENT_DATA rather than crash on
+    # `effective <= ...` a few lines down.
     effective = stats.current_effective_total_minor
     if effective is None:
         return Signal.INSUFFICIENT_DATA
