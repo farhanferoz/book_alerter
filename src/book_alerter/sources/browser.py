@@ -28,6 +28,7 @@ docs/superpowers/plans/2026-09-04-wave0-probe-results.md T0.2/T0.3):
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
@@ -43,6 +44,9 @@ from book_alerter.logging_setup import get_logger
 log = get_logger(__name__)
 
 _PROFILE_ROOT = Path("data/browser-profiles")
+# T1.5: failure-page dumps land here, one subdirectory per source name —
+# same `data/<x>` convention as `_PROFILE_ROOT` above and `keepa.DEFAULT_CACHE_DIR`.
+_DEBUG_ROOT = Path("data/debug")
 
 # `--disable-blink-features=AutomationControlled` was the existing app's
 # only stealth flag pre-T1.1 (amazon.py / bookfinder.py, both now deleted);
@@ -156,6 +160,82 @@ def _profile_dir_lock(path: Path) -> asyncio.Lock:
         lock = asyncio.Lock()
         _profile_dir_locks[path] = lock
     return lock
+
+
+# --- T1.5 diagnostic capture -------------------------------------------------
+#
+# On a bot challenge or an unrecognised page layout, the caller writes the
+# rendered HTML here so a human can inspect what Amazon actually served
+# instead of just a SourceError message. Retention is two layers, both keyed
+# off the SAME `JanitorConfig.debug_keep_files` value rather than a second
+# hardcoded number: `_prune_debug_dir` below is an eager write-time trim
+# (a burst of failures inside one scheduler run must not fill the disk
+# before the next scheduled sweep), and `janitor.sweep_debug_captures` is
+# the authoritative periodic sweep, which additionally enforces the
+# age cap (`debug_max_age_days`) this write-time trim does not attempt.
+
+
+def _prune_debug_dir(debug_dir: Path, keep_files: int) -> None:
+    """Keep only the newest `keep_files` files in `debug_dir` (by mtime,
+    newest first) — same sort order `janitor.sweep_debug_captures` uses, so
+    the two layers agree on which files are "newest". Never raises: an
+    unremovable stale dump is not worth failing the fetch that triggered
+    this call.
+    """
+    try:
+        files = sorted(
+            (p for p in debug_dir.iterdir() if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError as e:
+        log.warning("debug_capture.prune_failed", dir=str(debug_dir), error=str(e))
+        return
+    for stale in files[keep_files:]:
+        try:
+            stale.unlink()
+        except OSError as e:
+            log.warning("debug_capture.prune_unlink_failed", path=str(stale), error=str(e))
+
+
+def write_debug_capture(
+    source_name: str, html: str, *, keep_files: int | None = None
+) -> Path | None:
+    """Write `html` to `data/debug/<source_name>/<UTC timestamp>.html`, then
+    trim that directory to the newest `keep_files` entries.
+
+    `keep_files` defaults to `JanitorConfig().debug_keep_files` — the
+    Pydantic field's own declared default — rather than a literal `20`, so
+    this write-time cap and the janitor's periodic sweep are always the same
+    number unless a caller deliberately overrides one. The import is local:
+    `sources/` has no other reason to depend on `config/`, and this is the
+    one value it needs from it.
+
+    Never raises — a failed diagnostic dump must not turn a real fetch
+    failure into a second, unrelated one. Returns the path written, or
+    `None` if the write itself failed.
+    """
+    if keep_files is None:
+        from book_alerter.config import JanitorConfig
+
+        keep_files = JanitorConfig().debug_keep_files
+
+    debug_dir = _DEBUG_ROOT / source_name
+    # Microsecond precision (not the plain-seconds format the weekly-backup
+    # filenames use) because two dumps from the same fetch cycle — the dp
+    # page's bot check, then the offer-listing page's — can legitimately
+    # land inside the same second.
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S-%f")
+    path = debug_dir / f"{ts}.html"
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+    except OSError as e:
+        log.warning("debug_capture.write_failed", source=source_name, error=str(e))
+        return None
+
+    _prune_debug_dir(debug_dir, keep_files)
+    return path
 
 
 class BrowserSession:

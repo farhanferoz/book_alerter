@@ -304,3 +304,32 @@ def test_all_observations_use_valid_condition_enum() -> None:
         assert o.condition in valid, f"unexpected condition {o.condition!r}"
         assert o.price_minor > 0
         assert o.currency in {"GBP", "USD", "EUR", "JPY"}
+
+
+# --- T1.5: delivery_text diagnostic capture ---------------------------------
+
+
+def test_delivery_text_populated_on_captured_fixtures() -> None:
+    """Every offer on every real Bookfinder capture must carry the raw
+    shipping-label text alongside the parsed shipping_minor — same
+    diagnostic-capture contract as the Amazon side."""
+    for fixture in (
+        "9780747532699-gb-all.html",
+        "9780008697211-gb-search-2026-09-04.html",
+        "9780753560686-gb-search-2026-09-04.html",
+    ):
+        html = _load(fixture)
+        offers = parse_offers(html, fallback_url="https://www.bookfinder.com/search/")
+        assert offers, f"{fixture} produced no offers to check"
+        for o in offers:
+            assert o.delivery_text is not None, (
+                f"{fixture}: {o.seller} row has no delivery_text"
+            )
+
+
+def test_delivery_text_matches_what_shipping_minor_was_parsed_from() -> None:
+    html = _load("9780747532699-gb-all.html")
+    offers = parse_offers(html, fallback_url="https://www.bookfinder.com/search/")
+    ebay = next(o for o in offers if "EBAY" in o.seller)
+    assert ebay.shipping_minor == 270  # £2.70
+    assert ebay.delivery_text == "shipping: £2.70"

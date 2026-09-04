@@ -17,7 +17,7 @@ from book_alerter.sources.base import (
     SourceError,
     TrackedItem,
 )
-from book_alerter.sources.browser import BrowserSessionMixin
+from book_alerter.sources.browser import BrowserSessionMixin, write_debug_capture
 from book_alerter.sources.condition_normalizers import condition_from_grade_text
 from book_alerter.sources.inline_source import InlineSource
 from book_alerter.sources.normalizers import (
@@ -210,7 +210,9 @@ async def _render_amazon_page(
     """Open `url` in a Playwright `context`, wait for `wait_selector`, return
     rendered HTML. Selector-timeout is fine — capture content and let the
     parser decide whether to fall back or report empty. Raises SourceError
-    on navigation timeout or persistent bot-challenge marker.
+    on navigation timeout or persistent bot-challenge marker; a bot-challenge
+    also dumps the HTML via `write_debug_capture` (T1.5) so the actual
+    challenge page is inspectable, not just the SourceError message.
     """
     page = await context.new_page()
     try:
@@ -226,6 +228,7 @@ async def _render_amazon_page(
     html = await page.content()
     for marker in BOT_MARKERS:
         if marker in html:
+            write_debug_capture(source_name, html)
             raise SourceError(
                 source_name,
                 "Amazon bot-protection challenge persisted; "
@@ -415,6 +418,30 @@ def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
     return None
 
 
+def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
+    """The buy-box delivery line's raw text (T1.5 diagnostic capture),
+    independent of `_extract_dp_shipping_minor`'s parse of it into pence.
+    Same selector scan and "first non-empty wins" rule, so the captured
+    text always corresponds to the block that produced `shipping_minor`.
+
+    Whitespace is collapsed to single spaces (`_extract_offer_seller`'s
+    existing convention for the same reason) — not truncated, not
+    summarised, every word Amazon rendered is kept — because Amazon's
+    markup line-wraps this block across several indented lines, and a
+    future conditional-promo substring match (e.g. "on your first order")
+    must not silently miss a phrase that happens to wrap mid-sentence in
+    the raw HTML.
+    """
+    for sel in _DELIVERY_BLOCK_SELECTORS:
+        node = tree.css_first(sel)
+        if node is None:
+            continue
+        text = " ".join((node.text() or "").split())
+        if text:
+            return text
+    return None
+
+
 def parse_dp(
     html: str,
     fallback_url: str,
@@ -461,6 +488,7 @@ def parse_dp(
         # buy-box / unavailable" (return []) from "Amazon served something
         # we don't recognise" (raise) — see `_DP_PAGE_MARKERS` rationale.
         if not _matches_any_selector(tree, _DP_PAGE_MARKERS):
+            write_debug_capture(source_name, html)
             raise SourceError(
                 source_name,
                 "dp page did not match any known Amazon UK layout "
@@ -471,6 +499,7 @@ def parse_dp(
 
     seller = _extract_dp_seller(tree)
     shipping_minor = _extract_dp_shipping_minor(tree)
+    delivery_text = _extract_dp_delivery_text(tree)
     condition = _extract_dp_condition(tree, seller)
 
     return [
@@ -479,6 +508,7 @@ def parse_dp(
             condition=condition,
             price_minor=price_minor,
             shipping_minor=shipping_minor,
+            delivery_text=delivery_text,
             currency="GBP",
             url=fallback_url,
         )
@@ -544,6 +574,7 @@ def parse_offer_listing(
         # No rows found AND no recognised offer-listing container — Amazon
         # almost certainly served an anti-bot or unrelated variant. Raise
         # rather than report 0; see `_OFFER_LISTING_PAGE_MARKERS` rationale.
+        write_debug_capture(source_name, html)
         raise SourceError(
             source_name,
             "offer-listing page did not match any known Amazon UK layout "
@@ -559,6 +590,7 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
         return None
 
     shipping_minor = _extract_shipping_minor(row)
+    delivery_text = _extract_offer_delivery_text(row)
     condition = _extract_condition(row)
     seller = _extract_offer_seller(row)
 
@@ -576,6 +608,7 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
         condition=condition,
         price_minor=price_minor,
         shipping_minor=shipping_minor,
+        delivery_text=delivery_text,
         currency="GBP",
         url=fallback_url,
     )
@@ -723,6 +756,35 @@ def _extract_shipping_minor(row: Node) -> int | None:
     return None
 
 
+def _extract_offer_delivery_text(row: Node) -> str | None:
+    """The offer row's raw delivery-promise text (T1.5 diagnostic capture) —
+    the full human-readable promise, not the parsed pence value.
+
+    Deliberately prefers the human-readable text nodes over the
+    `data-csa-c-delivery-price` attribute `_extract_shipping_minor` reads
+    first: the attribute is a short controlled value ("FREE" / "£X.XX")
+    that never carries a qualifier like "on your first order to UK or
+    Ireland", but `.aod-delivery-promise` / `#aod-offer-shipping`'s text
+    does. A future conditional-promo rule needs that qualifier, so this
+    must not collapse to the attribute's shorter value. Whitespace is
+    collapsed to single spaces (not truncated or summarised — every word
+    is kept) so the same qualifier can't be missed just because it
+    happened to line-wrap across nested markup in the row.
+    """
+    for sel in ("#aod-offer-shipping", ".aod-delivery-promise"):
+        node = row.css_first(sel)
+        if node is not None:
+            text = " ".join((node.text() or "").split())
+            if text:
+                return text
+    sp = row.css_first("[data-csa-c-delivery-price]")
+    if sp is not None:
+        attr = (sp.attributes.get("data-csa-c-delivery-price") or "").strip()
+        if attr:
+            return attr
+    return None
+
+
 def _extract_condition(row: Node) -> Condition:
     """Map the row's heading text ("Used - Very Good" etc.) to our enum."""
     heading = row.css_first("#aod-offer-heading h5") or row.css_first("#aod-offer-heading")
@@ -772,12 +834,23 @@ def _extract_offer_seller(row: Node) -> str:
     return text or "?"
 
 
-def _extract_dp_seller(tree: HTMLParser) -> str:
-    return (
-        _node_text(tree.css_first("#merchant-info a"))
-        or _node_text(tree.css_first("#merchant-info"))
-        or "Amazon"
-    )
+def _extract_dp_seller(tree: HTMLParser) -> str | None:
+    """Buy-box seller from the dp page's `#merchant-info` block, or `None`
+    if the page gives no real evidence of who it is.
+
+    T2.7: previously defaulted to `"Amazon"` whenever `#merchant-info` was
+    missing or textless — measured wrong on live markup: the Echo Dot
+    fixture (`B09B96TG33-uk-dp-2026-09-04.html`, an actual Amazon-brand
+    device) has zero `#merchant-info` nodes, yet the old fallback credited
+    the buy-box to Amazon on no evidence at all. `None` now means "the page
+    didn't tell us" — the caller (and downstream dedup/persistence, which
+    already treat `seller=None` as a first-class value) handle it as
+    third-party rather than silently assuming Amazon.
+    """
+    scope = tree.css_first("#merchant-info")
+    if scope is None:
+        return None
+    return _node_text(scope.css_first("a")) or _node_text(scope) or None
 
 
 # Amazon's own resale brands sell USED stock; their appearance in the dp
@@ -793,7 +866,7 @@ _AMAZON_USED_BRANDS = frozenset({"amazon resale", "amazon warehouse"})
 _USED_GRADES = frozenset({Condition.USED_VG, Condition.USED_G, Condition.USED_ACCEPTABLE})
 
 
-def _extract_dp_condition(tree: HTMLParser, seller: str) -> Condition:
+def _extract_dp_condition(tree: HTMLParser, seller: str | None) -> Condition:
     """Decide whether the dp buy-box price refers to a New or Used copy.
 
     When the buy-box seller is one of Amazon's resale brands ("Amazon
@@ -805,9 +878,11 @@ def _extract_dp_condition(tree: HTMLParser, seller: str) -> Condition:
     caption is missing or unparseable, fall back to `USED_VG` — the
     middle grade typical of Amazon Resale stock.
 
-    All other sellers (including marketplace ones) default to `NEW`.
+    All other sellers (including marketplace ones, and `None` — T2.7:
+    an unattributed buy-box is never assumed to be an Amazon resale brand)
+    default to `NEW`.
     """
-    if seller.strip().lower() not in _AMAZON_USED_BRANDS:
+    if seller is None or seller.strip().lower() not in _AMAZON_USED_BRANDS:
         return Condition.NEW
     caption = tree.css_first("#usedAccordionCaption_feature_div .a-text-bold")
     if caption is not None:

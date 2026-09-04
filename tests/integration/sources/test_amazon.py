@@ -199,11 +199,18 @@ def test_fetch_returns_offer_listing_only_when_dp_has_no_buybox(
     assert sellers == {"Amazon", "BetterWorldBooksUK", "WorldOfBooks Ltd", "MusicMagpie"}
 
 
-def test_bot_check_raises_source_error() -> None:
+def test_bot_check_raises_source_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """If Playwright fails to clear Amazon's anti-bot, the rendered HTML
     contains a known marker — `_render_page` must raise SourceError so the
-    caller can alert rather than silently emit zero offers."""
+    caller can alert rather than silently emit zero offers. T1.5: it must
+    also dump the challenge HTML via `write_debug_capture` so a human can
+    see what Amazon actually served."""
+    import book_alerter.sources.browser as browser_mod
     from book_alerter.sources.base import SourceError
+
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
 
     bot_html = (
         "<html><head><title>Robot Check</title></head>"
@@ -225,6 +232,10 @@ def test_bot_check_raises_source_error() -> None:
 
     with pytest.raises(SourceError, match="bot-protection challenge persisted"):
         asyncio.run(_drive())
+
+    dumps = list((tmp_path / "amazon").glob("*.html"))
+    assert len(dumps) == 1
+    assert dumps[0].read_text(encoding="utf-8") == bot_html
 
 
 @pytest.mark.skipif(

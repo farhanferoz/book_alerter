@@ -50,6 +50,13 @@ class ObservationCandidate(BaseModel):
     condition: Condition
     price_minor: int
     shipping_minor: int | None = None
+    # T1.5 diagnostic capture: the raw delivery/shipping text a source read
+    # `shipping_minor` from (Amazon: the dp delivery block or an AOD row's
+    # `.aod-delivery-promise` text; Bookfinder: the card's shipping-label
+    # text). Persisted inside `raw` via the scheduler's existing
+    # `c.model_dump()` — no schema change. `None` when a source doesn't
+    # capture it or found no delivery text at all.
+    delivery_text: str | None = None
     currency: str
     url: str
 

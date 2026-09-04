@@ -12,11 +12,13 @@ from pathlib import Path
 
 import pytest
 
+import book_alerter.sources.browser as browser_mod
 from book_alerter.enums import Condition
 from book_alerter.sources.amazon import _merge_offers, parse_dp, parse_offer_listing
 from book_alerter.sources.base import ObservationCandidate, SourceError
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "amazon"
+PRODUCT_FIXTURES = FIXTURES / "products"
 
 
 def _load(name: str) -> str:
@@ -549,3 +551,126 @@ def test_real_offer_listing_amazon_resale_used_row_has_correct_price() -> None:
     o = amazon_resale[0]
     assert o.condition == "used_vg"
     assert o.price_minor == 2566
+
+
+# --- T2.7: dp seller attribution --------------------------------------------
+
+
+def test_extract_dp_seller_returns_none_when_merchant_info_absent() -> None:
+    """Previously defaulted to "Amazon" whenever #merchant-info was
+    missing — that credited an unattributed buy-box to Amazon on no
+    evidence at all."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_seller
+
+    tree = HTMLParser('<html><body><div id="dp-container"></div></body></html>')
+    assert _extract_dp_seller(tree) is None
+
+
+def test_extract_dp_seller_returns_none_when_merchant_info_textless() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_seller
+
+    tree = HTMLParser('<html><body><div id="merchant-info">   </div></body></html>')
+    assert _extract_dp_seller(tree) is None
+
+
+def test_extract_dp_seller_reads_merchant_info_when_present() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_seller
+
+    tree = HTMLParser(
+        '<html><body><div id="merchant-info"><a>BookCurl</a></div></body></html>'
+    )
+    assert _extract_dp_seller(tree) == "BookCurl"
+
+
+def test_parse_dp_seller_still_amazon_when_merchant_info_present() -> None:
+    """Positive-control regression guard: the ordinary Harry Potter dp
+    fixture DOES render #merchant-info as "Amazon" — the T2.7 fix must
+    only change the absent/textless case, not this one."""
+    html = _load("9780747532699-uk-dp.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    assert offers[0].seller == "Amazon"
+
+
+def test_parse_dp_seller_none_on_echo_dot_fixture_with_no_merchant_info() -> None:
+    """T2.7 regression on real captured markup: the Echo Dot dp page (an
+    actual Amazon-brand device — evidence T2.7 was landed against) has
+    zero #merchant-info nodes. Before this fix the buy-box was wrongly
+    attributed to "Amazon"; now it's None, and unattributed sellers must
+    never be classified as an Amazon resale brand either."""
+    html = (PRODUCT_FIXTURES / "B09B96TG33-uk-dp-2026-09-04.html").read_text(
+        encoding="utf-8"
+    )
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/B09B96TG33")
+    assert len(offers) == 1
+    assert offers[0].seller is None
+    assert offers[0].condition == Condition.NEW
+
+
+# --- T1.5: delivery_text diagnostic capture ---------------------------------
+
+
+def test_parse_dp_delivery_text_populated_on_free_and_paid_fixtures() -> None:
+    free_html = _load("9780747532699-uk-dp-free-delivery.html")
+    free_offers = parse_dp(free_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert free_offers[0].delivery_text is not None
+    assert "FREE delivery" in free_offers[0].delivery_text
+
+    paid_html = _load("9780747532699-uk-dp-paid-delivery.html")
+    paid_offers = parse_dp(paid_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert paid_offers[0].delivery_text is not None
+    assert "£2.80 delivery" in paid_offers[0].delivery_text
+
+
+def test_parse_dp_delivery_text_none_when_no_delivery_block() -> None:
+    html = _load("9780747532699-uk-dp.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert offers[0].delivery_text is None
+
+
+def test_parse_offer_listing_delivery_text_populated() -> None:
+    """Every row on the real offer-listing fixture must carry the raw
+    delivery-promise text alongside the parsed shipping_minor — this is
+    the field T2.5's future conditional-promo rule keys on."""
+    html = _load(REAL_OL)
+    offers = parse_offer_listing(html, fallback_url="https://x.example/")
+    assert offers
+    for o in offers:
+        assert o.delivery_text is not None, f"{o.seller} row has no delivery_text"
+
+
+# --- T1.5: debug capture on bot-challenge / unrecognised layout ------------
+
+
+def test_parse_dp_raises_and_writes_debug_capture_on_unrecognized_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+    html = "<html><body><p>nope</p></body></html>"
+
+    with pytest.raises(SourceError, match="dp page did not match"):
+        parse_dp(html, fallback_url="https://x", source_name="amazon")
+
+    dumps = list((tmp_path / "amazon").glob("*.html"))
+    assert len(dumps) == 1
+    assert dumps[0].read_text(encoding="utf-8") == html
+
+
+def test_parse_offer_listing_raises_and_writes_debug_capture_on_unrecognized_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+    html = "<html><body><p>nope</p></body></html>"
+
+    with pytest.raises(SourceError, match="offer-listing page did not match"):
+        parse_offer_listing(html, fallback_url="https://x", source_name="amazon_uk_product")
+
+    dumps = list((tmp_path / "amazon_uk_product").glob("*.html"))
+    assert len(dumps) == 1
+    assert dumps[0].read_text(encoding="utf-8") == html

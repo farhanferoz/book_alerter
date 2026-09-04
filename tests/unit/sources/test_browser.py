@@ -12,11 +12,13 @@ and by the manual fingerprint check run against the real installed browser
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
 import book_alerter.sources.browser as browser_mod
+from book_alerter.config import JanitorConfig
 from book_alerter.sources.browser import BrowserSession, derive_user_agent
 
 
@@ -200,3 +202,82 @@ async def test_browser_session_different_profiles_do_not_block_each_other(
     await session_b.close()
 
     assert fake_pw.chromium.persistent_launch_calls == 2
+
+
+# --- T1.5 diagnostic capture -------------------------------------------------
+
+
+def test_write_debug_capture_writes_html_under_source_subdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+
+    path = browser_mod.write_debug_capture("amazon", "<html>challenge</html>", keep_files=20)
+
+    assert path is not None
+    assert path.parent == tmp_path / "amazon"
+    assert path.suffix == ".html"
+    assert path.read_text(encoding="utf-8") == "<html>challenge</html>"
+
+
+def test_write_debug_capture_defaults_keep_files_to_janitor_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No `keep_files=` override must behave exactly like passing
+    `JanitorConfig().debug_keep_files` explicitly — the whole point of
+    reusing the field is that there is only ever one number."""
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+    default_cap = JanitorConfig().debug_keep_files
+    assert default_cap > 0, "test assumes the real default leaves room to prune below"
+
+    for i in range(default_cap + 3):
+        browser_mod.write_debug_capture("amazon", f"<html>{i}</html>")  # no keep_files=
+
+    remaining = list((tmp_path / "amazon").iterdir())
+    assert len(remaining) == default_cap
+
+
+def test_write_debug_capture_never_raises_on_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A diagnostic dump failing to write must not turn a real fetch
+    failure into a second, unrelated one — write_debug_capture swallows
+    and logs instead of raising."""
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+
+    def _boom(self, *a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    result = browser_mod.write_debug_capture("amazon", "<html>x</html>", keep_files=20)
+
+    assert result is None
+
+
+def test_prune_debug_dir_keeps_newest_n_by_mtime(tmp_path: Path) -> None:
+    """Direct test of the rotation logic, with explicit mtimes so ordering
+    is deterministic regardless of filesystem timestamp resolution."""
+    debug_dir = tmp_path / "amazon"
+    debug_dir.mkdir()
+    paths = [debug_dir / f"{i}.html" for i in range(5)]
+    for i, p in enumerate(paths):
+        p.write_text("x", encoding="utf-8")
+        # Strictly increasing mtimes: paths[4] is newest, paths[0] oldest.
+        os.utime(p, (i, i))
+
+    browser_mod._prune_debug_dir(debug_dir, keep_files=2)
+
+    remaining = set(debug_dir.iterdir())
+    assert remaining == {paths[4], paths[3]}
+
+
+def test_prune_debug_dir_keep_files_zero_removes_everything(tmp_path: Path) -> None:
+    debug_dir = tmp_path / "amazon"
+    debug_dir.mkdir()
+    (debug_dir / "a.html").write_text("x", encoding="utf-8")
+    (debug_dir / "b.html").write_text("x", encoding="utf-8")
+
+    browser_mod._prune_debug_dir(debug_dir, keep_files=0)
+
+    assert list(debug_dir.iterdir()) == []

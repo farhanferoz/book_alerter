@@ -272,9 +272,34 @@ def _parse_card(card: Node, fallback_url: str) -> ObservationCandidate | None:
         condition=condition,
         price_minor=price_minor,
         shipping_minor=shipping_minor,
+        delivery_text=_extract_delivery_text(text),
         currency=currency,
         url=clickout,
     )
+
+
+def _extract_delivery_text(card_text: str) -> str | None:
+    """The card's raw shipping-label text fragment (T1.5 diagnostic
+    capture), independent of the shipping_minor computation above.
+
+    There's no separate DOM node for this on Bookfinder cards — the label
+    lives inline in the card's flattened text — so this reuses the exact
+    same `_FREE_SHIPPING_RE` / `_SHIPPING_LABEL_RE` patterns `_parse_card`
+    matches shipping_minor with, so whatever gets captured always matches
+    what got parsed. Returns None when neither pattern matches (e.g. the
+    USD-split branch, which computes shipping_minor from data attributes
+    rather than reading a label at all).
+    """
+    free_match = _FREE_SHIPPING_RE.search(card_text)
+    if free_match is not None:
+        return free_match.group(0)
+    label_match = _SHIPPING_LABEL_RE.search(card_text)
+    if label_match is not None:
+        tail = card_text[label_match.end():].lstrip()
+        price_match = _PRICE_RE.match(tail)
+        if price_match is not None:
+            return f"{label_match.group(0)}{price_match.group(0)}"
+    return None
 
 
 def _resolve_condition(card_text: str, base: str) -> Condition:
