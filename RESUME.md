@@ -97,6 +97,16 @@ that makes the work deployable, and it is the last thing to do, after review.
   T4.2 is now a hard gate to fix that (see its plan entry).
 - **Logging audit:** no per-item INFO logging in the source layer; §8 clause met.
 
+### Pending gates before the endgame
+- **Re-run the Docker e2e from committed HEAD once T3.2 lands.** A run on 2026-09-04 gave
+  `test_docker_smoke` FAILED / `test_write_containment_during_scheduler_run` passed — but the
+  image was built from a working tree holding the half-finished heartbeat-compaction change
+  (`models.py`, `views.py` uncommitted). `docker build` bakes in the working tree, so **never
+  judge e2e from a dirty tree**; build from a clean checkout.
+- **T6.8 not ticked yet**: still need the worker's negative-case evidence (deliberate stray write
+  → assertion fails → removed → passes). The assertion itself reads correctly.
+- **T4.2 is a hard gate**: 7 committed product fixtures have no test loading them.
+
 ### Integration status (root-verified on a clean checkout of the branch tip)
 - **2026-09-04, commit `31b0b03`: `uv run pytest -q` → 520 passed, 3 skipped, 0 failed** (22 s).
   Baseline before this run was 426 passed. The earlier red state (11 `test_book_stats_view.py`
