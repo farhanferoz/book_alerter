@@ -68,6 +68,28 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   write-set guard holds all three. Its remedy is that the orchestrator writes them; never have a
   worker override it.
 
+### WHERE BOOK_ALERTER'S CONTAINER LIVES (answered 2026-09-04, all verified by diff)
+The user asked; `~/dev/workspace-sync` now organises the fleet. Three copies of the NAS compose
+file exist and one of them is stale:
+
+| Copy | Status |
+|---|---|
+| `/share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml` (NAS) | **LIVE** |
+| `~/dev/workspace-sync/nas/compose/book_alerter/docker-compose.yml` | **SOURCE OF TRUTH — byte-identical to live** |
+| `~/dev/book_alerter/docker-compose.nas.yml` | ⚠️ **STALE** — missing `labels: ["lifecycle=service"]`; synced by nothing |
+
+- workspace-sync syncs **one way, repo → NAS**, via `nas/deploy_compose.sh` (`--apply`; default is
+  a dry-run drift report). It deliberately does **not** recreate containers. `validate.sh
+  check nas/compose-files` fails on drift.
+- **`book_alerter` is EXCLUDED ON PURPOSE from `tools/fleet-update`** — named in that file's
+  exclusion list and absent from its `services:` block, so the weekly auto-updater will never
+  touch its image. Deploying a new image is a deliberate manual act.
+- **TODO (not done, deliberately deferred at checkpoint):** delete this repo's stale
+  `docker-compose.nas.yml` and point the README's deploy section at workspace-sync. It is
+  referenced only by a historical `docs/CHANGELOG.md` line, so removal is safe. Leaving a third,
+  unsynced copy of a deployment file is exactly the drift class workspace-sync exists to end —
+  and this one has already drifted by one line.
+
 ### Deployment handover (verified environment, NOT executed — deploy is out of scope)
 Production today: container `book_alerter`, image `ghcr.io/farhanferoz/book_alerter:latest`,
 **Up 21 hours (healthy)**, compose at `/share/CACHEDEV1_DATA/Container/book_alerter/` (note:
