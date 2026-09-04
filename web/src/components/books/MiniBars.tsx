@@ -1,8 +1,13 @@
 // Dashboard column: three stacked mini-bars (1m / 3m / 12m). Dot position
 // = current price's percentile rank in that window. Dot color encodes
 // goodness (low rank = cheap = green).
+//
+// Takes anything with a `.stats` of the shared `ItemStats` shape — not
+// specifically a `Book` — since `BookOut.stats` and `ProductOut.stats` are
+// the same wire type (see `@/lib/item`), so this renders a product's
+// windows identically without a second component.
 
-import type { Book } from "@/hooks/useBooks";
+import type { ItemStats } from "@/lib/item";
 import { ordinalSuffix } from "@/lib/format";
 import { WINDOW_KEYS } from "@/lib/windows";
 
@@ -13,8 +18,8 @@ function dotClass(rank: number | null): string {
   return "bg-rose-600 dark:bg-rose-400";
 }
 
-function tooltip(book: Book): string {
-  const windows = book.stats.windows ?? {};
+function tooltip(stats: ItemStats): string {
+  const windows = stats.windows ?? {};
   return WINDOW_KEYS.map((k) => {
     const w = windows[k];
     if (!w || w.count === 0) return `${k}: no data`;
@@ -23,9 +28,9 @@ function tooltip(book: Book): string {
   }).join(" · ");
 }
 
-export function MiniBars({ book }: { book: Book }) {
-  const windows = book.stats.windows ?? {};
-  const title = tooltip(book);
+export function MiniBars({ item }: { item: { stats: ItemStats } }) {
+  const windows = item.stats.windows ?? {};
+  const title = tooltip(item.stats);
   return (
     <div
       role="img"

@@ -6,7 +6,7 @@
 // for an ISBN — common for niche/new titles — this keeps the UI legible
 // instead of showing a confusing empty rectangle.
 
-import { BookIcon } from "lucide-react";
+import { BookIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -14,10 +14,15 @@ export function CoverImage({
   src,
   alt = "",
   className,
+  fallbackIcon: FallbackIcon = BookIcon,
 }: {
   src: string | null | undefined;
   alt?: string;
   className?: string;
+  // Defaults to BookIcon so every existing call site (dashboard rows, book
+  // detail header, AddBookModal) is unchanged; the products columns pass
+  // PackageIcon instead.
+  fallbackIcon?: LucideIcon;
 }) {
   if (src) {
     return (
@@ -42,7 +47,7 @@ export function CoverImage({
       )}
       aria-hidden
     >
-      <BookIcon className="size-1/2" />
+      <FallbackIcon className="size-1/2" />
     </div>
   );
 }

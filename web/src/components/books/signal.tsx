@@ -4,18 +4,20 @@
 // `BookStatsOut.signal`. Falls back to INSUFFICIENT_DATA if the field is
 // somehow missing (older API payload, error state). The dashboard pill
 // matches exactly what the alert dispatcher will fire.
+//
+// `bookSignal` takes anything with a `.stats` of the shared `ItemStats`
+// shape rather than specifically a `Book` — `BookOut.stats` and
+// `ProductOut.stats` are the same wire type (see `@/lib/item`), so this
+// reads a product's signal identically without a second function. `Signal`
+// itself is re-exported from `@/lib/item`, where it's derived from the
+// generated schema rather than hand-written here.
 
-import type { Book } from "@/hooks/useBooks";
+import type { ItemStats, Signal } from "@/lib/item";
 
-export type Signal =
-  | "BUY"
-  | "WATCH"
-  | "WAIT"
-  | "TARGET_HIT"
-  | "INSUFFICIENT_DATA";
+export type { Signal };
 
-export function bookSignal(book: Book): Signal {
-  return book.stats.signal ?? "INSUFFICIENT_DATA";
+export function bookSignal(item: { stats: ItemStats }): Signal {
+  return item.stats.signal ?? "INSUFFICIENT_DATA";
 }
 
 export const SIGNAL_LABEL: Record<Signal, string> = {

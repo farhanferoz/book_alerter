@@ -1,4 +1,8 @@
-// Row-level kebab menu for the Dashboard table: refetch · archive · delete.
+// Row-level kebab menu for the dashboard tables: refetch · archive · delete.
+// Shared between the books `Dashboard` and the products dashboard via
+// `Item` — the only book/product difference is which endpoint prefix and
+// list query key to use, both plain data keyed off `item.kind`, not a
+// branch between two otherwise-different implementations.
 //
 // Mirrors the mutation patterns in `detail/ActionBar.tsx` but scoped to a
 // single row, with shorter copy and no inline result rendering — TanStack
@@ -23,56 +27,73 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { Book } from "@/hooks/useBooks";
+import type { Book, Item, Product } from "@/lib/item";
 
 type RefetchResult = components["schemas"]["RefetchResult"];
 type ConfirmKind = "archive" | "delete" | null;
 
-const CONFIRM_COPY: Record<
-  Exclude<ConfirmKind, null>,
-  { title: string; body: string; cta: string; ctaVariant: "default" | "destructive" }
-> = {
-  archive: {
-    title: "Archive this book?",
-    body: "Hides the book from the active dashboard and pauses scrapes. Price history is preserved.",
-    cta: "Archive",
-    ctaVariant: "default",
-  },
-  delete: {
-    title: "Delete this book?",
-    body: "Permanently removes the book and all of its observations. This cannot be undone.",
-    cta: "Delete",
-    ctaVariant: "destructive",
-  },
-};
+// Exact wording preserved per kind (`book` matches what BookRowMenu said
+// before this generalisation — "no behaviour change for books").
+function confirmCopy(kind: Item["kind"], confirm: Exclude<ConfirmKind, null>) {
+  const noun = kind === "product" ? "product" : "book";
+  return confirm === "archive"
+    ? {
+        title: `Archive this ${noun}?`,
+        body: `Hides the ${noun} from the active dashboard and pauses scrapes. Price history is preserved.`,
+        cta: "Archive",
+        ctaVariant: "default" as const,
+      }
+    : {
+        title: `Delete this ${noun}?`,
+        body: `Permanently removes the ${noun} and all of its observations. This cannot be undone.`,
+        cta: "Delete",
+        ctaVariant: "destructive" as const,
+      };
+}
 
-export function BookRowMenu({ book }: { book: Book }) {
+// `/api/books/{book_id}` and `/api/products/{product_id}` are the only two
+// endpoint families a row can belong to — the base path and the list
+// query key both key off `item.kind` as plain data.
+function apiBase(kind: Item["kind"]): "/api/books" | "/api/products" {
+  return kind === "product" ? "/api/products" : "/api/books";
+}
+
+function listQueryKey(kind: Item["kind"]): "books" | "products" {
+  return kind === "product" ? "products" : "books";
+}
+
+export function ItemRowMenu({ item }: { item: Item }) {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
+  const base = apiBase(item.kind);
+  const listKey = listQueryKey(item.kind);
 
   const onError = (label: string) => (err: ApiError) =>
     window.alert(`${label} failed (${err.status}) — ${err.message}`);
 
   const refetch = useMutation<RefetchResult, ApiError>({
     mutationFn: async () => {
-      const path =
-        `/api/books/${book.id}/refetch` as "/api/books/{book_id}/refetch";
+      const path = `${base}/${item.id}/refetch` as
+        | "/api/books/{book_id}/refetch"
+        | "/api/products/{product_id}/refetch";
       return (await apiPost(path)) as RefetchResult;
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["books"] });
+      void qc.invalidateQueries({ queryKey: [listKey] });
     },
     onError: onError("Refetch"),
   });
 
-  const archive = useMutation<Book, ApiError>({
+  const archive = useMutation<Book | Product, ApiError>({
     mutationFn: async () => {
-      const path = `/api/books/${book.id}` as "/api/books/{book_id}";
-      return (await apiPatch(path, { status: "archived" })) as Book;
+      const path = `${base}/${item.id}` as
+        | "/api/books/{book_id}"
+        | "/api/products/{product_id}";
+      return (await apiPatch(path, { status: "archived" })) as Book | Product;
     },
     onSuccess: () => {
       setConfirm(null);
-      void qc.invalidateQueries({ queryKey: ["books"] });
+      void qc.invalidateQueries({ queryKey: [listKey] });
     },
     onError: (err) => {
       setConfirm(null);
@@ -80,15 +101,16 @@ export function BookRowMenu({ book }: { book: Book }) {
     },
   });
 
-  const remove = useMutation<Book, ApiError>({
+  const remove = useMutation<Book | Product, ApiError>({
     mutationFn: async () => {
-      const path =
-        `/api/books/${book.id}?hard=true` as "/api/books/{book_id}";
-      return (await apiDelete(path)) as Book;
+      const path = `${base}/${item.id}?hard=true` as
+        | "/api/books/{book_id}"
+        | "/api/products/{product_id}";
+      return (await apiDelete(path)) as Book | Product;
     },
     onSuccess: () => {
       setConfirm(null);
-      void qc.invalidateQueries({ queryKey: ["books"] });
+      void qc.invalidateQueries({ queryKey: [listKey] });
     },
     onError: (err) => {
       setConfirm(null);
@@ -124,7 +146,7 @@ export function BookRowMenu({ book }: { book: Book }) {
                 {refetch.isPending ? "Refetching…" : "Refetch"}
               </Menu.Item>
               <Menu.Item
-                disabled={busy || book.status === "archived"}
+                disabled={busy || item.status === "archived"}
                 onClick={() => setConfirm("archive")}
                 className="flex cursor-default items-center rounded-sm px-2 py-1.5 outline-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
               >
@@ -148,32 +170,33 @@ export function BookRowMenu({ book }: { book: Book }) {
           if (!open) setConfirm(null);
         }}
       >
-        {confirm && (
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{CONFIRM_COPY[confirm].title}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {CONFIRM_COPY[confirm].body}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setConfirm(null)}
-                disabled={busy}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant={CONFIRM_COPY[confirm].ctaVariant}
-                onClick={onConfirm}
-                disabled={busy}
-              >
-                {busy ? "Working…" : CONFIRM_COPY[confirm].cta}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        )}
+        {confirm && (() => {
+          const copy = confirmCopy(item.kind, confirm);
+          return (
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{copy.title}</AlertDialogTitle>
+                <AlertDialogDescription>{copy.body}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirm(null)}
+                  disabled={busy}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant={copy.ctaVariant}
+                  onClick={onConfirm}
+                  disabled={busy}
+                >
+                  {busy ? "Working…" : copy.cta}
+                </Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          );
+        })()}
       </AlertDialog>
     </>
   );

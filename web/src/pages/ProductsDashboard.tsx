@@ -1,20 +1,26 @@
-// Products dashboard — minimal table of tracked Amazon products.
-//
-// Deliberately leaner than the books `Dashboard` (no signal/sort filter
-// bar, no DataTable wrapper) — products are a thinner surface at MVP and
-// the user can extend if it grows. Keeps the diff small so the books
-// path stays untouched.
+// Products dashboard — reuses the books dashboard's table, columns,
+// filters, mini-bars, signal pill and row menu via the shared `Item`
+// abstraction (`@/lib/item`) instead of growing a second copy of each of
+// them. `BookFilters`/`DataTable` are kind-neutral despite their names
+// (see their own files) and are used here unchanged; `buildItemColumns`
+// (`components/books/columns.tsx`) is the same column set as the books
+// `Dashboard`, driven off `Item` instead of `Book`.
 
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useProducts, type Product } from "@/hooks/useProducts";
-import { formatMoneyMinor } from "@/lib/format";
-import { formatErrorMessage } from "@/lib/utils";
-
 import { AddProductModal } from "@/components/products/AddProductModal";
+import {
+  BookFilters,
+  DEFAULT_FILTERS,
+  type BookFiltersValue,
+} from "@/components/books/BookFilters";
+import { DataTable } from "@/components/books/BookTable";
+import { buildItemColumns } from "@/components/books/columns";
+import { useItems } from "@/hooks/useItems";
+import { applyItemFilters } from "@/lib/item";
+import { formatErrorMessage } from "@/lib/utils";
 
 function SkeletonRows() {
   return (
@@ -48,67 +54,18 @@ function ErrorCard({ error }: { error: unknown }) {
   );
 }
 
-function ProductRow({ product }: { product: Product }) {
-  return (
-    <tr className="border-b border-border last:border-b-0 hover:bg-accent/30">
-      <td className="p-3 align-middle">
-        {product.image_url ? (
-          <img
-            src={product.image_url}
-            alt=""
-            className="h-12 w-12 rounded object-cover"
-            loading="lazy"
-          />
-        ) : (
-          <div
-            className="h-12 w-12 rounded bg-muted text-muted-foreground flex items-center justify-center text-xs"
-            aria-hidden
-          >
-            —
-          </div>
-        )}
-      </td>
-      <td className="p-3 align-middle">
-        <Link
-          to={`/products/${product.id}`}
-          className="font-medium hover:underline"
-        >
-          {product.title}
-        </Link>
-        <div className="text-xs text-muted-foreground">
-          {product.brand ?? <em>no brand</em>} · ASIN {product.asin}
-        </div>
-      </td>
-      <td className="p-3 align-middle text-right tabular-nums">
-        {formatMoneyMinor(
-          product.stats.current_best_total_minor,
-          product.currency,
-        )}
-      </td>
-      <td className="p-3 align-middle text-right text-xs text-muted-foreground">
-        {product.stats.observation_count}
-      </td>
-      <td className="p-3 align-middle text-xs">
-        {product.track_used ? "new + used" : "new only"}
-      </td>
-      <td className="p-3 align-middle">
-        {product.last_scrape_error ? (
-          <span
-            className="inline-block h-2 w-2 rounded-full bg-destructive"
-            title={product.last_scrape_error}
-            aria-label="scrape error"
-          />
-        ) : (
-          <span className="text-xs text-muted-foreground">ok</span>
-        )}
-      </td>
-    </tr>
-  );
-}
-
 export function ProductsDashboard() {
+  const [filters, setFilters] = useState<BookFiltersValue>(DEFAULT_FILTERS);
   const [addOpen, setAddOpen] = useState(false);
-  const { data, isLoading, isError, error } = useProducts();
+  const includeArchived = filters.status === "archived" || filters.status === "all";
+  const { data, isLoading, isError, error } = useItems("product", {
+    include_archived: includeArchived,
+  });
+  const columns = useMemo(() => buildItemColumns(), []);
+  const filtered = useMemo(
+    () => (data ? applyItemFilters(data, filters) : []),
+    [data, filters],
+  );
 
   const onAddProduct = () => setAddOpen(true);
 
@@ -125,6 +82,8 @@ export function ProductsDashboard() {
         <Button onClick={onAddProduct}>Add product</Button>
       </header>
 
+      <BookFilters value={filters} onChange={setFilters} />
+
       {isLoading ? (
         <SkeletonRows />
       ) : isError ? (
@@ -132,25 +91,11 @@ export function ProductsDashboard() {
       ) : !data || data.length === 0 ? (
         <EmptyState onAddProduct={onAddProduct} />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <tr>
-                <th className="p-3">Image</th>
-                <th className="p-3">Title</th>
-                <th className="p-3 text-right">Best price</th>
-                <th className="p-3 text-right">Obs.</th>
-                <th className="p-3">Scope</th>
-                <th className="p-3">Health</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((p) => (
-                <ProductRow key={p.id} product={p} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={columns}
+          data={filtered}
+          emptyMessage="No products match the current filters."
+        />
       )}
 
       <AddProductModal open={addOpen} onOpenChange={setAddOpen} />

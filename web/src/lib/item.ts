@@ -16,6 +16,8 @@
 // of abstraction this file generalises to books/products themselves).
 
 import type { components } from "@/api/schema";
+import { bookSignal } from "@/components/books/signal";
+import { rank3mOrInf } from "@/lib/windows";
 
 export type Book = components["schemas"]["BookOut"];
 export type Product = components["schemas"]["ProductOut"];
@@ -35,18 +37,35 @@ export type ItemKind = components["schemas"]["ItemKind"];
 
 /**
  * A book or a product, tagged with `kind` and carrying a normalised
- * `imageUrl` (`cover_url` for books, `image_url` for products) and a
- * hoisted `signal` (`stats.signal`) alongside every other field of the
- * underlying response. `kind` narrows the union the usual TS way:
- * `item.kind === "book"` gives back `isbn13`, `format`, … for free;
+ * `imageUrl` (`cover_url` for books, `image_url` for products), `subtitle`
+ * (`author` for books — always present; `brand` for products — may be
+ * null), and a hoisted `signal` (`stats.signal`) alongside every other
+ * field of the underlying response. `kind` narrows the union the usual TS
+ * way: `item.kind === "book"` gives back `isbn13`, `format`, … for free;
  * `"product"` gives back `asin`, `brand`, `track_used`, ….
  */
 export type Item =
-  | (Book & { kind: "book"; imageUrl: string | null; signal: ItemStats["signal"] })
-  | (Product & { kind: "product"; imageUrl: string | null; signal: ItemStats["signal"] });
+  | (Book & {
+      kind: "book";
+      imageUrl: string | null;
+      subtitle: string;
+      signal: ItemStats["signal"];
+    })
+  | (Product & {
+      kind: "product";
+      imageUrl: string | null;
+      subtitle: string | null;
+      signal: ItemStats["signal"];
+    });
 
 export function bookToItem(book: Book): Item {
-  return { ...book, kind: "book", imageUrl: book.cover_url, signal: book.stats.signal };
+  return {
+    ...book,
+    kind: "book",
+    imageUrl: book.cover_url,
+    subtitle: book.author,
+    signal: book.stats.signal,
+  };
 }
 
 export function productToItem(product: Product): Item {
@@ -54,6 +73,7 @@ export function productToItem(product: Product): Item {
     ...product,
     kind: "product",
     imageUrl: product.image_url,
+    subtitle: product.brand,
     signal: product.stats.signal,
   };
 }
@@ -62,4 +82,74 @@ export function productToItem(product: Product): Item {
 export function itemHref(item: Pick<Item, "kind" | "id">): string {
   const segment = item.kind === "product" ? "products" : "books";
   return `/${segment}/${item.id}`;
+}
+
+// --- Dashboard filter/sort -----------------------------------------------
+//
+// Shared with the products dashboard (`ProductsDashboard.tsx`) so it gets
+// the same signal/status/sort behaviour as the books `Dashboard` without a
+// second copy of the switch below. `pages/Dashboard.tsx` keeps its own
+// private `applyFilters` — it isn't exported, and that page's behaviour
+// must not change in this task — so this is a parallel implementation
+// against `Item`, not a literal extraction of that one; a later task that
+// re-points `Dashboard.tsx` at `Item` can fold the two together.
+
+/** Kept structurally identical to `@/components/books/BookFilters`'s
+ * `BookFiltersValue` on purpose — a `BookFiltersValue` and an `ItemFilters`
+ * satisfy each other via TS structural typing, so `BookFilters` (the form)
+ * can drive this without a shared named type between `lib/` and
+ * `components/`. */
+export type ItemFilters = {
+  signal: Signal | "ALL";
+  status: "active" | "archived" | "bought" | "all";
+  sort: "signal" | "best_price" | "percentile" | "last_seen" | "title";
+};
+
+const SIGNAL_ORDER: Record<Signal, number> = {
+  TARGET_HIT: 0,
+  BUY: 1,
+  WATCH: 2,
+  WAIT: 3,
+  INSUFFICIENT_DATA: 4,
+};
+
+/** Mirrors `pages/Dashboard.tsx`'s private `applyFilters` — same filter
+ * predicates, same sort keys/directions, reusing the same `bookSignal`/
+ * `rank3mOrInf` accessors that back the dashboard columns — generalised to
+ * `Item[]`. */
+export function applyItemFilters(items: Item[], filters: ItemFilters): Item[] {
+  let result = items;
+  if (filters.signal !== "ALL") {
+    result = result.filter((i) => bookSignal(i) === filters.signal);
+  }
+  if (filters.status !== "all") {
+    result = result.filter((i) => i.status === filters.status);
+  }
+  const sorted = [...result];
+  switch (filters.sort) {
+    case "signal":
+      sorted.sort((a, b) => SIGNAL_ORDER[bookSignal(a)] - SIGNAL_ORDER[bookSignal(b)]);
+      break;
+    case "best_price":
+      sorted.sort((a, b) => {
+        const av = a.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
+        const bv = b.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
+        return av - bv;
+      });
+      break;
+    case "percentile":
+      sorted.sort((a, b) => rank3mOrInf(a) - rank3mOrInf(b));
+      break;
+    case "last_seen":
+      sorted.sort((a, b) => {
+        const av = a.stats.last_polled_at ?? "";
+        const bv = b.stats.last_polled_at ?? "";
+        return bv.localeCompare(av); // newest first
+      });
+      break;
+    case "title":
+      sorted.sort((a, b) => a.title.localeCompare(b.title));
+      break;
+  }
+  return sorted;
 }
