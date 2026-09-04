@@ -15,7 +15,7 @@ Author: Farhan Feroz. Status: ratified 2026-09-04, execution started (Task 1 cod
 - Work only inside `/home/ff235/dev/book_alerter/`, on branch **`ui-polish`** (exists; based on `master` @ `755b822`). Never touch `master` directly.
 - **Frontend gate, run from `web/`:** `./node_modules/.bin/tsc -b --noEmit` · `./node_modules/.bin/eslint .` · `npm run build`. **The `-b` is mandatory** — without it `tsc` checks nothing and exits 0 with real type errors present (measured 2026-09-04). Deps install with `npm ci --legacy-peer-deps` if `node_modules` is missing.
 - **No frontend unit-test runner exists** (`web/package.json` has no vitest/jest). Do not add one for this plan (YAGNI). Verification = the gate above + Task 4's screenshots.
-- **Commit with an explicit pathspec, never bare** — `git commit -- <paths>` (D25/D28). Check `git show --stat HEAD` after each commit.
+- **Commit with an explicit pathspec, never bare** — `git commit -m "msg" -- <paths>` (D25/D28). The `-m` must come BEFORE the `--`: git treats everything after `--` as a pathspec, so `-m` and the message are parsed as filenames and the commit fails with `error: pathspec '-m' did not match any file(s)`. Check `git show --stat HEAD` after each commit.
 - No AI/tool provenance in commit messages, comments or docs. Author is the user.
 - Temporary files (screenshots, harness DB copies, scripts) go to the session scratchpad, never the repo. `git status --short` must show only intended files before every commit.
 - Money display stays `formatMoneyMinor`; signals, prime/estimate flags are read from the backend only — never re-derived client-side (D10, D34). Nothing in this plan changes a number, only where and how it is shown.
@@ -62,24 +62,20 @@ The four edits are complete on disk on branch `ui-polish`. This task reviews and
 3. `AlertsSidebar.tsx` — `groups` (a `useMemo` keyed on `alertsQuery.data`) reduces the 20-item page to one entry per `${item_kind}-${item_id}` holding `{newest, older}`; renders one `AlertItem` per group plus a `+N older alert(s) for this item` link to `/alerts` when `older > 0`; footer reads `20+ active across 9 items`.
 4. `KeepaChart.tsx` — `<img>` wrapped in `<div className="rounded bg-white dark:p-1">` with a comment saying why.
 
-- [ ] **Step 1: Confirm the branch and the diff are what this task describes**
+- [x] **Step 1: Confirm the branch and the diff are what this task describes**
 
 Run: `cd /home/ff235/dev/book_alerter && git branch --show-current && git status --short && git diff --stat`
 Expected: `ui-polish`; exactly the four files above modified (plus `RESUME.md`, which is NOT part of this task); `git diff` content matches items 1–4.
 
-- [ ] **Step 2: Run the frontend gate**
+- [x] **Step 2: Run the frontend gate**
 
 Run: `cd web && ./node_modules/.bin/tsc -b --noEmit; echo tsc=$?; ./node_modules/.bin/eslint .; echo eslint=$?; npm run build 2>&1 | tail -3`
 Expected: `tsc=0`, `eslint=0` with **0 warnings** (an `exhaustive-deps` warning on `AlertsSidebar.tsx` was already fixed by keying the memo on `page`), build `✓ built`.
 
-- [ ] **Step 3: Commit with pathspec**
+- [x] **Step 3: Commit with pathspec**
 
 ```bash
-git commit -- web/src/components/books/columns.tsx \
-  web/src/components/alerts/AlertItem.tsx \
-  web/src/components/alerts/AlertsSidebar.tsx \
-  web/src/components/books/detail/KeepaChart.tsx \
-  -m "feat(web): signal-first dashboard row, grouped alert rail, Keepa dark-mode mat
+git commit -m "feat(web): signal-first dashboard row, grouped alert rail, Keepa dark-mode mat
 
 - Signal column moves to directly after the title and the title cell is
   width-capped: with the alerts rail open, a 1280-1400 px viewport showed
@@ -109,7 +105,7 @@ Expected: 4 files changed, no others.
 
 Rules applied (from the `dataviz` skill, loaded 2026-09-04): markers ≥ 8 px (r ≥ 4) with a 2 px ring in the surface colour, placed selectively — not on every point; gridlines solid hairline, recessive; the form matches the data — a "cheapest live price" envelope is a step function, so the line is `stepAfter`.
 
-- [ ] **Step 1: Add the two helpers** — insert directly above `function TooltipContent(` (currently line ~150):
+- [x] **Step 1: Add the two helpers** — insert directly above `function TooltipContent(` (currently line ~150):
 
 ```tsx
 // A marker only where the envelope actually moves. With one dot per
@@ -158,7 +154,7 @@ function renderChangeDot(changes: Set<number>, color: string) {
 }
 ```
 
-- [ ] **Step 2: Compute the change sets once per data change** — inside `HistoryChart`, directly after the existing `useMemo` that builds `{ rows, series }`:
+- [x] **Step 2: Compute the change sets once per data change** — inside `HistoryChart`, directly after the existing `useMemo` that builds `{ rows, series }`:
 
 ```tsx
   const changeSets = useMemo(
@@ -167,7 +163,7 @@ function renderChangeDot(changes: Set<number>, color: string) {
   );
 ```
 
-- [ ] **Step 3: Replace the grid and the `<Line>`** — in the JSX:
+- [x] **Step 3: Replace the grid and the `<Line>`** — in the JSX:
 
 Replace
 ```tsx
@@ -217,22 +213,22 @@ with
                 />
 ```
 
-- [ ] **Step 4: Gate**
+- [x] **Step 4: Gate**
 
 Run: `cd web && ./node_modules/.bin/tsc -b --noEmit; echo tsc=$?; ./node_modules/.bin/eslint .; echo eslint=$?; npm run build 2>&1 | tail -3`
 Expected: `tsc=0`, `eslint=0` (0 warnings), build ok. If `tsc` rejects the `dot` prop type, the fix is to widen `DotRenderProps` with the reported missing optional field — do not cast to `any`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git commit -- web/src/components/books/detail/HistoryChart.tsx \
-  -m "feat(web): price-history markers only at price changes; step line; hairline grid
+git commit -m "feat(web): price-history markers only at price changes; step line; hairline grid
 
 A dot on every breakpoint turned a flat 90-day line into a bead string,
 and the monotone curve drew diagonal moves between scrapes that never
 happened. Markers now sit only where the cheapest live price changes
 (r=4, ringed in the card colour), the line is a step function, and the
-grid is a solid horizontal hairline."
+grid is a solid horizontal hairline." \
+  -- web/src/components/books/detail/HistoryChart.tsx
 git show --stat HEAD
 ```
 
@@ -249,7 +245,7 @@ git show --stat HEAD
 
 Facts this rests on (verified 2026-09-04): the app's own weekly backup is `VACUUM INTO` via Python's `sqlite3` (`src/book_alerter/scheduler.py:110-140`); the NAS host and the container have no `sqlite3` binary; the container is named `book_alerter` and mounts the data dir at `/app/data` (`~/dev/workspace-sync/nas/compose/book_alerter/docker-compose.yml:22`); migration 0019→0024 takes 1.5 s and `VACUUM` 0.12 s on the production copy, shrinking 51 MB → 5.7 MB.
 
-- [ ] **Step 1: Replace step 1**
+- [x] **Step 1: Replace step 1**
 
 Replace
 ```bash
@@ -270,7 +266,7 @@ ssh nasff235 "$NASDOCKER exec book_alerter python -c \"import sqlite3; \
   c.execute(\\\"VACUUM INTO '/app/data/backups/pre-deploy-$(date +%Y%m%d).db'\\\"); c.close()\""
 ```
 
-- [ ] **Step 2: Replace step 4**
+- [x] **Step 2: Replace step 4**
 
 Replace
 ```bash
@@ -289,27 +285,28 @@ ssh nasff235 "$NASDOCKER exec book_alerter python -c \"import sqlite3; \
   c.execute('VACUUM'); c.close()\""
 ```
 
-- [ ] **Step 3: Add the measured numbers** — after the sentence ending "…during a quiet period — `VACUUM` rewrites the whole file and takes an exclusive lock for the duration." append:
+- [x] **Step 3: Add the measured numbers** — after the sentence ending "…during a quiet period — `VACUUM` rewrites the whole file and takes an exclusive lock for the duration." append:
 
 ```markdown
 Measured on a copy of production (2026-09-04): the 0019→0024 migration chain
 runs in 1.5 s and the `VACUUM` in 0.12 s, taking the file from 51 MB to 5.7 MB.
 ```
 
-- [ ] **Step 4: Check the shell quoting actually parses** — the nested quotes are the risk in this task:
+- [x] **Step 4: Check the shell quoting actually parses** — the nested quotes are the risk in this task:
 
 Run: `bash -n <(sed -n '/^```bash/,/^```/p' README.md | sed '/^```/d')`
 Expected: no output (exit 0). Then eyeball: `sed -n 96,135p README.md`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git commit -- README.md -m "docs: deploy runbook backs up and VACUUMs through the container's Python
+git commit -m "docs: deploy runbook backs up and VACUUMs through the container's Python
 
 The NAS host and the image have no sqlite3 binary, so step 4 failed as
 written; and a cp of the main file under WAL mode misses the un-checkpointed
 writes in the -wal file. Both steps now use VACUUM INTO / VACUUM via
-docker exec python, which is what the app's own backup job does."
+docker exec python, which is what the app's own backup job does." \
+  -- README.md
 git show --stat HEAD
 ```
 
@@ -329,7 +326,7 @@ Where `<SCRATCH>` is the current session's scratchpad directory (given in the sy
 
 **Orchestration:** parallel: no · deps: Task 1, Task 2 · tier: sonnet · scale: static · shape: discovery · verify: `ls <SCRATCH>/harness/shots/*.png | wc -l` (expect 6) plus the acceptance checklist
 
-- [ ] **Step 1: Prepare the harness DB and config**
+- [x] **Step 1: Prepare the harness DB and config**
 
 ```bash
 SCR=<SCRATCH>; mkdir -p $SCR/harness/shots $SCR/harness/covers
@@ -346,7 +343,7 @@ print('config written')"
 ```
 Expected: last alembic line names `0024_live_offers_deterministic_tiebreak`; `config written`.
 
-- [ ] **Step 2: Build the SPA and start the backend against the harness**
+- [x] **Step 2: Build the SPA and start the backend against the harness**
 
 ```bash
 cd /home/ff235/dev/book_alerter/web && npm run build 2>&1 | tail -1 && cd ..
@@ -360,7 +357,7 @@ sleep 3; curl -sf http://127.0.0.1:8123/api/health | head -c 200
 ```
 Expected: JSON with `"status":"ok"` (or equivalent healthy body). Run the server in the background (the harness forbids long foreground jobs); note its PID to stop it in Step 5.
 
-- [ ] **Step 3: Write and run the screenshot script**
+- [x] **Step 3: Write and run the screenshot script**
 
 `<SCRATCH>/ui_shots.py`:
 ```python
@@ -402,7 +399,7 @@ print("done")
 Run: `cd /home/ff235/dev/book_alerter && uv run python $SCR/ui_shots.py $SCR/harness/shots`
 Expected: `done`; six PNGs.
 
-- [ ] **Step 4: Check each acceptance item by looking at the PNGs** (Read tool on each file), against the baselines in `…/9afc7be5-…/scratchpad/manualcheck/shots/`:
+- [x] **Step 4: Check each acceptance item by looking at the PNGs** (Read tool on each file), against the baselines in `…/9afc7be5-…/scratchpad/manualcheck/shots/`:
 
 | # | Screenshot | Must be true |
 |---|---|---|
@@ -415,7 +412,7 @@ Expected: `done`; six PNGs.
 
 Any failure → fix in the owning task's file, re-run Steps 2–3 (rebuild is required: the backend serves `web/dist`), re-check. Record the outcome in the plan tick for this task.
 
-- [ ] **Step 5: Stop the server; leave nothing in the repo**
+- [x] **Step 5: Stop the server; leave nothing in the repo**
 
 ```bash
 kill %1 2>/dev/null || pkill -f "uvicorn book_alerter.app:create_app --factory --host 127.0.0.1 --port 8123"
@@ -431,10 +428,10 @@ Expected: only `RESUME.md` (and this plan file until it is committed) — `web/d
 
 **Orchestration:** parallel: no · deps: Task 1–4 · tier: sonnet · scale: static · shape: execution · verify: `git log --oneline master..ui-polish | wc -l` (expect 3)
 
-- [ ] **Step 1: Tier 1 review** — three commits on a safe surface → `simplify` only (per the main-session doctrine's tier table). Run the `simplify` skill over `git diff master..ui-polish`; apply anything it finds with a further pathspec commit.
-- [ ] **Step 2: Full frontend gate once more from a clean worktree** — `git worktree add --detach <SCRATCH>/wt ui-polish && cd <SCRATCH>/wt/web && ln -s /home/ff235/dev/book_alerter/web/node_modules node_modules && ./node_modules/.bin/tsc -b --noEmit && ./node_modules/.bin/eslint . && npm run build; cd /home/ff235/dev/book_alerter && git worktree remove --force <SCRATCH>/wt`. Expected: all clean.
-- [ ] **Step 3: Tick this plan's tasks** with the evidence (commit SHAs, screenshot names) and commit the plan: `git commit -- docs/superpowers/plans/2026-09-04-ui-polish-plan.md -m "docs: UI polish plan with execution evidence"`.
-- [ ] **Step 4: Update `RESUME.md`** `### Now` with: branch `ui-polish` (N commits), the screenshot directory, gate results. Merge and deploy are Tasks 6–7.
+- [x] **Step 1: Tier 1 review** — three commits on a safe surface → `simplify` only (per the main-session doctrine's tier table). Run the `simplify` skill over `git diff master..ui-polish`; apply anything it finds with a further pathspec commit.
+- [x] **Step 2: Full frontend gate once more from a clean worktree** — `git worktree add --detach <SCRATCH>/wt ui-polish && cd <SCRATCH>/wt/web && ln -s /home/ff235/dev/book_alerter/web/node_modules node_modules && ./node_modules/.bin/tsc -b --noEmit && ./node_modules/.bin/eslint . && npm run build; cd /home/ff235/dev/book_alerter && git worktree remove --force <SCRATCH>/wt`. Expected: all clean.
+- [x] **Step 3: Tick this plan's tasks** with the evidence (commit SHAs, screenshot names) and commit the plan: `git commit -m "docs: UI polish plan with execution evidence" -- docs/superpowers/plans/2026-09-04-ui-polish-plan.md`.
+- [x] **Step 4: Update `RESUME.md`** `### Now` with: branch `ui-polish` (N commits), the screenshot directory, gate results. Merge and deploy are Tasks 6–7.
 
 > **Scope change, 2026-09-04 (user instruction, mid-execution):** this task originally ended at
 > "handoff, not merge — do not push". The user then handed over for autonomous execution with an
