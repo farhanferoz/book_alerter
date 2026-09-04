@@ -454,7 +454,7 @@ Expected: only `RESUME.md` (and this plan file until it is committed) — `web/d
 
 Facts: pushing to `master` is what triggers `.github/workflows/build.yml`; pushing a branch does not. `gh`'s active account is `reviewsenseai`, which has **no write access** — scope the credential to the one command (`GH_TOKEN=$(gh auth token --user farhanferoz) git push …`) rather than `gh auth switch`, which changes the global account for every repo. Reading runs needs no scoping. The workflow has a paths filter: frontend and backend sources are in it, README alone is not — this release touches `web/src`, so it will build.
 
-- [ ] **Step 1: Merge**
+- [x] **Step 1: Merge**
 
 ```bash
 cd /home/ff235/dev/book_alerter
@@ -462,14 +462,14 @@ git checkout master && git merge --no-ff ui-polish -m "merge: UI polish — sign
 git log --oneline -1
 ```
 
-- [ ] **Step 2: Push**
+- [x] **Step 2: Push**
 
 ```bash
 GH_TOKEN=$(gh auth token --user farhanferoz) git push origin master
 ```
 Expected: `master -> master`. A `Permission … denied to reviewsenseai` error means the credential scoping was dropped.
 
-- [ ] **Step 3: Watch the build to completion**
+- [x] **Step 3: Watch the build to completion**
 
 ```bash
 gh run watch --repo farhanferoz/book_alerter $(gh run list --repo farhanferoz/book_alerter --limit 1 --json databaseId -q '.[0].databaseId') --exit-status
@@ -477,7 +477,7 @@ gh run list --repo farhanferoz/book_alerter --limit 1
 ```
 Expected: `success` (the previous release built in 3m47s). On failure, read the log, fix on a branch, and repeat — do not deploy a failed build.
 
-- [ ] **Step 4: Record the published digest**
+- [x] **Step 4: Record the published digest**
 
 ```bash
 gh api /users/farhanferoz/packages/container/book_alerter/versions --jq '.[0] | {tags: .metadata.container.tags, digest: .name}' 2>/dev/null \
@@ -503,7 +503,7 @@ gh api /users/farhanferoz/packages/container/book_alerter/versions --jq '.[0] | 
 0.12 s, file 51 MB → 5.7 MB. **The backup in Step 1 is not optional and must be verified to exist and
 be non-trivial in size before Step 2 runs.**
 
-- [ ] **Step 1: Consistent backup (WAL-safe, via the container's Python)**
+- [x] **Step 1: Consistent backup (WAL-safe, via the container's Python)**
 
 ```bash
 NASDOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
@@ -514,14 +514,14 @@ ssh nasff235 "ls -la /share/CACHEDEV1_DATA/Container/book_alerter/data/backups/p
 ```
 Expected: a file of roughly 45–50 MB. **If it is missing or under 1 MB, STOP** — do not deploy.
 
-- [ ] **Step 2: Pull and restart**
+- [x] **Step 2: Pull and restart**
 
 ```bash
 ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter && \
   $NASDOCKER compose pull && $NASDOCKER compose up -d"
 ```
 
-- [ ] **Step 3: Wait for healthy, and read the migration lines from the boot log**
+- [x] **Step 3: Wait for healthy, and read the migration lines from the boot log**
 
 ```bash
 sleep 45
@@ -531,7 +531,7 @@ ssh nasff235 "$NASDOCKER logs --tail 80 book_alerter" | grep -i "alembic\|upgrad
 Expected: `Up … (healthy)`; the log shows the chain running through `0024_live_offers_deterministic_tiebreak`.
 (`docker logs --since` can fail with `invalid character '\x00'` after a NAS reboot — use `--tail`.)
 
-- [ ] **Step 4: The mandatory `VACUUM`**
+- [x] **Step 4: The mandatory `VACUUM`**
 
 ```bash
 ssh nasff235 "$NASDOCKER exec book_alerter python -c \"import sqlite3; \
@@ -541,7 +541,7 @@ ssh nasff235 "ls -la /share/CACHEDEV1_DATA/Container/book_alerter/data/book_aler
 ```
 Expected: the file drops from ~48 MB to roughly 6 MB. Without this, SQLite keeps the freed pages.
 
-- [ ] **Step 5: Verify the live application, including in a browser**
+- [x] **Step 5: Verify the live application, including in a browser**
 
 ```bash
 curl -sf http://100.115.46.9:8090/api/health
@@ -553,7 +553,7 @@ Then screenshot the live instance with the Task 4 script pointed at `http://100.
 that the deployed UI is the new one, not a cached old bundle (hard-reload semantics: the SPA is
 served fresh from the new image, so the asset hashes differ).
 
-- [ ] **Step 6: Record the post-deploy state and D39's obligation**
+- [x] **Step 6: Record the post-deploy state and D39's obligation**
 
 ```bash
 ssh nasff235 "du -sh /share/CACHEDEV1_DATA/Container/book_alerter/data/*"

@@ -7,20 +7,21 @@
 ## State
 
 ### Now
-- **RELEASE SHIPPED 2026-09-04.** `master` fast-forwarded to `917996b` and pushed; the GHCR build
-  (run `33905984011`) completed **success** in 3m47s and pushed
-  `ghcr.io/farhanferoz/book_alerter` at digest `sha256:e82d53fc7e670f4b40f0833ee9d9677d3efc1027b8945f22dc10257ff3830082`,
-  tags `latest` / `sha-917996b`, revision label matching the release commit. `master` is now at
-  `3857a5a` (a docs-only follow-up; README is outside the workflow's paths filter, so it correctly
-  did NOT rebuild — the image still corresponds to `917996b`).
-- **All 40 plan tasks resolved** (39 ticked + T1.2 dropped by its own gate, D21) **and all 37
-  findings across four reviews resolved**: Tier 4 5/5, backend 10/10, shipping-chain 8/8,
-  frontend 14/14.
-- **Gates at the release commit, all green:** `pytest -q` **656 passed / 3 skipped** · ruff clean ·
-  `tsc -b` + `eslint` + `npm run build` clean · **Docker e2e 2 passed** (image rebuilt from a clean
-  checkout at HEAD) · migrations 0019→head on a production copy clean (FK + integrity ok,
-  90,172 → 12,337 rows) · `smoke_check` **12/12 in 0.81 s** · `bench_stats` **0.086 s** vs the
-  0.35 s gate (D23) · `git status --short` clean.
+- **DEPLOYED 2026-09-04 22:40.** The NAS container is running the UI-polish release:
+  `master` at `e95c2ec`, GHCR build run `33921877741` **success** (1m27s), container revision
+  label `e95c2ecb9b6d2e703868f3fc68307de9d8f45ecf` (was the July `6d8139a`), healthy.
+  Database migrated **0019 → 0024** by the entrypoint on boot; the mandatory `VACUUM` ran:
+  **51.3 MB → 5.7 MB**, `priceobservation` **90,402 → 12,355**, `integrity_check` ok,
+  0 foreign-key violations. Live: `GET /api/books` 13 books in **0.14 s** over the network.
+- **UI verified in a browser against the deployed instance**, 1280/1600, light and dark:
+  screenshots in `<scratch>/harness/live/` (and pre-deploy in `shots/`, `shots2/`).
+  Visible on live data: two books now show real shipping (+£2.80, +£2.49) where every book
+  read "free" before — the shipping fixes taking effect through the new current-best selection.
+- Plan `docs/superpowers/plans/2026-09-04-ui-polish-plan.md`: **all 32 steps across 7 tasks
+  ticked, 0 open.** Execution ledger with per-task evidence: `.superpowers/sdd/progress.md`
+  (git-excluded).
+- Gates at the merge: pytest **656 passed / 3 skipped**, ruff clean, `tsc -b` / eslint /
+  `npm run build` clean from an isolated worktree, backend untouched by the branch.
 
 ### Run contract (binding for this autonomous run)
 - **In scope:** the 2026-09-04 plan (T0.1–T6.6 + T6.7), and the fix passes for all four reviews.
@@ -50,28 +51,24 @@ Run from `/home/ff235/dev/book_alerter`.
   — the **original pre-migration** copy at revision `0019`, 90,172 rows. Copy it; never work in place.
 
 ### Next
-**UI polish — execution plan ready, Task 1 code on disk.** Branch `ui-polish` (from `master` @ `755b822`)
-carries four UNCOMMITTED, gate-clean edits (`columns.tsx`, `AlertItem.tsx`, `AlertsSidebar.tsx`,
-`KeepaChart.tsx`). Plan, with every remaining step's code and the verification harness:
-`/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-ui-polish-plan.md` (untracked — commit it
-first). Read the plan, not this bullet: Task 1 = commit the skeleton; Task 2 = HistoryChart; Task 3 = README
-runbook I1/I2; Task 4 = screenshots vs baselines; Task 5 = simplify + handoff (no merge, no push).
+The release is deployed and verified. What remains is one **measurement that only time can
+produce**, plus optional tidying:
 
-**Nothing blocks the release — it is shipped.** What remains is operator work, deliberately out of
-scope for the autonomous run (the bar set was *ready for* deployment):
-
-1. **Deploy to the NAS** when you want it live: README → "Deploying to the NAS". Back up first
-   (this release carries migration `0021`), then `compose pull && up -d`, then the **mandatory
-   `VACUUM`** — 0021 deletes 86% of `priceobservation` and SQLite will not return the pages
-   without it.
-2. **D39's post-deploy obligation — do NOT skip.** Deploying does not correct stored prices.
-   Re-measured at HEAD: **2,780 zero-shipping rows across all 13 books**, so the app will keep
-   showing free delivery for every tracked book until scrapes re-run. **Then re-measure the
-   cascade**: those legacy zeros stay in the 365-day window and can drag the estimate for
-   newly-unknown rows toward £0, reintroducing the same harm by another route. If it does, a
-   *dated* exclusion (rows written before T2.5) is the justified fix — a fact about which parser
-   wrote them, not a heuristic about the data.
-3. **Optional, user's call:** the two tooling gaps under "Tooling gaps found 2026-09-04".
+1. **D39's post-deploy obligation — the one real follow-up.** Deploying did not rewrite stored
+   prices. After a full scrape cycle has run on the new parser, re-measure the shipping cascade
+   using the query in `README.md` → "After the first deploy carrying the shipping fixes". The
+   risk is specific: the ~2,780 legacy zero-shipping rows stay inside the 365-day window and can
+   drag the cascade estimate for newly-*unknown* rows toward £0, reintroducing the F1 harm by a
+   different route. If the estimate comes out at or near zero, the justified fix is a **dated**
+   exclusion (rows written before T2.5), because that is a fact about which parser wrote them,
+   rather than a heuristic about the data. Two books already show real shipping post-deploy, so
+   the correction is visibly under way.
+2. **Backups are 292 MB** right now — the 46 MB pre-deploy snapshot on top of the existing set.
+   The janitor runs daily at 04:00 UTC and compresses them (88.6% measured), so this should fall
+   to roughly 33 MB on its own. Check tomorrow rather than acting now.
+3. **Optional, unchanged from before:** the two tooling gaps (`write_set_guard` not matching
+   `Bash`; `test_scope_guard` scoring from the main tree), and the absent Wave 5 e2e test
+   (`tests/e2e/test_products_ui.py`) noted by the plan-adherence audit.
 
 ### Pushing
 ```bash

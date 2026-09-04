@@ -6,6 +6,51 @@ Each entry: plan task ID(s), one-line summary, commit SHA(s), notable deviations
 
 ---
 
+## 2026-09-04 (UI polish + deployed to the NAS)
+
+Plan: `docs/superpowers/plans/2026-09-04-ui-polish-plan.md`. Merge `e95c2ec`.
+
+Frontend, from the final review's UI pass — five contained changes, no backend
+touched:
+
+- **T1** The Signal column moves to directly after the title and the title cell is
+  width-capped with a two-line clamp. With the 320 px alerts rail open, a 1280 px
+  viewport previously showed Title / Best price / Shipping and scrolled Signal — the
+  one column the dashboard exists to show — off-screen; 1100 px showed the title
+  alone. The scrape-error red dot, whose meaning was hover-only, became a labelled
+  chip; all three status chips in that column now share one `StatusChip`.
+- **T1** Alert cards no longer repeat the `[KIND] Title — ` prefix that exists so the
+  push notification stands alone in ntfy, and the rail shows one card per item with a
+  "+N or more older alerts" link, so one drifting price cannot crowd out every other
+  item. Two review findings fixed on top: the prefix strip now survives an item being
+  retitled after its alert fired (the message is frozen at fire time, the title is
+  looked up per request), and the chip carries its error text as `sr-only` text rather
+  than an `aria-label`, which a `role=generic` span may drop.
+- **T2** The price-history chart draws a step function with markers only where the
+  price changes. It previously put a 2 px dot on every point — a flat 90-day price
+  rendered as a bead string — and used `monotone`, drawing diagonal ramps between two
+  scrapes for transitions that never happened. Grid is now a solid horizontal hairline.
+- **T1** The Keepa PNG sits on a white mat so it does not glare in dark mode.
+- **T3** The deploy runbook had two defects that would have bitten on this very deploy:
+  the backup step was a `cp` of a WAL-mode database, and the reclaim step called a
+  `sqlite3` binary that exists neither on the NAS host nor in the image. Both now go
+  through the container's Python, using `VACUUM INTO` for the backup — the same call
+  the app's own weekly backup job makes. Confirmed non-cosmetic in practice: the
+  pre-deploy backup captured 90,402 observation rows against the 90,172 in a
+  file-copied snapshot taken hours earlier, the difference being un-checkpointed WAL.
+
+Also fixed a clock-dependent test (`test_product_alert_pipeline.py`): `_make_cfg` left
+quiet hours at the 22:00–08:00 default while asserting a non-bypassing notifier fired,
+so the suite was red every evening. Proven by freezing the clock — same code, red at
+22:30 and green at 12:00.
+
+**Deployed.** The NAS container was replaced (revision `6d8139a` → `e95c2ec`), the
+entrypoint migrated the database 0019 → 0024 on boot, and the mandatory `VACUUM` took
+the file from 51.3 MB to 5.7 MB with `priceobservation` at 90,402 → 12,355 rows.
+Live: `/api/health` ok, `GET /api/books` 13 books in 0.14 s over the network,
+`integrity_check` ok, zero foreign-key violations, and the new UI verified by
+screenshot against the deployed instance at 1280/1600 in both themes.
+
 ## 2026-09-04
 
 Execution of `docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`.
