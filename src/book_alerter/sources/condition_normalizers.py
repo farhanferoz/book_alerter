@@ -43,12 +43,25 @@ _TOKEN_MAP: dict[str, Condition] = {
 # a plain substring scan) rather than being force-mapped to a condition of
 # its own; "Ex-Library" alone (no grade) correctly falls through to
 # 'unknown' below, same as it did before this change.
+#
+# F-B8 (secondary, robustness): "fine" is ranked AFTER "very good"/"good",
+# not before them as an earlier version had it. "fine" and "very good" map
+# to the same target (`used_vg`), so their relative order never changes an
+# outcome, but "fine" and "good" map to DIFFERENT targets — if a caller's
+# grade text ever carries a stray "fine" substring alongside an actual
+# "Good" grade (e.g. bookfinder.py's `_CONDITION_RE` capturing a little too
+# much before its own bound was tightened, see that file), checking "good"
+# first means the real grade wins rather than the incidental "fine". "very
+# good" must stay before "good" regardless (it already did) since "good" is
+# itself a substring of "very good". No currently-mapped real grade text
+# contains "fine" as a substring of "very good"/"good" alone, so this
+# reordering does not change any of those three mappings.
 _GRADE_HAYSTACK: list[tuple[str, Condition]] = [
     ("like new", "used_vg"),
     ("as new", "used_vg"),
-    ("fine", "used_vg"),
     ("very good", "used_vg"),
     ("good", "used_g"),
+    ("fine", "used_vg"),
     ("acceptable", "used_acceptable"),
     ("fair", "used_acceptable"),
     ("poor", "used_acceptable"),

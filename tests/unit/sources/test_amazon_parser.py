@@ -136,6 +136,32 @@ def test_parse_delivery_text_spend_threshold_is_not_read_as_a_charge() -> None:
     ) == 349
 
 
+def test_dp_and_aod_paths_agree_on_free_vs_charge_precedence() -> None:
+    """F-B9/D36: `_extract_dp_shipping_minor` (the dp path) used to check
+    "FREE delivery" BEFORE the £-amount — the opposite of D36's ratified
+    numeric-first precedence, and the opposite of what `_parse_delivery_
+    text` (the AOD path) already did correctly. On a combined sentence
+    like "£3.49 delivery. Free delivery over £25.", the dp path collapsed
+    to 0 (a real charge masked as free, then converted to `None` by the
+    conditional-shipping rule — a cascade estimate instead of the known
+    £3.49) while the AOD path correctly read 349. This asserts both paths
+    now return 349 for the identical sentence."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_shipping_minor, _parse_delivery_text
+
+    sentence = "£3.49 delivery. Free delivery over £25."
+
+    html = (
+        '<div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">'
+        + sentence
+        + "</div>"
+    )
+    tree = HTMLParser(html)
+    assert _extract_dp_shipping_minor(tree) == 349
+    assert _parse_delivery_text(sentence) == 349
+
+
 def test_extract_dp_condition_non_resale_seller_defaults_to_new() -> None:
     """Substring "warehouse" appearing in a legitimate marketplace name
     must NOT trigger the Used classification — only the literal
@@ -179,6 +205,56 @@ def test_extract_dp_condition_amazon_resale_with_new_caption_text_still_used() -
     )
     tree = HTMLParser(html)
     assert _extract_dp_condition(tree, "Amazon Resale") == Condition.USED_VG
+
+
+def test_extract_dp_condition_forwards_source_name_to_grade_unmapped_log() -> None:
+    """F-B8: `condition_normalizers.grade_unmapped`'s `source` field is
+    the diagnostic D26 exists for ("log the raw grade whenever mapping
+    fails, so the real distribution becomes visible") — every call site
+    defaulting to "unspecified" makes it useless for telling which
+    scraper produced an unmapped grade. `_extract_dp_condition` (the dp
+    used-buybox caption path) must forward its own `source_name`."""
+    from selectolax.parser import HTMLParser
+    from structlog.testing import capture_logs
+
+    from book_alerter.sources.amazon import _extract_dp_condition
+
+    html = (
+        '<div id="usedAccordionCaption_feature_div">'
+        '<span class="a-text-bold">Ex-Library</span></div>'
+    )
+    tree = HTMLParser(html)
+    with capture_logs() as logs:
+        result = _extract_dp_condition(tree, "Amazon Resale", source_name="amazon_uk_product")
+
+    # "Ex-Library" doesn't map to a used grade, so the USED_VG default
+    # applies — the log line, not the return value, is what this tests.
+    assert result == Condition.USED_VG
+    warnings = [e for e in logs if e["log_level"] == "warning"]
+    assert len(warnings) == 1, logs
+    assert warnings[0]["event"] == "condition_normalizers.grade_unmapped"
+    assert warnings[0]["source"] == "amazon_uk_product"
+
+
+def test_extract_condition_forwards_source_name_to_grade_unmapped_log() -> None:
+    """F-B8: same as the dp test above, for the AOD offer-row heading
+    path (`_extract_condition`)."""
+    from selectolax.parser import HTMLParser
+    from structlog.testing import capture_logs
+
+    from book_alerter.sources.amazon import _extract_condition
+
+    row = HTMLParser(
+        '<div><div id="aod-offer-heading"><h5>Ex-Library</h5></div></div>'
+    ).css_first("div")
+    with capture_logs() as logs:
+        result = _extract_condition(row, source_name="amazon_uk_product")
+
+    assert result == "unknown"
+    warnings = [e for e in logs if e["log_level"] == "warning"]
+    assert len(warnings) == 1, logs
+    assert warnings[0]["event"] == "condition_normalizers.grade_unmapped"
+    assert warnings[0]["source"] == "amazon_uk_product"
 
 
 def test_parse_dp_used_buybox_returns_used_condition() -> None:
@@ -1067,10 +1143,15 @@ def test_extract_offer_delivery_condition_attrs_none_when_node_absent() -> None:
     assert _extract_offer_delivery_condition_attrs(row) == (None, None)
 
 
-def test_conditional_free_shipping_to_unknown_attribute_is_primary() -> None:
-    """The attribute wins even when the English text wouldn't have
-    matched on its own — this is the whole point of D35: it doesn't
-    depend on guessing the right phrase."""
+def test_conditional_free_shipping_to_unknown_attribute_alone_is_enough() -> None:
+    """The attribute can flag "conditional" even when the English text
+    wouldn't have matched on its own — this is the whole point of D35: it
+    doesn't depend on guessing the right phrase. F-B6: the two layers are
+    OR-combined (either can raise the verdict), not "attribute overrides
+    text" — this case doesn't distinguish the two since the attribute is
+    True either way, see
+    `test_conditional_free_shipping_to_unknown_attribute_alone_cannot_clear_it`
+    below for the case that does."""
     from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
 
     result = _conditional_free_shipping_to_unknown(
@@ -1096,11 +1177,11 @@ def test_conditional_free_shipping_to_unknown_falls_back_when_attribute_unavaila
 
 def test_conditional_free_shipping_to_unknown_logs_disagreement() -> None:
     """D35's load-bearing diagnostic: when the attribute and the text
-    layer disagree, the decision still follows the attribute (primary),
-    but the disagreement itself must be logged with the raw condition
-    text — same reasoning as condition_normalizers.grade_unmapped (D26):
-    the fallback is best-effort, the log line is what makes drift
-    visible."""
+    layer disagree, F-B6's OR-combine means the result follows whichever
+    layer says "conditional" (here, the attribute), but the disagreement
+    itself must still be logged with the raw condition text — same
+    reasoning as condition_normalizers.grade_unmapped (D26): the fallback
+    is best-effort, the log line is what makes drift visible."""
     from structlog.testing import capture_logs
 
     from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
@@ -1114,7 +1195,7 @@ def test_conditional_free_shipping_to_unknown_logs_disagreement() -> None:
             source_name="amazon_uk_product",
         )
 
-    assert result is None, "attribute is primary — must win the disagreement"
+    assert result is None, "either layer flagging conditional is enough"
     warnings = [entry for entry in logs if entry["log_level"] == "warning"]
     assert len(warnings) == 1, logs
     assert warnings[0]["event"] == "amazon.conditional_delivery.layers_disagree"
@@ -1144,6 +1225,83 @@ def test_conditional_free_shipping_to_unknown_no_log_when_layers_agree() -> None
         )
 
     assert logs == []
+
+
+def test_conditional_free_shipping_to_unknown_unrecognised_sub_type_still_flags_conditional() -> (
+    None
+):
+    """F-B6 regression: `_extract_offer_delivery_condition_attrs` computes
+    `attribute_conditional = (sub_type == "CONDITIONALLY_FREE")` — any
+    OTHER non-empty `mir-sub-type` value (not just the empty/absent case)
+    therefore comes back `False`, not `None`. Before this fix, `False`
+    meant "the attribute overrides the text layer to unconditional",
+    which reinstated F1 the moment Amazon used a `mir-sub-type` value this
+    code doesn't recognise, even while the English text still read a
+    verbatim D20 first-order promise. Reproduces the reviewer's exact
+    three-case table using the real AOD-row extractor
+    (`_extract_offer_delivery_condition_attrs`), not hand-picked booleans,
+    so this exercises the same code `_parse_offer_row` runs."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import (
+        _conditional_free_shipping_to_unknown,
+        _extract_offer_delivery_condition_attrs,
+    )
+
+    first_order_text = "FREE delivery Monday, 18 May on your first order to UK or Ireland."
+
+    # Case 1: attribute absent entirely -> pre-D35 fallback (unknown).
+    row_absent = HTMLParser("<div>FREE delivery</div>").css_first("div")
+    attr_conditional, attr_text = _extract_offer_delivery_condition_attrs(row_absent)
+    assert attr_conditional is None
+    assert (
+        _conditional_free_shipping_to_unknown(
+            0,
+            first_order_text,
+            attribute_conditional=attr_conditional,
+            attribute_condition_text=attr_text,
+        )
+        is None
+    )
+
+    # Case 2: attribute present but carrying a value this code doesn't
+    # recognise as conditional ("FREE_WITH_PRIME", not "CONDITIONALLY_FREE")
+    # -> computes False, exactly the shape that reinstated F1 pre-fix.
+    row_new_value = HTMLParser(
+        "<div>" + _delivery_price_span(sub_type="FREE_WITH_PRIME", condition="") + "</div>"
+    ).css_first("div")
+    attr_conditional, attr_text = _extract_offer_delivery_condition_attrs(row_new_value)
+    assert attr_conditional is False, "an unrecognised sub_type must not compute as conditional"
+    assert (
+        _conditional_free_shipping_to_unknown(
+            0,
+            first_order_text,
+            attribute_conditional=attr_conditional,
+            attribute_condition_text=attr_text,
+        )
+        is None
+    ), "the text layer alone must still be able to raise the verdict to conditional"
+
+    # Case 3: attribute agrees with the text layer (both conditional).
+    row_agrees = HTMLParser(
+        "<div>"
+        + _delivery_price_span(
+            sub_type="CONDITIONALLY_FREE",
+            condition="on your first order to UK or Ireland",
+        )
+        + "</div>"
+    ).css_first("div")
+    attr_conditional, attr_text = _extract_offer_delivery_condition_attrs(row_agrees)
+    assert attr_conditional is True
+    assert (
+        _conditional_free_shipping_to_unknown(
+            0,
+            first_order_text,
+            attribute_conditional=attr_conditional,
+            attribute_condition_text=attr_text,
+        )
+        is None
+    )
 
 
 def test_parse_dp_spend_threshold_promo_detected_via_attribute_on_real_fixture() -> None:

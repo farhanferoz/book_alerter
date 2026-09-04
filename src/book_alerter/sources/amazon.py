@@ -537,6 +537,11 @@ def _find_dp_delivery_block(tree: HTMLParser) -> Node | None:
     a free or a paid promise — since `delivery_text` and the D35 attribute
     pair exist specifically to describe whatever produced `shipping_minor`,
     not to independently guess at "the first block with any text in it".
+    F-B9 changed how `_extract_dp_shipping_minor` turns that block's text
+    into a value (it now delegates to `_parse_delivery_text`) but not this
+    gate — `_FREE_DELIVERY_RE`/`_PAID_DELIVERY_RE` here are still only
+    deciding "does this block look like a delivery promise at all", which
+    stays a coarser check than the value parser.
     """
     for sel in _DELIVERY_BLOCK_SELECTORS:
         node = tree.css_first(sel)
@@ -557,19 +562,30 @@ def _extract_dp_shipping_minor(tree: HTMLParser) -> int | None:
     value when it says "£X.XX delivery", and None when no populated delivery
     block is present — None means "we didn't observe shipping" rather than
     "free", so downstream can choose to fall back honestly.
+
+    F-B9: delegates to `_parse_delivery_text` (below), the same parser the
+    AOD path (`_extract_shipping_minor`) uses, instead of keeping a second,
+    divergent free-vs-paid precedence rule. This function used to check
+    "FREE delivery" before the £-amount, so a combined sentence like
+    "£3.49 delivery. Free delivery over £25." collapsed to 0 here even
+    though D36 ratifies numeric-first precedence (349) specifically to
+    stop a real charge being masked by a later conditional promise on the
+    same line — the AOD path already implemented that correctly.
+    `_find_dp_delivery_block` still gates which block counts as the
+    delivery block using the stricter `_FREE_DELIVERY_RE`/`_PAID_DELIVERY_
+    RE` pair (unchanged, and still needed for that skeleton-markup check);
+    only the value extracted FROM that block now goes through
+    `_parse_delivery_text` so both paths agree on precedence. Verified
+    against every dp fixture on file (real and synthetic) that this
+    produces the same result as before on all of them — the ordering only
+    differs on a sentence containing both a concrete charge and a
+    threshold promise together, which no fixture currently exercises.
     """
     node = _find_dp_delivery_block(tree)
     if node is None:
         return None
     text = (node.text() or "").strip()
-    if _FREE_DELIVERY_RE.search(text):
-        return 0
-    m = _PAID_DELIVERY_RE.search(text)
-    if m:
-        # `_PAID_DELIVERY_RE`'s captured group is always `\d+(\.\d{1,2})?`,
-        # which `float()` can never reject — nothing to catch here.
-        return round(float(m.group(1)) * 100)
-    return None
+    return _parse_delivery_text(text)
 
 
 def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
@@ -724,19 +740,29 @@ def _conditional_free_shipping_to_unknown(
 
     D35: `attribute_conditional` — Amazon's own `data-csa-c-mir-sub-type`
     verdict (`None` when that attribute isn't present on this page's
-    layout at all, e.g. the synthetic test fixtures) — is now the PRIMARY
-    signal when available, because it is Amazon's own maintained
-    categorisation rather than a guess at English wording. The
-    `delivery_text` regex (D20/D33) is the FALLBACK, used outright when the
-    attribute is unavailable, and always evaluated as a cross-check when it
-    isn't — a disagreement between the two is logged with the raw
-    `data-csa-c-delivery-condition` text (D35's load-bearing diagnostic:
-    same reasoning as `condition_normalizers.grade_unmapped`, D26 — the
-    fallback is best-effort, the log line is what makes drift visible)
-    rather than silently trusting one layer over the other. The English
-    markers are NOT retired: the attribute is undocumented and Amazon can
-    drop it without notice, and D20's own evidence (8 of 9 rows wrongly
-    free) is what a silent detection failure costs.
+    layout at all, e.g. the synthetic test fixtures) — and the
+    `delivery_text` regex (D20/D33) are two independent layers over the
+    SAME question, and either one flagging "conditional" is enough to
+    convert the free-looking shipping to unknown: `conditional =
+    bool(attribute_conditional) or text_conditional`. This is F-B6's fix —
+    an earlier version let the attribute's verdict override the text
+    layer outright, which meant a single new `mir-sub-type` value this
+    code doesn't yet recognise (only `CONDITIONALLY_FREE` is evidenced;
+    see the module comment above) would silently reinstate F1 even though
+    the text still read a first-order/spend-threshold promise verbatim.
+    D38's risk asymmetry (recording `0` under-states delivered cost, the
+    exact harm class this project exists to close; recording `None` only
+    adds a cascade estimate) means the fallback must be able to RAISE the
+    verdict to conditional on its own, not just be consulted when the
+    attribute is silent. A disagreement between the two is still logged
+    with the raw `data-csa-c-delivery-condition` text (D35's load-bearing
+    diagnostic: same reasoning as `condition_normalizers.grade_unmapped`,
+    D26 — the log line is what makes drift visible) whenever the attribute
+    is present, even though the disagreement no longer changes the
+    outcome by itself. The English markers are NOT retired: the attribute
+    is undocumented and Amazon can drop it without notice, and D20's own
+    evidence (8 of 9 rows wrongly free) is what a silent detection failure
+    costs.
     """
     if shipping_minor != 0:
         return shipping_minor
@@ -744,11 +770,9 @@ def _conditional_free_shipping_to_unknown(
     text_conditional = bool(
         delivery_text is not None and _CONDITIONAL_DELIVERY_RE.search(delivery_text)
     )
+    conditional = bool(attribute_conditional) or text_conditional
 
-    if attribute_conditional is None:
-        return None if text_conditional else shipping_minor
-
-    if attribute_conditional != text_conditional:
+    if attribute_conditional is not None and attribute_conditional != text_conditional:
         log.warning(
             "amazon.conditional_delivery.layers_disagree",
             source=source_name,
@@ -757,7 +781,7 @@ def _conditional_free_shipping_to_unknown(
             delivery_condition=attribute_condition_text,
             delivery_text=delivery_text,
         )
-    return None if attribute_conditional else shipping_minor
+    return None if conditional else shipping_minor
 
 
 def parse_dp(
@@ -826,7 +850,7 @@ def parse_dp(
         attribute_condition_text=attribute_condition_text,
         source_name=source_name,
     )
-    condition = _extract_dp_condition(tree, seller)
+    condition = _extract_dp_condition(tree, seller, source_name=source_name)
     item_title = _extract_item_title(tree)
     item_image_url = _extract_item_image_url(tree)
 
@@ -969,7 +993,7 @@ def _parse_offer_row(
         attribute_condition_text=attribute_condition_text,
         source_name=source_name,
     )
-    condition = _extract_condition(row)
+    condition = _extract_condition(row, source_name=source_name)
     seller = _extract_offer_seller(row)
 
     # Clickout: the offer-listing page (`fallback_url`), NOT the seller's
@@ -1207,10 +1231,17 @@ def _extract_offer_delivery_text(row: Node) -> str | None:
     return None
 
 
-def _extract_condition(row: Node) -> Condition:
-    """Map the row's heading text ("Used - Very Good" etc.) to our enum."""
+def _extract_condition(row: Node, *, source_name: str = "amazon") -> Condition:
+    """Map the row's heading text ("Used - Very Good" etc.) to our enum.
+
+    F-B8: `source_name` is forwarded to `condition_from_grade_text` so its
+    `grade_unmapped` diagnostic (D26) can tell which scraper produced an
+    unmapped grade instead of every call site reading `source="unspecified"`.
+    """
     heading = row.css_first("#aod-offer-heading h5") or row.css_first("#aod-offer-heading")
-    return condition_from_grade_text(heading.text() or "") if heading else "unknown"
+    if heading is None:
+        return "unknown"
+    return condition_from_grade_text(heading.text() or "", source=source_name)
 
 
 _ARIA_LABEL_SELLER_SUFFIX = ". Opens a new page"
@@ -1288,7 +1319,9 @@ _AMAZON_USED_BRANDS = frozenset({"amazon resale", "amazon warehouse"})
 _USED_GRADES = frozenset({Condition.USED_VG, Condition.USED_G, Condition.USED_ACCEPTABLE})
 
 
-def _extract_dp_condition(tree: HTMLParser, seller: str | None) -> Condition:
+def _extract_dp_condition(
+    tree: HTMLParser, seller: str | None, *, source_name: str = "amazon"
+) -> Condition:
     """Decide whether the dp buy-box price refers to a New or Used copy.
 
     When the buy-box seller is one of Amazon's resale brands ("Amazon
@@ -1303,6 +1336,10 @@ def _extract_dp_condition(tree: HTMLParser, seller: str | None) -> Condition:
     All other sellers (including marketplace ones, and `None` — T2.7:
     an unattributed buy-box is never assumed to be an Amazon resale brand)
     default to `NEW`.
+
+    F-B8: `source_name` is forwarded to `condition_from_grade_text` so its
+    `grade_unmapped` diagnostic (D26) can tell which scraper produced an
+    unmapped grade instead of every call site reading `source="unspecified"`.
     """
     if seller is None or seller.strip().lower() not in _AMAZON_USED_BRANDS:
         return Condition.NEW
@@ -1310,7 +1347,7 @@ def _extract_dp_condition(tree: HTMLParser, seller: str | None) -> Condition:
     if caption is not None:
         text = (caption.text() or "").strip()
         if text:
-            grade = condition_from_grade_text(text)
+            grade = condition_from_grade_text(text, source=source_name)
             # Only accept used grades — if the caption text reads as NEW or
             # UNKNOWN (Amazon HTML drift, A/B test) we've already decided this
             # is a Resale row by seller-name match, so reporting NEW would be

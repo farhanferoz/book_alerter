@@ -38,8 +38,22 @@ from book_alerter.sources.inline_source import InlineSource
 # `£X.XX` / `$X.XX` token).
 
 _PRICE_RE = re.compile(r"([£$€¥])\s*(\d+(?:\.\d{1,2})?)")
+# F-B8 (secondary, robustness): the grade group used to be unbounded
+# (`[A-Za-z][A-Za-z\s]*`) — `_parse_card` matches this against `card.text()`,
+# the WHOLE card's text, not just the grade fragment, so on a layout where
+# the grade isn't immediately followed by a digit/punctuation (every
+# committed fixture's grade is followed straight by `£X.XX`, which already
+# stops the old pattern) this could run past the real grade into unrelated
+# card text (seller name, a dust-jacket description) and hand
+# `condition_from_grade_text` a haystack containing a stray "fine"/"good"
+# that was never the actual grade. Every known grade this codebase maps
+# (`_GRADE_HAYSTACK` below; T2.6's antiquarian list) is at most two words
+# ("Very Good", "Like New", "Near Fine"), so capping at 3 space-separated
+# words bounds the runaway without changing any real grade's match.
+# Verified against every committed Bookfinder fixture: identical
+# (group(1), group(2)) captures before and after this change.
 _CONDITION_RE = re.compile(
-    r"Condition:\s*(Used|New)(?:\s*-\s*([A-Za-z][A-Za-z\s]*))?",
+    r"Condition:\s*(Used|New)(?:\s*-\s*([A-Za-z]+(?:\s+[A-Za-z]+){0,2}))?",
     re.IGNORECASE,
 )
 _SHIPPING_LABEL_RE = re.compile(r"shipping:\s*", re.IGNORECASE)
@@ -314,7 +328,12 @@ def _resolve_condition(card_text: str, base: str) -> Condition:
     grade = (m.group(2) or "")
     if base_word == "new":
         return "new"
-    return condition_from_grade_text(grade)
+    # F-B8: literal "bookfinder", not threaded through a caller param —
+    # this module (unlike amazon.py) never threads a source_name/self.name
+    # into its free parsing functions, and there is only ever one source
+    # here, so a hardcoded name is the minimum-viable fix rather than
+    # plumbing a new parameter through parse_offers for a single caller.
+    return condition_from_grade_text(grade, source="bookfinder")
 
 
 def _format_seller(affiliate: str, specific: str) -> str:

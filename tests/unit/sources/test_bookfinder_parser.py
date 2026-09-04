@@ -333,3 +333,63 @@ def test_delivery_text_matches_what_shipping_minor_was_parsed_from() -> None:
     ebay = next(o for o in offers if "EBAY" in o.seller)
     assert ebay.shipping_minor == 270  # £2.70
     assert ebay.delivery_text == "shipping: £2.70"
+
+
+# --- F-B8: condition_from_grade_text(source=...) -----------------------------
+
+
+def test_resolve_condition_forwards_bookfinder_as_source_to_grade_unmapped_log() -> None:
+    """F-B8: `condition_normalizers.grade_unmapped`'s `source` field is the
+    diagnostic D26 exists for ("log the raw grade whenever mapping fails,
+    so the real distribution becomes visible") — the call site here used
+    to leave it defaulted to "unspecified", making it useless for telling
+    which scraper produced an unmapped grade. bookfinder.py never threads
+    a source_name/self.name into its free parsing functions (unlike
+    amazon.py, which serves two different sources), so the fix is the
+    literal "bookfinder", matching condition_from_grade_text's own
+    docstring example."""
+    from structlog.testing import capture_logs
+
+    from book_alerter.sources.bookfinder import _resolve_condition
+
+    with capture_logs() as logs:
+        result = _resolve_condition("Condition: Used - Ex-Library", "USED")
+
+    assert result == "unknown"
+    warnings = [e for e in logs if e["log_level"] == "warning"]
+    assert len(warnings) == 1, logs
+    assert warnings[0]["event"] == "condition_normalizers.grade_unmapped"
+    assert warnings[0]["source"] == "bookfinder"
+
+
+def test_resolve_condition_bounded_grade_capture_does_not_pick_up_a_distant_fine() -> None:
+    """F-B8 (secondary, robustness): `_CONDITION_RE`'s grade group used to
+    be unbounded (`[A-Za-z][A-Za-z\\s]*`), matched against the WHOLE
+    card's text (`_parse_card` passes `card.text()`, not just the grade
+    fragment) — every committed fixture's grade is followed immediately
+    by `£X.XX` with no separating space, which already stopped the old
+    pattern there, so this never fired on a real capture. On a
+    hypothetical layout where the grade isn't immediately followed by a
+    digit/punctuation, the old pattern could run past the real grade
+    ("Good") into unrelated trailing card text and pick up a distant
+    stray "Fine", which `condition_from_grade_text` would then upgrade to
+    `used_vg`. The bounded pattern (max 3 space-separated words) stops
+    well short of that."""
+    from book_alerter.sources.bookfinder import _resolve_condition
+
+    text = "Condition: Used - Good Direct From A Fine Bookshop In London Free P&P"
+    assert _resolve_condition(text, "USED") == "used_g"
+
+
+def test_resolve_condition_good_wins_over_an_adjacent_fine() -> None:
+    """F-B8 (secondary, robustness): even within the 3-word bound, "good"
+    must win over an adjacent "fine" — `_GRADE_HAYSTACK` now checks "very
+    good"/"good" before "fine" (previously "fine" was checked first). The
+    two map to DIFFERENT conditions (`used_g` vs `used_vg`) and no
+    evidenced Bookfinder grade text combines them, so a real grade string
+    reading "Good" must never resolve to `used_vg` just because a nearby
+    word happens to contain "fine"."""
+    from book_alerter.sources.bookfinder import _resolve_condition
+
+    text = "Condition: Used - Good Fine copy £54.27 more text here"
+    assert _resolve_condition(text, "USED") == "used_g"
