@@ -54,19 +54,31 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
 - Measured performance baselines to beat: `GET /api/books` **2101 ms** via the API harness;
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
-### Next
-- **Progress: 20 of 40 ticked — halfway.** **The S1 headline bug (F1) is CLOSED**: T2.5 turns a
-  conditional "on your first order" free-delivery promise into unknown shipping, root-verified on
-  a real 10-offer page (8 → unknown, genuine free stays 0, paid stays 299).
-- Part-done: T2.4 (estimate flag), T6.1 (banner), T6.2 (stats/alerts switch), T6.4 (Prime /
-  schedules / VACUUM docs), T6.5 (scheduler registration). T1.2 dropped.
-- In flight: **T3.2 + T3.4 + T6.2 rest** (W-T31-stats, `_persist` applied uncommitted by the
-  orchestrator) · **T4.2 hard gate** (W-T11-browser) · **T5.3 + T5.4** (W-T67-smoke) ·
-  **adversarial shipping-chain review, read-only** (W-T01-capture).
-- Not started: T1.3, T1.4, T2.2, T2.3, T4.1, T4.4, T5.5, T6.3, T6.6 fixture renames.
-- **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** — the
-  write-set guard holds all three. Its remedy is that the orchestrator writes them; never have a
-  worker override it.
+### Next — RE-DISPATCH THESE (workers died with the session at checkpoint)
+- **Progress: 22 of 40 ticked.** Four workers were mid-task when the context backstop forced a
+  checkpoint; their committed work is safe in git, their in-flight work is described below.
+- **T3.2 heartbeat compaction — FURTHEST ALONG, FINISH THIS FIRST.** Migration
+  `0021_heartbeat_compaction.py` and `test_heartbeat_compaction_backfill_properties.py` are
+  **untracked on disk**; `models.py`, `views.py`, `stats.py`, `config.py`, `api/books.py`,
+  `api/products.py`, `scheduler.py` and several test files are **modified, uncommitted**. The
+  worker verified: 90,172 → 12,337 rows, canonical count identical, `last_seen_at` matching the
+  old `buyable_last_seen` formula for all 4,304 non-keepa canonical rows, FK-check clean,
+  round-trip clean, backfill 0.07 s. **All of it must land in ONE commit** — `_persist` alone
+  references a column the committed model lacks. Then: port the 2 red scheduler tests
+  (`AttributeError: is_duplicate_of`), re-run `bench_stats.py` against the **≤0.35 s** gate
+  (D23 hangs on this), and re-run `smoke_check.py`.
+  Open question for whoever picks it up: **should `last_seen_at` default to `observed_at` on the
+  model?** It is currently required with no default and 39 construction sites must pass it.
+- **T4.2** (hard gate: 7 fixtures with no test) — was with the browser worker, not started.
+- **T5.5 + the T6.1 dashboard banner** — was with the web worker. Backend for the banner is done
+  (`c0cb38a`); `web/src/api/schema.ts` still needs regenerating for `last_24h` to be typed.
+- **Adversarial shipping-chain review** (read-only) — was with the capture worker; no output yet.
+- Unstarted: T1.3, T1.4, **T2.2 (blocks the Prime UI T2.3)**, T4.1, T4.4, T6.3, T6.6 renames,
+  T2.4 estimate-flag assertion, T6.5 scheduler registration, T6.4 remaining docs.
+- **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** (write-set
+  guard). Its remedy is that the orchestrator writes them — never have a worker override it.
+- **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe above),
+  `/checkpoint --final`. NAS deploy stays out of scope.
 
 ### WHERE BOOK_ALERTER'S CONTAINER LIVES (answered 2026-09-04, all verified by diff)
 The user asked; `~/dev/workspace-sync` now organises the fleet. Three copies of the NAS compose
