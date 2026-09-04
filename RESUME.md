@@ -162,8 +162,13 @@ that makes the work deployable, and it is the last thing to do, after review.
 - Cleanup standard — plan §8 binds every task; T6.5 and T6.6 both done.
 
 ### Decisions
-- See `DECISIONS.md` — D1–D31 in force, Q1/Q2/Q4 open (Q1 and Q3 resolved).
-  Run-local rulings from this execution are D20–D31 there; nothing decision-shaped lives here.
+- See `DECISIONS.md` — **D1–D37** in force, Q2/Q4 open (Q1 and Q3 resolved). New today:
+  D32 (variant_asin dropped, F26's guard wins), D33 (spend-threshold promise), D34 (**S1** — every
+  target comparison reads the effective total), D35 (key on Amazon's `CONDITIONALLY_FREE` attribute,
+  English markers kept as fallback), D36 (S7's shape: threshold ≠ charge, never reorder precedence),
+  D37 (S8 deferred — `None` now means two things and telling them apart needs a signal the candidate
+  doesn't carry; revisit when dp and AOD share a (seller, condition, price)).
+  Run-local rulings from this execution are D20–D37 there; nothing decision-shaped lives here.
 ### Plan
 - `/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`
   — now carries a checkbox per task (39 incl. T6.7); **the checkboxes are the authoritative
@@ -204,3 +209,7 @@ check its subagents/agent-<id>.jsonl mtime; if TaskStop replies 'No task found',
 ALREADY dead — that is SUCCESS, not an error to retry. Delete handled lines.
 - (none recorded yet this session — four workers were live at the last update: W-T31-stats
   on T2.2+S1, W-T11-browser on D35, W-T01-capture on S3, plus a finished shipping review.)
+
+### Stuck-subagent alerts
+- 2026-09-04T17:10:38.918631+00:00 watch: teammate W-T61-web stuck at 45min (stale 40min, 0 open tasks)
+- 2026-09-04T17:10:50.924655+00:00 watch: teammate W-ship-review stuck at 45min (stale 33min, 0 open tasks)
