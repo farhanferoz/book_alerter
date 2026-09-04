@@ -1,15 +1,16 @@
-"""Verifies the book_stats view computed via real alembic migration."""
+"""Verifies current-best selection (book_live_offers + Python selection,
+T3.1) computed via a real alembic migration to head."""
 from __future__ import annotations
 
 import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
+from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
-from book_alerter.stats import compute_book_stats
+from book_alerter.stats import _BOOK_SCHEMA, compute_book_stats, compute_stats_for_items
 
 
 def test_book_stats_view_current_best(tmp_path):
@@ -48,14 +49,11 @@ def test_book_stats_view_current_best(tmp_path):
             ))
         s.commit()
 
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
         stats = compute_book_stats(book.id, s)
 
-    assert row["observation_count"] == 5
-    assert row["current_best_total_minor"] == 850
-    assert row["current_best_source"] == "wob"
+    assert stats.observation_count == 5
+    assert stats.current_best_total_minor == 850
+    assert stats.current_best_source == "wob"
     assert stats.all_time_min_total_minor == 850
     assert stats.all_time_max_total_minor == 1500
 
@@ -121,18 +119,16 @@ def test_book_stats_view_excludes_stale_source_partition(tmp_path):
         ))
         s.commit()
 
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
     # The fresh £24.62 used_vg row must win, not the stale £28.60 new row
     # AND not the colliding £28.60 used_vg row at the same observed_at —
     # the ROW_NUMBER tiebreaker must prefer the cheaper total within a
     # partition.
-    assert row["current_best_total_minor"] == 2462
-    assert row["current_best_condition"] == "used_vg"
-    assert row["current_best_seller"] == "Amazon Resale"
-    assert row["current_best_url"] == "https://example/warehouse-deals"
+    assert stats.current_best_total_minor == 2462
+    assert stats.current_best_condition == "used_vg"
+    assert stats.current_best_seller == "Amazon Resale"
+    assert stats.current_best_url == "https://example/warehouse-deals"
 
 
 def test_book_stats_view_excludes_stale_source_when_fresher_exists(tmp_path):
@@ -180,15 +176,13 @@ def test_book_stats_view_excludes_stale_source_when_fresher_exists(tmp_path):
         ))
         s.commit()
 
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
     # The live £17.59 wins; the stale £16.00 WOB offer is excluded.
-    assert row["current_best_total_minor"] == 1759
-    assert row["current_best_source"] == "amazon"
+    assert stats.current_best_total_minor == 1759
+    assert stats.current_best_source == "amazon"
     # observation_count still reflects BOTH rows — only current_best is gated.
-    assert row["observation_count"] == 2
+    assert stats.observation_count == 2
 
 
 def test_book_stats_view_uses_last_seen_not_first_seen(tmp_path):
@@ -243,13 +237,11 @@ def test_book_stats_view_uses_last_seen_not_first_seen(tmp_path):
         ))
         s.commit()
 
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
     # last_seen wins: the live (re-seen-today) £20, not the vanished £18.
-    assert row["current_best_total_minor"] == 2000
-    assert row["current_best_url"] == "https://wob/live"
+    assert stats.current_best_total_minor == 2000
+    assert stats.current_best_url == "https://wob/live"
 
 
 def test_book_stats_view_current_best_url_is_latest_sighting(tmp_path):
@@ -303,13 +295,11 @@ def test_book_stats_view_current_best_url_is_latest_sighting(tmp_path):
         ))
         s.commit()
 
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
-    assert row["current_best_total_minor"] == 2354
+    assert stats.current_best_total_minor == 2354
     assert (
-        row["current_best_url"]
+        stats.current_best_url
         == "https://www.amazon.co.uk/gp/offer-listing/024163/?condition=all"
     ), "current_best_url must be the latest sighting's URL, not the frozen canonical one"
 
@@ -348,12 +338,10 @@ def test_book_stats_view_all_sources_stale_still_shows_cheapest(tmp_path):
             url="https://wob", observed_at=now - timedelta(days=30, hours=2), raw={},
         ))
         s.commit()
-        row = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().first()
+        stats = compute_book_stats(book.id, s)
 
-    assert row["current_best_total_minor"] == 1800  # cheapest, NOT NULL
-    assert row["current_best_source"] == "wob"
+    assert stats.current_best_total_minor == 1800  # cheapest, NOT NULL
+    assert stats.current_best_source == "wob"
 
 
 def test_book_stats_view_freshness_gate_boundary_is_one_day(tmp_path):
@@ -361,6 +349,10 @@ def test_book_stats_view_freshness_gate_boundary_is_one_day(tmp_path):
     behind the freshest scrape is KEPT; 24h-and-a-bit is dropped. Pins the
     boundary direction independently of the property test (which shares the
     `<= 1 day` constant on both sides and so can't catch a `<`/`<=` flip).
+
+    Computes both books in one `compute_stats_for_items` call — exercising
+    the batched path (candidates for two entities in a single query) instead
+    of two separate `compute_book_stats` calls.
     """
     db_path = tmp_path / "t.db"
     url = f"sqlite:///{db_path}"
@@ -394,28 +386,31 @@ def test_book_stats_view_freshness_gate_boundary_is_one_day(tmp_path):
     with Session(engine) as s:
         at_boundary = _book_with_wob_lag(s, "9780000000006", timedelta(hours=24))
         just_over = _book_with_wob_lag(s, "9780000000007", timedelta(hours=24, minutes=1))
-        rows = {
-            r["book_id"]: r
-            for r in s.exec(text("SELECT * FROM book_stats")).mappings().all()
-        }
+        ids = [at_boundary, just_over]
+        stats_by_id = compute_stats_for_items(
+            ids, s,
+            schema=_BOOK_SCHEMA,
+            cfg=RecommendationConfig(),
+            window_days=dict.fromkeys(ids, 90),
+        )
 
     # Exactly 24h behind → wob kept → its cheaper £10 wins.
-    assert rows[at_boundary]["current_best_total_minor"] == 1000
-    assert rows[at_boundary]["current_best_source"] == "wob"
+    assert stats_by_id[at_boundary].current_best_total_minor == 1000
+    assert stats_by_id[at_boundary].current_best_source == "wob"
     # 24h+1min behind → wob dropped → fresh amazon £30 wins.
-    assert rows[just_over]["current_best_total_minor"] == 3000
-    assert rows[just_over]["current_best_source"] == "amazon"
+    assert stats_by_id[just_over].current_best_total_minor == 3000
+    assert stats_by_id[just_over].current_best_source == "amazon"
 
 
 def test_book_stats_view_null_and_empty_seller_do_not_duplicate(tmp_path):
     """A NULL-seller offer and an ''-seller offer from the same source +
-    condition at the same lowest total must yield exactly ONE current_best row,
-    not two.
+    condition at the same lowest total must be treated as ONE offer, not two.
 
-    latest_per_offer partitions seller by COALESCE(seller,'') so the two land
-    in one partition (one rn=1 winner); without that, both win rn=1 and
-    current_best's COALESCE(seller,'') tiebreaker matches both, emitting
-    duplicate book_stats rows and breaking the one-row-per-book contract.
+    `book_live_offers`' `latest_per_offer` CTE partitions seller by
+    COALESCE(seller,'') so the two land in the same partition (one rn=1
+    winner reaches the Python selection) — without that, both would surface
+    as distinct candidates for what current_best_seller should read as a
+    single offer.
     """
     db_path = tmp_path / "t.db"
     url = f"sqlite:///{db_path}"
@@ -439,9 +434,6 @@ def test_book_stats_view_null_and_empty_seller_do_not_duplicate(tmp_path):
                 url="https://x", observed_at=now, raw={},
             ))
         s.commit()
-        rows = s.exec(
-            text("SELECT * FROM book_stats WHERE book_id = :id").bindparams(id=book.id)
-        ).mappings().all()
+        stats = compute_book_stats(book.id, s)
 
-    assert len(rows) == 1, f"expected one row, got {len(rows)} (duplicate emission)"
-    assert rows[0]["current_best_total_minor"] == 1500
+    assert stats.current_best_total_minor == 1500

@@ -48,6 +48,7 @@ from book_alerter.stats import (
     _PRODUCT_SCHEMA,
     BookStats,
     compute_product_stats,
+    compute_stats_for_items,
     source_seller_global_shipping_medians,
 )
 
@@ -219,19 +220,20 @@ def list_products(
         min_observations=cfg.recommendation.min_global_median_observations,
         schema=_PRODUCT_SCHEMA,
     )
-    default_shipping = cfg.recommendation.default_shipping_minor
+    ids = [p.id or 0 for p in products]
+    window_days = {
+        iid: _effective_window_days(p, cfg) for iid, p in zip(ids, products, strict=True)
+    }
+    stats_by_id = compute_stats_for_items(
+        ids,
+        session,
+        schema=_PRODUCT_SCHEMA,
+        cfg=cfg.recommendation,
+        window_days=window_days,
+        medians=medians,
+    )
     return [
-        ProductOut.from_product(
-            p,
-            compute_product_stats(
-                p.id or 0,
-                session,
-                _effective_window_days(p, cfg),
-                source_seller_global_medians=medians,
-                default_shipping_minor=default_shipping,
-            ),
-            reco=cfg.recommendation,
-        )
+        ProductOut.from_product(p, stats_by_id[p.id or 0], reco=cfg.recommendation)
         for p in products
     ]
 

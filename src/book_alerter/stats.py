@@ -1,13 +1,13 @@
 """Per-book statistics helpers.
 
-`compute_book_stats(book_id, session, window_days)` reads the deterministic
-fields from the `book_stats` SQL view, then re-derives the distribution-
-shaped fields in Python after running the shipping-imputation cascade
-over the canonical history. The cascade needs three median lookups
-(per-(book,source), per-source-global, per-book) that are awkward in SQL,
-and a single Python pass feeds every consumer (windowed percentiles,
-configured-window distribution for the signal, all-time min/max for
-`new_low`).
+`compute_stats_for_items(item_ids, session, ...)` is the engine: it loads
+candidates + windowed observation history + full-history summaries for every
+requested item in three batched SQL queries (regardless of how many items are
+requested — see its docstring), then does current-best selection and the
+distribution-shaped fields in Python after running the shipping-imputation
+cascade over the canonical history. `compute_book_stats` / `compute_product_stats`
+are thin single-item wrappers over it, kept for callers (the per-item detail
+endpoints, the alert dispatcher) that only ever want one item's stats.
 
 Shipping cascade (applied in `_imputed_shipping`):
   1. Row's own observed `shipping_minor`           → use as-is.
@@ -19,23 +19,35 @@ Shipping cascade (applied in `_imputed_shipping`):
 Keepa rows always fall through to step 4 because Keepa never carries
 shipping; non-Keepa rows with one-off NULL shipping prefer the source-
 aware estimates first.
+
+`effective_shipping` is the single seam every consumer of a shipping figure
+goes through (current-best ranking here; window/percentile totals here;
+the alert message once T2.2 lands). See its docstring for the Prime seam.
 """
 
 from __future__ import annotations
 
 import statistics
 from bisect import bisect_left, bisect_right
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Literal
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
 
 Signal = Literal["BUY", "WATCH", "WAIT", "TARGET_HIT", "INSUFFICIENT_DATA"]
+
+# Valid range for a percentile lookup — 0 and 100 are meaningless as a rank
+# cut (there's no value strictly below the minimum or above the maximum).
+_MIN_PERCENTILE = 1
+_MAX_PERCENTILE = 99
 
 
 # Window labels exposed to the API and consumed by the dashboard mini-bars
@@ -124,7 +136,7 @@ class BookStats:
     windows: dict[str, WindowStats] = field(default_factory=dict)
 
     def percentile_at(self, pct: int) -> int | None:
-        if not self.sorted_totals or not (1 <= pct <= 99):
+        if not self.sorted_totals or not (_MIN_PERCENTILE <= pct <= _MAX_PERCENTILE):
             return None
         return _percentile_at_sorted(self.sorted_totals, pct)
 
@@ -250,24 +262,27 @@ def _window_stats_from_sorted(
 
 @dataclass(frozen=True)
 class _ItemSchema:
-    """Table + column names that distinguish books from products in the
-    stats engine. Allows `_compute_stats_impl` and
+    """Table + view names that distinguish books from products in the stats
+    engine. Allows `compute_stats_for_items` and
     `source_seller_global_shipping_medians` to share one implementation."""
 
-    observation_table: str  # priceobservation / productobservation
-    id_column: str          # book_id / product_id
-    stats_view: str         # book_stats / product_stats
+    observation_table: str    # priceobservation / productobservation
+    id_column: str            # book_id / product_id
+    live_offers_view: str     # book_live_offers / product_live_offers
+    history_summary_view: str  # book_history_summary / product_history_summary
 
 
 _BOOK_SCHEMA = _ItemSchema(
     observation_table="priceobservation",
     id_column="book_id",
-    stats_view="book_stats",
+    live_offers_view="book_live_offers",
+    history_summary_view="book_history_summary",
 )
 _PRODUCT_SCHEMA = _ItemSchema(
     observation_table="productobservation",
     id_column="product_id",
-    stats_view="product_stats",
+    live_offers_view="product_live_offers",
+    history_summary_view="product_history_summary",
 )
 
 
@@ -290,7 +305,14 @@ def source_seller_global_shipping_medians(
     sparse-sample medians don't pollute the cascade — the caller's
     terminal default fires instead."""
     since = datetime.now(UTC) - timedelta(days=max(WINDOW_DAYS.values()))
-    rows = session.exec(
+    # `session.connection().execute(...)` (Core) rather than `session.exec(...)`
+    # (ORM) — this scans the observation table almost in full on a young
+    # deployment (little gets filtered by `since`), and ORM Session.exec's
+    # autoflush check + entity-shaping is pure overhead for a raw-tuple
+    # SELECT with no pending ORM writes on this read-only path. Measured
+    # ~30% faster on a production copy (90k rows). Every caller of this
+    # function commits before calling it, so skipping autoflush is safe.
+    rows = session.connection().execute(
         text(
             f"""
             SELECT source, seller, shipping_minor FROM {schema.observation_table}
@@ -320,181 +342,237 @@ Stats = BookStats
 # ---------------------------------------------------------------------------
 
 
-def compute_book_stats(
-    book_id: int,
-    session: Session,
-    window_days: int = 90,
+def effective_shipping(
+    source: str | None,
+    seller: str | None,
+    shipping_minor: int | None,
     *,
-    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
-    default_shipping_minor: int = 280,
-    min_global_median_observations: int = 10,
-) -> BookStats:
-    """Compute the stats bundle for a single book. See `_compute_stats_impl`
-    for the full contract; this is a thin wrapper that fixes the schema to
-    the book tables."""
-    return _compute_stats_impl(
-        book_id,
-        session,
-        window_days,
-        schema=_BOOK_SCHEMA,
-        source_seller_global_medians=source_seller_global_medians,
-        default_shipping_minor=default_shipping_minor,
-        min_global_median_observations=min_global_median_observations,
-    )
+    prime: bool = False,
+    cascade: Callable[[str | None, str | None], int],
+) -> tuple[int, bool]:
+    """Single seam for the shipping figure used everywhere a total is
+    computed: current-best ranking and window/percentile totals here, the
+    alert message once T2.2's notifier change lands. `cascade(source,
+    seller) -> int` runs the `_imputed_shipping` tier chain for a row whose
+    own shipping is unknown (see module docstring).
+
+    Returns `(pence, is_estimate)`.
+
+    T2.2 (plan task, not yet implemented — read it before adding branches
+    here) adds the Prime rule as the FIRST check: if `prime` and
+    `seller_class(seller) == "amazon_fulfilled"` and `source` is an Amazon
+    source, treat delivery as free — `(0, False)`. Until then `prime` is
+    accepted (so the seam's signature is already what T2.2 needs) but has
+    no effect: behaviour is unconditionally "observed shipping when known,
+    else the cascade estimate", which is today's semantics.
+    """
+    if shipping_minor is not None:
+        return int(shipping_minor), False
+    return cascade(source, seller), True
 
 
-def compute_product_stats(
-    product_id: int,
+def compute_stats_for_items(
+    item_ids: Sequence[int],
     session: Session,
-    window_days: int = 90,
-    *,
-    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
-    default_shipping_minor: int = 280,
-    min_global_median_observations: int = 10,
-) -> BookStats:
-    """Compute the stats bundle for a single product. Returns `BookStats`
-    (the dataclass shape is item-kind-agnostic — the field `book_id` is
-    reused for the product id; see plan doc for the deliberate naming
-    debt). Mirrors `compute_book_stats` exactly except for the schema."""
-    return _compute_stats_impl(
-        product_id,
-        session,
-        window_days,
-        schema=_PRODUCT_SCHEMA,
-        source_seller_global_medians=source_seller_global_medians,
-        default_shipping_minor=default_shipping_minor,
-        min_global_median_observations=min_global_median_observations,
-    )
-
-
-def _compute_stats_impl(
-    item_id: int,
-    session: Session,
-    window_days: int,
     *,
     schema: _ItemSchema,
-    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None,
-    default_shipping_minor: int,
-    min_global_median_observations: int,
-) -> BookStats:
-    """Schema-parameterised stats computation. Two table groups (book vs
-    product) share this implementation by passing distinct `_ItemSchema`
-    instances.
+    cfg: RecommendationConfig,
+    window_days: Mapping[int, int],
+    prime: bool = False,
+    medians: dict[tuple[str, SellerClass], int] | None = None,
+) -> dict[int, BookStats]:
+    """Stats bundle for every id in `item_ids`, loaded in three queries
+    total regardless of how many items are requested:
 
-    `source_seller_global_medians` is a cascade-step-2 input. Callers that
-    invoke this in a loop (e.g. the dashboard list endpoint) compute it
-    once via `source_seller_global_shipping_medians(session, schema=...)`
-    and pass it in, so we don't scan the whole observation table per item.
-    `default_shipping_minor` is the cascade's terminal fallback when no
-    tier produces an estimate. `min_global_median_observations` gates the
-    (source, seller_class) tier so sparse buckets don't fire.
+    1. Live-offer candidates (`{schema.live_offers_view}`) — one row per
+       live offer, already freshness-gated in SQL exactly as the old
+       `book_stats`/`product_stats` views were (see `db/views.py`).
+    2. Window observations (`{schema.observation_table}`, `observed_at >=
+       now - max_window`) — dupes included, split in Python below into the
+       canonical (`is_duplicate_of IS NULL`) rows that feed the imputed
+       percentile totals, and the full (dupes-included) rows that feed the
+       per-(item, source) shipping medians.
+    3. Full-history summaries (`{schema.history_summary_view}`) —
+       observation_count / last_observed_at / days_of_history /
+       last_polled_at, unbounded by window (gates INSUFFICIENT_DATA).
+
+    Grouping, the shipping cascade, and current-best selection (cheapest
+    `effective_shipping` total among an item's candidates, ties broken by
+    `(source, condition, seller-or-'')` ascending — the same tie-break the
+    old `current_best` CTE's correlated subquery encoded) all happen in
+    Python per item via `_stats_for_one_item`.
+
+    `medians` is the cascade's cross-item (source, seller_class) tier —
+    pass the result of `source_seller_global_shipping_medians(session,
+    schema=schema)` when computing stats for a whole list of items in one
+    request so that full-table scan runs once, not once per item; `None`
+    computes it here as a 4th query (matches the single-item wrapper's
+    prior behaviour). `window_days` maps each item id to the window its
+    caller wants (`Book.percentile_window_days` or the item's own
+    per-book/product override) — the canonical 1m/3m/12m windows are
+    always computed regardless; this only affects the `sorted_totals` /
+    `current_percentile_rank` fields for a non-canonical window.
     """
-    head = session.exec(
-        text(
-            f"""
-            SELECT current_best_total_minor, current_best_price_minor,
-                   current_best_shipping_minor, current_best_source,
-                   current_best_condition, current_best_seller, current_best_url,
-                   observation_count, last_observed_at, days_of_history,
-                   last_polled_at
-            FROM {schema.stats_view} WHERE {schema.id_column} = :iid
-            """
-        ).bindparams(iid=item_id)
-    ).one_or_none()
+    ids = list(item_ids)
+    if not ids:
+        return {}
 
-    if head is None:
-        return BookStats(
-            book_id=item_id,
-            current_best_total_minor=None,
-            current_best_price_minor=None,
-            current_best_shipping_minor=None,
-            current_best_source=None,
-            current_best_seller=None,
-            current_best_condition=None,
-            current_best_url=None,
-            all_time_min_total_minor=None,
-            all_time_max_total_minor=None,
-            observation_count=0,
-            days_of_history=0,
-            last_observed_at=None,
-            percentile_window_days=window_days,
-            windows={k: WindowStats() for k in WINDOW_DAYS},
+    if medians is None:
+        medians = source_seller_global_shipping_medians(
+            session,
+            min_observations=cfg.min_global_median_observations,
+            schema=schema,
         )
 
-    # Bound the imputation/percentile scan to the widest window we'll use so
-    # per-item work stays O(window) not O(history). `all_time_min/max` below
-    # therefore mean "min/max within this window" — for long-running deploys
-    # that's the more useful signal anyway, and the `new_low` alert reads it
-    # as "lower than recently seen".
-    max_window_days = max(max(WINDOW_DAYS.values()), window_days)
-    since = datetime.now(UTC) - timedelta(days=max_window_days)
-    raw = session.exec(
+    # Query 1: live-offer candidates for every requested item.
+    # `session.connection().execute(...)` (Core), not `session.exec(...)`
+    # (ORM) — see the comment in `source_seller_global_shipping_medians`;
+    # same reasoning applies to all three queries below.
+    candidates_by_id: dict[int, list[tuple]] = defaultdict(list)
+    live_offers_stmt = (
         text(
             f"""
-            SELECT observed_at, source, seller, price_minor, shipping_minor, total_minor
-            FROM {schema.observation_table}
-            WHERE {schema.id_column} = :iid
-              AND is_duplicate_of IS NULL
-              AND observed_at >= :since
+            SELECT {schema.id_column}, source, total_minor, price_minor,
+                   shipping_minor, condition, seller, url
+            FROM {schema.live_offers_view}
+            WHERE {schema.id_column} IN :ids
             """
-        ).bindparams(iid=item_id, since=since)
-    ).all()
+        )
+        .bindparams(bindparam("ids", expanding=True))
+        .bindparams(ids=ids)
+    )
+    for iid, source, total, price, shipping, condition, seller, url in (
+        session.connection().execute(live_offers_stmt).all()
+    ):
+        candidates_by_id[iid].append((source, total, price, shipping, condition, seller, url))
 
-    # Shipping medians window-bounded to match the global query. Dupes
-    # included on purpose — dupes repeat the canonical shipping signal,
-    # and on slow-moving items they're the bulk of the sample.
-    shipping_rows = session.exec(
+    # Query 2: window observations for every requested item, bounded to the
+    # widest window in play (any per-item override, or the widest canonical
+    # WINDOW_DAYS bucket). Dupes are included on purpose (they repeat the
+    # canonical shipping signal, and on slow-moving items are the bulk of
+    # the sample) — split per-consumer below instead of a second query.
+    max_window_days = max(max(WINDOW_DAYS.values()), *(window_days.get(i, 0) for i in ids))
+    since = datetime.now(UTC) - timedelta(days=max_window_days)
+    imputed_rows_by_id: dict[int, list[tuple]] = defaultdict(list)
+    shipping_rows_by_id: dict[int, list[tuple[str, int]]] = defaultdict(list)
+    window_obs_stmt = (
         text(
             f"""
-            SELECT source, shipping_minor FROM {schema.observation_table}
-            WHERE {schema.id_column} = :iid
-              AND shipping_minor IS NOT NULL
-              AND observed_at >= :since
+            SELECT {schema.id_column}, observed_at, source, seller, price_minor,
+                   shipping_minor, total_minor, is_duplicate_of
+            FROM {schema.observation_table}
+            WHERE {schema.id_column} IN :ids AND observed_at >= :since
             """
-        ).bindparams(iid=item_id, since=since)
-    ).all()
+        )
+        .bindparams(bindparam("ids", expanding=True))
+        .bindparams(ids=ids, since=since)
+    )
+    for iid, observed_at, source, seller, price, shipping, total, dup_of in (
+        session.connection().execute(window_obs_stmt).all()
+    ):
+        if shipping is not None:
+            shipping_rows_by_id[iid].append((source, int(shipping)))
+        if dup_of is None:
+            imputed_rows_by_id[iid].append(
+                (_to_aware(observed_at), source, seller, price, shipping, total)
+            )
+
+    # Query 3: full-history summaries for every requested item.
+    history_by_id: dict[int, tuple] = {}
+    history_stmt = (
+        text(
+            f"""
+            SELECT {schema.id_column}, observation_count, last_observed_at,
+                   days_of_history, last_polled_at
+            FROM {schema.history_summary_view}
+            WHERE {schema.id_column} IN :ids
+            """
+        )
+        .bindparams(bindparam("ids", expanding=True))
+        .bindparams(ids=ids)
+    )
+    for row in session.connection().execute(history_stmt).all():
+        history_by_id[row[0]] = row[1:]
+
+    now = datetime.now(UTC)
+    return {
+        iid: _stats_for_one_item(
+            iid,
+            candidates=candidates_by_id.get(iid, []),
+            imputed_rows=imputed_rows_by_id.get(iid, []),
+            shipping_rows=shipping_rows_by_id.get(iid, []),
+            history=history_by_id.get(iid),
+            window_days=window_days[iid],
+            prime=prime,
+            default_shipping_minor=cfg.default_shipping_minor,
+            source_seller_global_medians=medians,
+            now=now,
+        )
+        for iid in ids
+    }
+
+
+def _stats_for_one_item(
+    item_id: int,
+    *,
+    candidates: list[tuple],
+    imputed_rows: list[tuple],
+    shipping_rows: list[tuple[str, int]],
+    history: tuple | None,
+    window_days: int,
+    prime: bool,
+    default_shipping_minor: int,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int],
+    now: datetime,
+) -> BookStats:
+    """Per-item cascade + current-best selection + window/percentile
+    computation, given the pre-fetched rows `compute_stats_for_items`
+    sliced out of its three batched queries for this one item. Never
+    queries the DB itself."""
     by_book_source: dict[str, list[int]] = {}
     all_book_shipping: list[int] = []
     for source, shipping in shipping_rows:
-        by_book_source.setdefault(source, []).append(int(shipping))
-        all_book_shipping.append(int(shipping))
+        by_book_source.setdefault(source, []).append(shipping)
+        all_book_shipping.append(shipping)
     book_source_medians: dict[str, int] = {
         s: int(statistics.median(v)) for s, v in by_book_source.items()
     }
     book_median: int | None = (
         int(statistics.median(all_book_shipping)) if all_book_shipping else None
     )
-    if source_seller_global_medians is None:
-        source_seller_global_medians = source_seller_global_shipping_medians(
-            session,
-            min_observations=min_global_median_observations,
-            schema=schema,
-        )
-
-    cascade_kwargs = dict(
+    cascade = partial(
+        _imputed_shipping,
         book_source_medians=book_source_medians,
         source_seller_global_medians=source_seller_global_medians,
         book_median=book_median,
         default_shipping=default_shipping_minor,
     )
 
-    imputed: list[tuple[datetime, int]] = []
-    for observed_at, source, seller, price, shipping, total in raw:
-        if shipping is not None and total is not None:
-            imputed.append((_to_aware(observed_at), int(total)))
-            continue
-        if price is None:
-            continue
-        imp = _imputed_shipping(source, seller, **cascade_kwargs)
-        imputed.append((_to_aware(observed_at), int(price) + imp))
+    # Current-best selection: cheapest effective total among this item's
+    # live-offer candidates. `min()` over (effective_total, tie_key) tuples
+    # is exactly the two-stage rule the old `current_best` CTE encoded in
+    # SQL — lexicographic tuple order minimises total first, and among rows
+    # tied at that minimum, the alphabetically-smallest tie_key.
+    best: tuple | None = None
+    best_key: tuple[int, tuple[str, str, str]] | None = None
+    for source, total, price, shipping, condition, seller, url in candidates:
+        eff_shipping, _is_estimate = effective_shipping(
+            source, seller, shipping, prime=prime, cascade=cascade
+        )
+        key = (price + eff_shipping, (source, condition, seller or ""))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = (source, total, price, shipping, condition, seller, url)
 
-    # Current row uses the same cascade. The view picks `current_best` from
-    # live offers, so `current_shipping` may be NULL for a live row that
-    # failed to extract postage — cascade fills it.
-    (
-        current_total, current_price, current_shipping,
-        current_source, _current_condition, current_seller,
-    ) = head[:6]
+    if best is None:
+        current_source = current_total = current_price = current_shipping = None
+        current_condition = current_seller = current_url = None
+    else:
+        (
+            current_source, current_total, current_price, current_shipping,
+            current_condition, current_seller, current_url,
+        ) = best
+
     effective: int | None
     shipping_estimate: int | None = None
     if current_total is None:
@@ -502,20 +580,27 @@ def _compute_stats_impl(
     elif current_shipping is not None:
         effective = int(current_total)
     else:
-        # `price_minor` is non-nullable in the model, so when the view's
-        # `current_best` row exists (current_total is not None), current_price
-        # is guaranteed set. Assert the invariant so a schema regression
-        # surfaces here rather than silently producing 0+imp.
+        # `price_minor` is non-nullable in the model, so when a candidate
+        # won (current_total is not None), current_price is guaranteed set.
         assert current_price is not None
-        imp = _imputed_shipping(current_source, current_seller, **cascade_kwargs)
+        imp = cascade(current_source, current_seller)
         effective = int(current_price) + imp
         shipping_estimate = imp
 
-    # Sort by ts ascending once so each window resolves to a tail slice
-    # via bisect, and the all-time bounds fold in alongside.
+    imputed: list[tuple[datetime, int]] = []
+    for observed_at, source, seller, price, shipping, total in imputed_rows:
+        if shipping is not None and total is not None:
+            imputed.append((observed_at, int(total)))
+            continue
+        if price is None:
+            continue
+        imp = cascade(source, seller)
+        imputed.append((observed_at, int(price) + imp))
+
+    # Sort by ts ascending once so each window resolves to a tail slice via
+    # bisect, and the all-time bounds fold in alongside.
     imputed.sort(key=lambda r: r[0])
     ts_list = [r[0] for r in imputed]
-    now = datetime.now(UTC)
 
     def _slice_sorted_totals(days: int) -> list[int]:
         lo = bisect_left(ts_list, now - timedelta(days=days))
@@ -551,21 +636,25 @@ def _compute_stats_impl(
             else None
         )
 
+    observation_count, last_observed_at, days_of_history, last_polled_at = (
+        history if history is not None else (0, None, 0, None)
+    )
+
     return BookStats(
         book_id=item_id,
-        current_best_total_minor=head[0],
-        current_best_price_minor=head[1],
-        current_best_shipping_minor=head[2],
-        current_best_source=head[3],
-        current_best_condition=head[4],
-        current_best_seller=head[5],
-        current_best_url=head[6],
+        current_best_total_minor=current_total,
+        current_best_price_minor=current_price,
+        current_best_shipping_minor=current_shipping,
+        current_best_source=current_source,
+        current_best_condition=current_condition,
+        current_best_seller=current_seller,
+        current_best_url=current_url,
         all_time_min_total_minor=all_time_min,
         all_time_max_total_minor=all_time_max,
-        observation_count=head[7] or 0,
-        last_observed_at=head[8],
-        days_of_history=head[9] or 0,
-        last_polled_at=head[10],
+        observation_count=observation_count or 0,
+        last_observed_at=last_observed_at,
+        days_of_history=days_of_history or 0,
+        last_polled_at=last_polled_at,
         percentile_window_days=window_days,
         current_percentile_rank=cfg_rank,
         current_effective_total_minor=effective,
@@ -573,6 +662,60 @@ def _compute_stats_impl(
         sorted_totals=cfg_totals,
         windows=windows,
     )
+
+
+def compute_book_stats(
+    book_id: int,
+    session: Session,
+    window_days: int = 90,
+    *,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
+    default_shipping_minor: int = 280,
+    min_global_median_observations: int = 10,
+) -> BookStats:
+    """Compute the stats bundle for a single book — a thin wrapper over
+    `compute_stats_for_items([book_id], ...)`. Kept for callers (the
+    per-book detail endpoint, the alert dispatcher) that only ever want one
+    book's stats; signature unchanged from before the T3.1 restructure."""
+    cfg = RecommendationConfig(
+        default_shipping_minor=default_shipping_minor,
+        min_global_median_observations=min_global_median_observations,
+    )
+    return compute_stats_for_items(
+        [book_id],
+        session,
+        schema=_BOOK_SCHEMA,
+        cfg=cfg,
+        window_days={book_id: window_days},
+        medians=source_seller_global_medians,
+    )[book_id]
+
+
+def compute_product_stats(
+    product_id: int,
+    session: Session,
+    window_days: int = 90,
+    *,
+    source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
+    default_shipping_minor: int = 280,
+    min_global_median_observations: int = 10,
+) -> BookStats:
+    """Compute the stats bundle for a single product. Returns `BookStats`
+    (the dataclass shape is item-kind-agnostic — the field `book_id` is
+    reused for the product id; see plan doc for the deliberate naming
+    debt). Mirrors `compute_book_stats` exactly except for the schema."""
+    cfg = RecommendationConfig(
+        default_shipping_minor=default_shipping_minor,
+        min_global_median_observations=min_global_median_observations,
+    )
+    return compute_stats_for_items(
+        [product_id],
+        session,
+        schema=_PRODUCT_SCHEMA,
+        cfg=cfg,
+        window_days={product_id: window_days},
+        medians=source_seller_global_medians,
+    )[product_id]
 
 
 def _to_aware(ts: datetime | str) -> datetime:

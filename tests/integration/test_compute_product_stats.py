@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
 from sqlmodel import Session
 
 from book_alerter.db import models
@@ -96,13 +95,13 @@ def test_compute_product_stats_window_percentile_matches_book_path(
 def test_product_stats_view_stale_source_and_last_seen(
     engine_with_view, make_product,
 ) -> None:
-    """Exercise the stale-source gate + last-seen fold directly against the
-    `product_stats` view.
+    """Exercise the stale-source gate + last-seen fold via `compute_product_stats`
+    (reads `product_live_offers`, the T3.1 successor to the `product_stats` view).
 
-    book_stats and product_stats render from one template, but the parity test
-    above only feeds all-live, single-source, no-dup data — it never trips the
-    new freshness logic. A token-substitution slip that skewed only a product
-    CTE would pass every other test. This pins the product side.
+    book_live_offers and product_live_offers render from one template, but the
+    parity test above only feeds all-live, single-source, no-dup data — it never
+    trips the new freshness logic. A token-substitution slip that skewed only a
+    product CTE would pass every other test. This pins the product side.
     """
     now = datetime.now(UTC)
     with Session(engine_with_view) as session:
@@ -125,15 +124,10 @@ def test_product_stats_view_stale_source_and_last_seen(
         # Vanished wob £16: first seen 8d ago, never seen again.
         obs("wob", 1600, now - timedelta(days=8))
 
-        row = session.exec(
-            text(
-                "SELECT current_best_total_minor, current_best_source "
-                "FROM product_stats WHERE product_id = :p"
-            ).bindparams(p=product.id)
-        ).mappings().first()
+        stats = compute_product_stats(product.id, session)
 
     # Cheapest LIVE offer wins: amazon £17.59. The vanished £16 is excluded
     # (last_seen 8d ago, not in wob's latest scrape); the stable £21 is live
     # (its dup refreshed last_seen to today) but pricier.
-    assert row["current_best_total_minor"] == 1759
-    assert row["current_best_source"] == "amazon_uk_product"
+    assert stats.current_best_total_minor == 1759
+    assert stats.current_best_source == "amazon_uk_product"

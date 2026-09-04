@@ -1,4 +1,5 @@
-"""Tests for `compute_book_stats` — reads from the `book_stats` view."""
+"""Tests for `compute_book_stats` — reads from the `book_live_offers` /
+`book_history_summary` views (T3.1)."""
 from __future__ import annotations
 
 import itertools

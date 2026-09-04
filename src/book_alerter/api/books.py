@@ -39,12 +39,14 @@ from book_alerter.db import models
 from book_alerter.enums import ItemStatus
 from book_alerter.sources.normalizers import to_isbn13
 from book_alerter.stats import (
+    _BOOK_SCHEMA,
     WINDOW_DAYS,
     BookStats,
     Signal,
     WindowStats,
     compute_book_stats,
     compute_signal,
+    compute_stats_for_items,
     source_seller_global_shipping_medians,
 )
 
@@ -335,19 +337,18 @@ def list_books(
         session,
         min_observations=cfg.recommendation.min_global_median_observations,
     )
-    default_shipping = cfg.recommendation.default_shipping_minor
+    ids = [b.id or 0 for b in books]
+    window_days = {iid: _effective_window_days(b, cfg) for iid, b in zip(ids, books, strict=True)}
+    stats_by_id = compute_stats_for_items(
+        ids,
+        session,
+        schema=_BOOK_SCHEMA,
+        cfg=cfg.recommendation,
+        window_days=window_days,
+        medians=medians,
+    )
     return [
-        BookOut.from_book(
-            b,
-            compute_book_stats(
-                b.id or 0,
-                session,
-                _effective_window_days(b, cfg),
-                source_seller_global_medians=medians,
-                default_shipping_minor=default_shipping,
-            ),
-            reco=cfg.recommendation,
-        )
+        BookOut.from_book(b, stats_by_id[b.id or 0], reco=cfg.recommendation)
         for b in books
     ]
 

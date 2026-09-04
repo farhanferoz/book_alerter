@@ -3,7 +3,8 @@
 Scenarios are NOT pytest tests; they're standalone scripts (so we can run them
 individually for storyline-style coverage). They write into a dedicated
 SQLite file `tests/scenarios/.test.db` (gitignored) and reuse the real
-`book_stats` view DDL, so they exercise the production code paths.
+live-offers/history-summary view DDL (T3.1, migration 0020), so they exercise
+the production code paths.
 """
 from __future__ import annotations
 
@@ -20,10 +21,14 @@ from sqlmodel import Session, SQLModel
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
 from book_alerter.db.views import (
-    BOOK_STATS_VIEW_SQL,
-    DROP_BOOK_STATS_VIEW_SQL,
-    DROP_PRODUCT_STATS_VIEW_SQL,
-    PRODUCT_STATS_VIEW_SQL,
+    BOOK_HISTORY_SUMMARY_VIEW_SQL,
+    BOOK_LIVE_OFFERS_VIEW_SQL,
+    DROP_BOOK_HISTORY_SUMMARY_VIEW_SQL,
+    DROP_BOOK_LIVE_OFFERS_VIEW_SQL,
+    DROP_PRODUCT_HISTORY_SUMMARY_VIEW_SQL,
+    DROP_PRODUCT_LIVE_OFFERS_VIEW_SQL,
+    PRODUCT_HISTORY_SUMMARY_VIEW_SQL,
+    PRODUCT_LIVE_OFFERS_VIEW_SQL,
 )
 from book_alerter.notifications.dispatcher import AlertPipeline
 
@@ -70,17 +75,21 @@ def make_recorder(name: str) -> _Recorder:
 
 def fresh_engine() -> Engine:
     """Drop, recreate, and migrate the scenario sqlite file. Idempotent across
-    runs — every scenario invocation gets a pristine schema + both views
-    (book_stats and product_stats)."""
+    runs — every scenario invocation gets a pristine schema + all four live
+    views (book/product live_offers + book/product history_summary)."""
     if SCENARIO_DB.exists():
         SCENARIO_DB.unlink()
     engine = get_engine(f"sqlite:///{SCENARIO_DB}")
     SQLModel.metadata.create_all(engine)
     with engine.begin() as conn:
-        conn.exec_driver_sql(DROP_BOOK_STATS_VIEW_SQL)
-        conn.exec_driver_sql(BOOK_STATS_VIEW_SQL)
-        conn.exec_driver_sql(DROP_PRODUCT_STATS_VIEW_SQL)
-        conn.exec_driver_sql(PRODUCT_STATS_VIEW_SQL)
+        conn.exec_driver_sql(DROP_BOOK_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(BOOK_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(DROP_PRODUCT_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(DROP_BOOK_HISTORY_SUMMARY_VIEW_SQL)
+        conn.exec_driver_sql(BOOK_HISTORY_SUMMARY_VIEW_SQL)
+        conn.exec_driver_sql(DROP_PRODUCT_HISTORY_SUMMARY_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_HISTORY_SUMMARY_VIEW_SQL)
     return engine
 
 

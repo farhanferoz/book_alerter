@@ -10,7 +10,12 @@ from sqlmodel import Session, SQLModel
 
 from book_alerter.db import models
 from book_alerter.db.session import get_engine
-from book_alerter.db.views import BOOK_STATS_VIEW_SQL, PRODUCT_STATS_VIEW_SQL
+from book_alerter.db.views import (
+    BOOK_HISTORY_SUMMARY_VIEW_SQL,
+    BOOK_LIVE_OFFERS_VIEW_SQL,
+    PRODUCT_HISTORY_SUMMARY_VIEW_SQL,
+    PRODUCT_LIVE_OFFERS_VIEW_SQL,
+)
 
 WOB_CASSETTE_DIR = Path(__file__).parent / "sources" / "cassettes"
 WOB_CARRIED_ISBN = "9780241638194"
@@ -28,9 +33,15 @@ def sqlite_engine(tmp_path) -> Engine:
 
 @pytest.fixture
 def engine_with_view(sqlite_engine):
+    """Despite the name (kept — ~100 tests depend on it), installs the T3.1
+    live views (book_live_offers/product_live_offers + book_history_summary/
+    product_history_summary), not the retired book_stats/product_stats.
+    `compute_book_stats`/`compute_product_stats` read from these."""
     with sqlite_engine.begin() as conn:
-        conn.exec_driver_sql(BOOK_STATS_VIEW_SQL)
-        conn.exec_driver_sql(PRODUCT_STATS_VIEW_SQL)
+        conn.exec_driver_sql(BOOK_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_LIVE_OFFERS_VIEW_SQL)
+        conn.exec_driver_sql(BOOK_HISTORY_SUMMARY_VIEW_SQL)
+        conn.exec_driver_sql(PRODUCT_HISTORY_SUMMARY_VIEW_SQL)
     return sqlite_engine
 
 

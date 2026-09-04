@@ -1,10 +1,17 @@
-"""Property-based check of the book_stats current_best last-seen model.
+"""Property-based check of the current_best last-seen candidate model.
 
 Generates randomised offer sets — multiple sources, conditions, sellers, repeat
-sightings (dups) at varied timestamps — and asserts the SQL view's
+sightings (dups) at varied timestamps — and asserts `compute_book_stats`'
 `current_best_total_minor` equals an independent Python reference of the same
 last-seen logic. Explores the timestamp / dedup space that the hand-written
 example tests in test_book_stats_view.py can only spot-check.
+
+The freshness/last-seen candidate model checked here is unchanged by T3.1 —
+it's still enforced in SQL by `book_live_offers`. Shipping is always known
+(0) in every generated offer, so effective-total ranking (T3.1's Python
+selection) reduces to ranking by total_minor exactly as the old view did;
+`test_stats_current_best_selection_properties.py` is the sibling property
+test that varies price/shipping independently to pin the ranking step itself.
 """
 from __future__ import annotations
 
@@ -12,10 +19,10 @@ from datetime import UTC, datetime, timedelta
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import text
 from sqlmodel import Session
 
 from book_alerter.db import models
+from book_alerter.stats import compute_book_stats
 
 _SOURCES = ["amazon", "wob", "bookfinder"]
 _CONDITIONS = ["new", "used_vg", "used_g"]
@@ -97,14 +104,6 @@ def test_current_best_matches_last_seen_reference(engine_with_view, offers):
                 ))
         s.commit()
 
-        rows = s.exec(
-            text("SELECT current_best_total_minor FROM book_stats WHERE book_id = :b")
-            .bindparams(b=book.id)
-        ).all()
+        stats = compute_book_stats(book.id, s)
 
-    # The view must yield exactly one row per book — assert it rather than
-    # `.first()`-ing, so a duplicate-emission regression (e.g. a tiebreaker that
-    # matches two rn=1 rows) can't pass silently.
-    assert len(rows) <= 1, f"book_stats emitted {len(rows)} rows for one book"
-    got_total = rows[0][0] if rows else None
-    assert got_total == _reference_current_best(offers)
+    assert stats.current_best_total_minor == _reference_current_best(offers)
