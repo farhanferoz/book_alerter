@@ -68,6 +68,39 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   write-set guard holds all three. Its remedy is that the orchestrator writes them; never have a
   worker override it.
 
+### Deployment handover (verified environment, NOT executed — deploy is out of scope)
+Production today: container `book_alerter`, image `ghcr.io/farhanferoz/book_alerter:latest`,
+**Up 21 hours (healthy)**, compose at `/share/CACHEDEV1_DATA/Container/book_alerter/` (note:
+`docker-compose.yml` there, plus a `.env`).
+
+⚠️ **The plan §5 deploy command fails as written.** `which docker` returns *nothing* over a
+non-interactive ssh to the NAS — Container Station's binary is not on that PATH. Use the full
+path (verified: Docker Compose v2.29.1-qnap2):
+
+```bash
+NASDOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+
+# 1. Back up BEFORE deploying — migration 0021 deletes ~78k rows.
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
+  cp book_alerter.db book_alerter.db.pre-0021-$(date +%Y%m%d)"
+
+# 2. Publish. Pushing to master is what triggers the GHCR image build
+#    (.github/workflows/build.yml); pushing the branch alone does not.
+git checkout master && git merge --no-ff wave-execution
+GH_TOKEN=$(gh auth token --user farhanferoz) git push origin master
+
+# 3. Wait for the build, then deploy.
+gh run watch --repo farhanferoz/book_alerter
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter && \
+  $NASDOCKER compose pull && $NASDOCKER compose up -d"
+
+# 4. After the migration has run once, reclaim the space it freed.
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
+  sqlite3 book_alerter.db 'VACUUM'"
+```
+Then check `/api/health` (it now reports `janitor_last_run_at`) and re-pull a DB copy to re-run
+`scripts/smoke_check.py` against the deployed state.
+
 ### Pushing (verified 2026-09-04, dry-run only — nothing pushed yet)
 The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
 `reviewsenseai`, so a plain `git push` fails with `Permission ... denied to reviewsenseai`.
