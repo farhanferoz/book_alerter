@@ -55,19 +55,18 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
 ### Next
-- **Progress: 19 of 40 ticked.** Part-done: T2.4 (estimate flag), T6.1 (banner), T6.2
-  (stats/alerts switch), T6.4 (Prime/schedules/VACUUM docs), T6.5 (scheduler registration).
-  T1.2 dropped.
-- In flight: **T3.2 heartbeat compaction (Tier 4) + T3.4 + T6.2 rest** (W-T31-stats) ·
-  **T2.5 conditional-delivery fix** (W-T11-browser) · **T5.3 + T5.4** (W-T67-smoke) ·
-  **adversarial review of the shipping chain, read-only** (W-T01-capture).
-- Not started: T1.3, T1.4, T2.2, T2.3, T4.1, T4.2 (hard gate — 7 fixtures with no test),
-  T4.4, T5.5, T6.3, T6.6 fixture renames.
-- **The orchestrator is the single writer for `enums.py` and `api/sources.py`** — the write-set
-  guard holds both after two agents legitimately needed them. Guard's own remedy; do not have a
+- **Progress: 20 of 40 ticked — halfway.** **The S1 headline bug (F1) is CLOSED**: T2.5 turns a
+  conditional "on your first order" free-delivery promise into unknown shipping, root-verified on
+  a real 10-offer page (8 → unknown, genuine free stays 0, paid stays 299).
+- Part-done: T2.4 (estimate flag), T6.1 (banner), T6.2 (stats/alerts switch), T6.4 (Prime /
+  schedules / VACUUM docs), T6.5 (scheduler registration). T1.2 dropped.
+- In flight: **T3.2 + T3.4 + T6.2 rest** (W-T31-stats, `_persist` applied uncommitted by the
+  orchestrator) · **T4.2 hard gate** (W-T11-browser) · **T5.3 + T5.4** (W-T67-smoke) ·
+  **adversarial shipping-chain review, read-only** (W-T01-capture).
+- Not started: T1.3, T1.4, T2.2, T2.3, T4.1, T4.4, T5.5, T6.3, T6.6 fixture renames.
+- **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** — the
+  write-set guard holds all three. Its remedy is that the orchestrator writes them; never have a
   worker override it.
-- **Endgame:** review tiers, plan-adherence audit, push (recipe above), `/checkpoint --final`.
-  NAS deploy is explicitly out of scope.
 
 ### Pushing (verified 2026-09-04, dry-run only — nothing pushed yet)
 The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
