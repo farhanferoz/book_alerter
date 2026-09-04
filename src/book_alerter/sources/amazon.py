@@ -1043,15 +1043,33 @@ _DELIVERY_PRICE_GBP_RE = re.compile(
 # Word-boundary "free" — avoid matching "Free delivery on orders over £25"
 # as zero shipping when a concrete charge is also present.
 _FREE_DELIVERY_RE_DELIVERY = re.compile(r"\bfree\s+delivery\b", re.IGNORECASE)
-# S7: a £-amount immediately after "over" (D33's own "over £<amount>"
-# spend-threshold wording, e.g. "orders dispatched by Amazon over £35") is
-# a threshold this text is conditional on, not a delivery charge — the two
-# share the exact same "£<number>" shape but mean opposite things. Checked
-# against the text immediately BEFORE each `_DELIVERY_PRICE_GBP_RE` match
-# (not the whole string), so a genuine charge earlier in the same sentence
-# ("£3.49 delivery. Free delivery over £25.") still matches on its own,
-# unrelated £3.49 — only the specific match that follows "over" is skipped.
-_THRESHOLD_PREFIX_RE = re.compile(r"over\s*$", re.IGNORECASE)
+
+
+def _is_conditional_marker_span(text: str, start: int, end: int) -> bool:
+    """D36: True when `text[start:end]` overlaps a match of
+    `_CONDITIONAL_DELIVERY_RE` — reused directly rather than a second
+    pattern maintained in parallel, so "what counts as a conditional
+    promise" only has one definition in this file. Used by
+    `_parse_delivery_text` to tell a genuine "over £X" *threshold* mention
+    apart from an actual "£X delivery" *charge*, which otherwise share the
+    identical "£<number>" shape.
+
+    Overlap, not containment: `_CONDITIONAL_DELIVERY_RE`'s "over £\\d"
+    branch only requires a SINGLE digit after £ (it only needs to detect
+    the phrase, not delimit the full amount), so its match span can end
+    mid-number — e.g. "over £3" out of "over £35". A `_DELIVERY_PRICE_GBP_
+    RE` match for the full "£35" would fail a strict-containment check
+    against that shorter span (verified directly — this was my first,
+    wrong implementation). Any overlap at all is sufficient: the only way
+    the "over...£...\\d" branch matches anything is an "over" followed by a
+    £-amount, which is exactly where a genuine price match would also
+    land, so there is no plausible case where the two overlap without both
+    describing the same £-amount.
+    """
+    return any(
+        m.start() < end and start < m.end()
+        for m in _CONDITIONAL_DELIVERY_RE.finditer(text)
+    )
 
 
 def _parse_delivery_text(raw: str) -> int | None:
@@ -1066,12 +1084,15 @@ def _parse_delivery_text(raw: str) -> int | None:
     accepted any substring "free" as zero, which a "free over £X.XX"
     qualifier would silently trigger.
 
-    S7 fix: a £-amount is only accepted as the charge if it is NOT
-    immediately preceded by "over" — "FREE delivery ... on orders
-    dispatched by Amazon over £35" used to read the £35 *threshold* as a
-    £35.00 *charge* (`_DELIVERY_PRICE_GBP_RE` has no way to tell "the
+    D36 (S7): a £-amount is only accepted as the charge if it does NOT
+    fall inside a `_CONDITIONAL_DELIVERY_RE` match — "FREE delivery ... on
+    orders dispatched by Amazon over £35" used to read the £35 *threshold*
+    as a £35.00 *charge* (`_DELIVERY_PRICE_GBP_RE` has no way to tell "the
     charge is £X" from "free once you spend over £X" on its own; both are
-    just a £-amount to it). Masked in production today because
+    just a £-amount to it). The precedence itself is NOT changed —
+    numeric-first still exists so "£3.49 delivery. Free delivery over
+    £25." correctly returns 349, not 0 — only which numeric match counts
+    is now narrower. Masked in production today because
     `_extract_shipping_minor` reads the short `data-csa-c-delivery-price`
     attribute (just "FREE" or "£X.XX", never a threshold mention) before
     ever calling this function on the long human-readable sentence — this
@@ -1083,7 +1104,7 @@ def _parse_delivery_text(raw: str) -> int | None:
     if not text:
         return None
     for m in _DELIVERY_PRICE_GBP_RE.finditer(text):
-        if _THRESHOLD_PREFIX_RE.search(text[: m.start()]):
+        if _is_conditional_marker_span(text, m.start(), m.end()):
             continue
         return round(float(m.group(1).replace(",", "")) * 100)
     # No concrete (non-threshold) price seen — accept "FREE" / "free
