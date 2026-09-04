@@ -97,6 +97,25 @@ class BookFormat(StrEnum):
     ANY = "any"
 
 
+class Signal(StrEnum):
+    """BUY/WATCH/WAIT recommendation returned by `stats.compute_signal` and
+    persisted on `*SignalState.last_signal`.
+
+    Unlike every other enum in this file the values are UPPERCASE. That is a
+    deliberate deviation from the module convention, not an oversight: these
+    exact strings are already the wire contract the frontend compares against
+    (`web/src/components/books/signal.tsx`, `BookFilters.tsx`) and that
+    `alerts.detect_alert_kinds` branches on. Lower-casing them would be a
+    breaking API change dressed up as a tidy-up.
+    """
+
+    BUY = "BUY"
+    WATCH = "WATCH"
+    WAIT = "WAIT"
+    TARGET_HIT = "TARGET_HIT"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
 class BrowserProfile(StrEnum):
     """Persistent Playwright profile-directory key for `BrowserSession`
     (`sources/browser.py`), stored under `data/browser-profiles/<value>/`.
