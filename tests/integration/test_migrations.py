@@ -125,7 +125,16 @@ def test_each_revision_individually(tmp_path: Path, revision: str) -> None:
 def _seed_book_and_observations(db_path: Path) -> None:
     """A book with two dedup groups: 3 sightings of one offer (1 canonical +
     2 heartbeats) and 1 lone offer (canonical, no heartbeats) — enough to
-    exercise both the group-max backfill and the no-duplicates case."""
+    exercise both the group-max backfill and the no-duplicates case.
+
+    The 3-row group's URLs deliberately DIFFER (id 3, the newest sighting,
+    carries a different link than id 1, the canonical/first-sighting row) —
+    a Tier-4 review (F-B) found the pre-fix migration backfilled
+    `last_seen_at` from the group's latest sighting but silently kept the
+    CANONICAL row's own (oldest) URL, reverting migration 0019. Giving every
+    row the same URL, as this fixture used to, cannot catch that: the
+    assertion would pass whichever row's URL survived.
+    """
     with sqlite3.connect(db_path) as con:
         now = "2026-09-04 12:00:00"
         con.execute(
@@ -136,9 +145,9 @@ def _seed_book_and_observations(db_path: Path) -> None:
         )
         rows = [
             # id, source, price, url, observed_at, is_duplicate_of
-            (1, "wob", 1000, "https://x", "2026-08-01 10:00:00", None),
-            (2, "wob", 1000, "https://x", "2026-08-02 10:00:00", 1),
-            (3, "wob", 1000, "https://x", "2026-08-03 10:00:00", 1),  # newest -> last_seen_at
+            (1, "wob", 1000, "https://x/first-sighting", "2026-08-01 10:00:00", None),
+            (2, "wob", 1000, "https://x/mid-sighting", "2026-08-02 10:00:00", 1),
+            (3, "wob", 1000, "https://x/latest-sighting", "2026-08-03 10:00:00", 1),  # newest
             (4, "amazon", 2000, "https://y", "2026-08-01 09:00:00", None),  # no duplicates
         ]
         for id_, source, price, url, observed_at, dup_of in rows:
@@ -154,9 +163,10 @@ def _seed_book_and_observations(db_path: Path) -> None:
 
 def test_heartbeat_compaction_row_counts_and_last_seen_at(tmp_path: Path) -> None:
     """T3.2 non-negotiables: canonical rows survive 1:1 (not merely "the
-    total fell"), heartbeats are gone, and `last_seen_at` backfills to
+    total fell"), heartbeats are gone, `last_seen_at` backfills to
     MAX(observed_at) per dedup group — the value the pre-0021
-    `buyable_last_seen` CTE computed."""
+    `buyable_last_seen` CTE computed — and (F-B, Tier-4 review) the
+    canonical row's `url` becomes the LATEST sighting's, not the first."""
     db_path = tmp_path / "heartbeat_compaction.db"
     with _alembic_pointing_at(db_path) as cfg:
         alembic_command.upgrade(cfg, "0020_live_offers_views")
@@ -178,13 +188,69 @@ def test_heartbeat_compaction_row_counts_and_last_seen_at(tmp_path: Path) -> Non
             f"canonical count must survive 1:1: had {canonical_before} canonical "
             f"rows, {total_after} rows remain after compaction"
         )
-        rows = dict(
-            con.execute("SELECT id, last_seen_at FROM priceobservation ORDER BY id").fetchall()
-        )
+        rows = {
+            r[0]: (r[1], r[2])
+            for r in con.execute(
+                "SELECT id, last_seen_at, url FROM priceobservation ORDER BY id"
+            ).fetchall()
+        }
     assert rows == {
-        1: "2026-08-03 10:00:00",  # MAX over its group (id 1, 2, 3)
-        4: "2026-08-01 09:00:00",  # no duplicates -> its own observed_at
+        # MAX(observed_at) over its group (id 1, 2, 3) -> id 3's timestamp,
+        # and (F-B) id 3's url, not id 1's own first-sighting url.
+        1: ("2026-08-03 10:00:00", "https://x/latest-sighting"),
+        4: ("2026-08-01 09:00:00", "https://y"),  # no duplicates -> its own row
     }
+
+
+def test_heartbeat_compaction_round_trip_preserves_last_seen_and_url(
+    tmp_path: Path,
+) -> None:
+    """F-A + F-B (Tier-4 review of Wave 3): a downgrade -> upgrade round
+    trip must not lose information the FIRST upgrade already extracted from
+    the (now-deleted) heartbeat rows.
+
+    Pre-fix, `downgrade()` dropped `last_seen_at` with no reconstruction
+    path. On the SECOND `upgrade()`, the backfill's `GROUP BY
+    COALESCE(is_duplicate_of, id)` groups have collapsed to singletons
+    (the heartbeats that made them real groups are gone — deleted by the
+    FIRST upgrade), so `last_seen_at` silently regresses to `observed_at`
+    (first sighting) instead of staying at the group's true latest sighting.
+    Measured on a production copy in the Tier-4 review: `book_live_offers`
+    fell from 212 rows to 24 and 7 books' signals flipped. This test
+    reproduces the same MECHANISM (a multi-row dedup group whose canonical
+    row's `observed_at` differs from the group's latest sighting) on a
+    tiny, deterministic fixture rather than needing a production snapshot.
+    """
+    db_path = tmp_path / "round_trip.db"
+    with _alembic_pointing_at(db_path) as cfg:
+        alembic_command.upgrade(cfg, "0020_live_offers_views")
+        _seed_book_and_observations(db_path)
+
+        alembic_command.upgrade(cfg, "head")
+        with sqlite3.connect(db_path) as con:
+            after_first_upgrade = {
+                r[0]: (r[1], r[2])
+                for r in con.execute(
+                    "SELECT id, last_seen_at, url FROM priceobservation ORDER BY id"
+                ).fetchall()
+            }
+
+        alembic_command.downgrade(cfg, "0020_live_offers_views")
+        alembic_command.upgrade(cfg, "head")
+        with sqlite3.connect(db_path) as con:
+            after_round_trip = {
+                r[0]: (r[1], r[2])
+                for r in con.execute(
+                    "SELECT id, last_seen_at, url FROM priceobservation ORDER BY id"
+                ).fetchall()
+            }
+
+    assert _fk_violations(db_path) == []
+    assert after_round_trip == after_first_upgrade, (
+        "a downgrade -> upgrade round trip must reproduce the same "
+        f"last_seen_at/url as the first upgrade; first={after_first_upgrade!r} "
+        f"round-trip={after_round_trip!r}"
+    )
 
 
 def _seed_source_runs(db_path: Path) -> None:

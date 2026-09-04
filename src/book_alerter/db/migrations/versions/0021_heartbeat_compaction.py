@@ -49,10 +49,67 @@ clear the old threshold needs proportionally fewer now that rows aren't
 inflated by repeat sightings of the same price).
 
 Down-migration re-creates `is_duplicate_of` (nullable, all NULL — the
-heartbeat data is gone; this is a documented, accepted loss on downgrade)
-and drops `last_seen_at`. SQLite refuses the batch-table-rebuild dance while
-a dependent view exists (migration 0013's lesson), so views are dropped
-before each table's batch rebuild and recreated after.
+heartbeat ROWS are gone; that loss is accepted and documented, D15). SQLite
+refuses the batch-table-rebuild dance while a dependent view exists
+(migration 0013's lesson), so views are dropped before each table's batch
+rebuild and recreated after.
+
+**Round-trip fix (Tier 4 fresh-session review, finding F-A).** The first
+version of this migration dropped `last_seen_at` on downgrade with no
+reconstruction path. That is a DIFFERENT loss than D15 accepts: D15 gives up
+the per-sighting heartbeat ROWS; this was silently also giving up
+`last_seen_at` ITSELF — a value already computed and sitting on the surviving
+canonical row, not something that needs the deleted rows to reconstruct.
+Measured on a production copy: `upgrade head -> downgrade 0019 -> upgrade
+head` dropped `book_live_offers` from 212 rows to 24 and flipped 7 books'
+signals, because the live-offers view gates freshness on
+`last_seen_at == MAX(last_seen_at)` and a second upgrade's backfill — run
+against an all-NULL `is_duplicate_of` because the heartbeats that would have
+formed real groups are gone — collapses every row's group to itself, so
+`last_seen_at` regresses to `observed_at` (first sighting). Fixed by having
+`downgrade()` snapshot `(id, last_seen_at)` into a side table
+(`_lastseen_backup_{table}`) before dropping the column; `upgrade()` checks
+for that table and restores from it exactly when present, falling back to
+the original group-max formula only when it is not (i.e. a genuine
+first-time upgrade, fresh install or real production data) — that formula
+is UNCHANGED, still the one the property test and the Tier-4 review
+verified against 12,337 production rows with 0 mismatches.
+
+**URL fix (finding F-B).** The pre-0021 `buyable_last_seen` CTE computed TWO
+things per dedup group via SQLite's documented bare-column rule (exactly one
+MAX() aggregate present -> every bare column takes its value from the row
+that produced the max): `MAX(observed_at)` AND `url AS current_url` (the
+latest sighting's link). This migration backfilled only the first and threw
+the second away when it deleted the heartbeat rows that carried it, so the
+canonical row kept whatever URL its FIRST sighting happened to have —
+exactly what migration 0019 exists to prevent (see the comment on
+`buyable_last_seen` in `db/views.py`). Measured on a production copy: 187
+canonical rows' URLs differed from their latest sighting's; the worst case
+pointed at an Amazon help page instead of the offer-listing page. Fixed by
+adding `url = grp.current_url` to the same backfill query, using the same
+per-group anchor row `last_seen_at` already comes from — one bare-column
+trick, two columns pulled from it, matching what `buyable_last_seen` did in
+one query. Self-heals per offer on the next scrape either way
+(`scheduler._persist` sets `prior.url = c.url`); this closes the gap for
+offers that are never re-seen.
+
+**Documented behaviour change (finding F-D).** Pre-0021, the shipping-cascade
+medians (`stats.source_seller_global_shipping_medians` /
+`book_source_medians`) were fed by every row INCLUDING heartbeats, weighting
+each bucket by how many times an offer was RE-SEEN. Post-0021 every distinct
+offer counts once, so slow-moving-but-frequently-rescraped offers lose their
+outsized weight. Measured on a production copy: this is a real, sometimes
+large shift in the LONG-window (12m) percentile fields feeding `WindowStats`
+— book 6's 12-month `rank` moved 41 -> 1 and its p25/p50/p75 moved
++64%/+45%/+29%, driven by `bookfinder`'s known-shipping rows being 66.3%
+zero when heartbeats are counted but only 22.1% when they are not (a
+bimodal 0-vs-~£14.80 distribution, so the median jumps a cliff rather than
+drifting). Row counts (`n`) are identical in every window and no book's
+90-day-configured `Signal` changes — this is a display-only effect on the
+long window's percentile summary, not a correctness defect — but it rides
+along with `min_global_median_observations` dropping 10 -> 5 (which,
+measured separately, is a no-op on this data: the same buckets qualify at
+both thresholds either way).
 """
 
 from __future__ import annotations
@@ -87,9 +144,35 @@ _NAMING = {
 _PRICEOBS_DUP_FK = "fk_priceobservation_is_duplicate_of_priceobservation"
 _PRODUCTOBS_DUP_FK = "fk_productobservation_is_duplicate_of_productobservation"
 
+# F-A: side tables `downgrade()` snapshots `(id, last_seen_at)` into before
+# dropping the column, so a subsequent `upgrade()` can restore the exact
+# prior values instead of re-deriving them from `is_duplicate_of` groups
+# that no longer exist (the heartbeat rows those groups depended on were
+# already deleted by the FIRST upgrade — D15's accepted loss — so a second
+# derivation from the same formula silently produces a different, wrong
+# answer, not the same one). Named with a leading underscore and this
+# migration's revision id so an operator inspecting the schema mid-rollback
+# can tell at a glance it's migration-internal scratch state, not a domain
+# table.
+_PRICEOBS_LASTSEEN_STASH = "_0021_lastseen_backup_priceobservation"
+_PRODUCTOBS_LASTSEEN_STASH = "_0021_lastseen_backup_productobservation"
+
+
+def _table_exists(bind: sa.engine.Connection, name: str) -> bool:
+    row = bind.execute(
+        sa.text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": name},
+    ).fetchone()
+    return row is not None
+
+
 # Backfill formula, pinned by the property test named in the module
 # docstring: for every canonical row, MAX(observed_at) over itself plus
-# every row whose is_duplicate_of points at it.
+# every row whose is_duplicate_of points at it. Runs on a genuine first-time
+# upgrade only (fresh install, or real production data with actual
+# is_duplicate_of groups) — a re-upgrade after a downgrade restores from the
+# stash tables above instead, since this formula can no longer see the
+# (already-deleted) heartbeat rows it needs.
 # `UPDATE ... FROM` (SQLite 3.33+) joins against a GROUP BY computed ONCE,
 # not a correlated subquery re-scanning the table per canonical row — the
 # naive correlated-subquery form (`SET x = (SELECT MAX(...) WHERE
@@ -97,12 +180,25 @@ _PRODUCTOBS_DUP_FK = "fk_productobservation_is_duplicate_of_productobservation"
 # and re-aggregates per row; on the production copy (90172 rows) that
 # version didn't finish in 2+ minutes of CPU time, this one takes ~0.07s
 # (measured, not assumed — COALESCE prevents index use either way, so the
-# win is doing the GROUP BY once instead of once per canonical row).
+# win is doing the GROUP BY once instead of once per canonical row). The
+# `last_seen_at` half of this formula is UNCHANGED from the version the
+# property test and the Tier-4 review verified against 12,337 production
+# rows with 0 mismatches — only `url` is new (F-B), pulled from the SAME
+# per-group anchor row via SQLite's documented bare-column rule (exactly
+# one MAX() aggregate present -> every bare column takes its value from the
+# row that produced the max), exactly how the pre-0021 `buyable_last_seen`
+# CTE computed `url AS current_url` alongside `MAX(observed_at)` in one
+# query. Verified empirically before use (not assumed): a group of 3 rows
+# with distinct urls and observed_at values backfills the group's
+# max-observed_at row's url onto every row in the group.
 _BACKFILL_PRICEOBS_LAST_SEEN_SQL = """
 UPDATE priceobservation
-SET last_seen_at = grp.last_seen
+SET last_seen_at = grp.last_seen,
+    url = grp.current_url
 FROM (
-    SELECT COALESCE(is_duplicate_of, id) AS canonical_id, MAX(observed_at) AS last_seen
+    SELECT COALESCE(is_duplicate_of, id) AS canonical_id,
+           MAX(observed_at) AS last_seen,
+           url AS current_url
     FROM priceobservation
     GROUP BY COALESCE(is_duplicate_of, id)
 ) AS grp
@@ -111,14 +207,34 @@ WHERE priceobservation.id = grp.canonical_id
 """
 _BACKFILL_PRODUCTOBS_LAST_SEEN_SQL = """
 UPDATE productobservation
-SET last_seen_at = grp.last_seen
+SET last_seen_at = grp.last_seen,
+    url = grp.current_url
 FROM (
-    SELECT COALESCE(is_duplicate_of, id) AS canonical_id, MAX(observed_at) AS last_seen
+    SELECT COALESCE(is_duplicate_of, id) AS canonical_id,
+           MAX(observed_at) AS last_seen,
+           url AS current_url
     FROM productobservation
     GROUP BY COALESCE(is_duplicate_of, id)
 ) AS grp
 WHERE productobservation.id = grp.canonical_id
   AND productobservation.is_duplicate_of IS NULL
+"""
+
+# F-A restore path: an exact copy of what downgrade() stashed, keyed by id
+# (not by any group formula — the whole point is that the group can no
+# longer be reconstructed). Only ever runs when the stash table exists,
+# i.e. only on a re-upgrade after a downgrade.
+_RESTORE_PRICEOBS_LAST_SEEN_FROM_STASH_SQL = f"""
+UPDATE priceobservation
+SET last_seen_at = stash.last_seen_at
+FROM {_PRICEOBS_LASTSEEN_STASH} AS stash
+WHERE priceobservation.id = stash.id
+"""
+_RESTORE_PRODUCTOBS_LAST_SEEN_FROM_STASH_SQL = f"""
+UPDATE productobservation
+SET last_seen_at = stash.last_seen_at
+FROM {_PRODUCTOBS_LASTSEEN_STASH} AS stash
+WHERE productobservation.id = stash.id
 """
 
 _DELETE_PRICEOBS_DUPLICATES_SQL = (
@@ -285,9 +401,26 @@ def upgrade() -> None:
     op.execute(DROP_BOOK_HISTORY_SUMMARY_VIEW_SQL)
     op.execute(DROP_PRODUCT_HISTORY_SUMMARY_VIEW_SQL)
 
+    bind = op.get_bind()
+    price_has_stash = _table_exists(bind, _PRICEOBS_LASTSEEN_STASH)
+    product_has_stash = _table_exists(bind, _PRODUCTOBS_LASTSEEN_STASH)
+
     # --- priceobservation ---
     op.add_column("priceobservation", sa.Column("last_seen_at", sa.DateTime(), nullable=True))
+    # Always runs first: correct on a genuine first-time upgrade (real
+    # is_duplicate_of groups), and a harmless no-op for last_seen_at on a
+    # re-upgrade (every group has collapsed to a singleton, so it just sets
+    # last_seen_at = observed_at) that the stash restore below immediately
+    # corrects. `url` is right either way — its own group is unaffected by
+    # whether this is a first upgrade or a re-upgrade.
     op.execute(_BACKFILL_PRICEOBS_LAST_SEEN_SQL)
+    if price_has_stash:
+        # F-A: a re-upgrade after a downgrade. Restore the exact prior
+        # last_seen_at values instead of trusting the group-max formula
+        # above, which can no longer see the (already-deleted) heartbeat
+        # rows those values used to be derived from.
+        op.execute(_RESTORE_PRICEOBS_LAST_SEEN_FROM_STASH_SQL)
+        op.execute(f"DROP TABLE {_PRICEOBS_LASTSEEN_STASH}")
     op.execute(_DELETE_PRICEOBS_DUPLICATES_SQL)
     with op.batch_alter_table("priceobservation", naming_convention=_NAMING) as batch_op:
         batch_op.alter_column("last_seen_at", existing_type=sa.DateTime(), nullable=False)
@@ -298,9 +431,12 @@ def upgrade() -> None:
             "ix_obs_book_source_lastseen", ["book_id", "source", "last_seen_at"],
         )
 
-    # --- productobservation ---
+    # --- productobservation --- (mirrors priceobservation exactly)
     op.add_column("productobservation", sa.Column("last_seen_at", sa.DateTime(), nullable=True))
     op.execute(_BACKFILL_PRODUCTOBS_LAST_SEEN_SQL)
+    if product_has_stash:
+        op.execute(_RESTORE_PRODUCTOBS_LAST_SEEN_FROM_STASH_SQL)
+        op.execute(f"DROP TABLE {_PRODUCTOBS_LASTSEEN_STASH}")
     op.execute(_DELETE_PRODUCTOBS_DUPLICATES_SQL)
     with op.batch_alter_table("productobservation", naming_convention=_NAMING) as batch_op:
         batch_op.alter_column("last_seen_at", existing_type=sa.DateTime(), nullable=False)
@@ -323,8 +459,27 @@ def downgrade() -> None:
     op.execute(DROP_BOOK_HISTORY_SUMMARY_VIEW_SQL)
     op.execute(DROP_PRODUCT_HISTORY_SUMMARY_VIEW_SQL)
 
-    # Heartbeat data cannot be recovered — every row downgrades to
-    # is_duplicate_of=NULL (all "canonical"), documented data loss.
+    # F-A: snapshot last_seen_at before it's dropped below, so a subsequent
+    # upgrade() can restore it exactly rather than re-deriving it from
+    # is_duplicate_of groups this downgrade is about to make meaningless
+    # (every row goes back to is_duplicate_of=NULL, i.e. its own singleton
+    # group). `DROP ... IF EXISTS` first so repeated downgrade calls without
+    # an intervening upgrade stay idempotent rather than erroring on a
+    # leftover stash from a previous cycle.
+    op.execute(f"DROP TABLE IF EXISTS {_PRICEOBS_LASTSEEN_STASH}")
+    op.execute(
+        f"CREATE TABLE {_PRICEOBS_LASTSEEN_STASH} AS "
+        "SELECT id, last_seen_at FROM priceobservation"
+    )
+    op.execute(f"DROP TABLE IF EXISTS {_PRODUCTOBS_LASTSEEN_STASH}")
+    op.execute(
+        f"CREATE TABLE {_PRODUCTOBS_LASTSEEN_STASH} AS "
+        "SELECT id, last_seen_at FROM productobservation"
+    )
+
+    # Heartbeat ROWS cannot be recovered — every row downgrades to
+    # is_duplicate_of=NULL (all "canonical"), documented data loss (D15).
+    # last_seen_at itself is NOT lost, per the stash above (F-A).
     with op.batch_alter_table("priceobservation", naming_convention=_NAMING) as batch_op:
         batch_op.drop_index("ix_obs_book_source_lastseen")
         batch_op.create_index("ix_priceobservation_book_id", ["book_id"])
