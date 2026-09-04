@@ -526,6 +526,43 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     return None
 
 
+# T2.5: the project's worst data bug (finding F1). A cookieless visitor gets
+# shown Amazon's first-order promotional "FREE delivery" promise — a price
+# the household would not actually pay on a repeat order — and the old
+# parser recorded it as shipping_minor=0 indistinguishably from a genuine
+# free-shipping offer. Confirmed live twice: the wave0 probe's capture of a
+# different ASIN, and `tests/fixtures/amazon/products/B0F3NVWM37-uk-aod-
+# 2026-09-04.html` (8 of 10 real AOD rows), both reading verbatim `FREE
+# delivery <dates> on your first order to UK or Ireland`. Only "on your
+# first order" is matched — the plan also guessed at "on orders over" and
+# "with Prime" as further conditional markers, but neither appears in any
+# capture on file as an actual delivery promise: "on orders over" doesn't
+# appear at all, and "with Prime" only ever shows up in unrelated product-
+# variant JSON ("PRIME_SAVINGS_UPSELL":"With Prime"), never near a delivery
+# line. Match evidence, not guesses; widen this only against a new capture.
+_CONDITIONAL_DELIVERY_RE = re.compile(r"on your first order", re.IGNORECASE)
+
+
+def _conditional_free_shipping_to_unknown(
+    shipping_minor: int | None, delivery_text: str | None
+) -> int | None:
+    """T2.5: when `shipping_minor` reads as free (0) but `delivery_text`
+    is a conditional promise (currently: "on your first order"), the
+    shipping cost is unknown, not zero — return `None` so downstream
+    (`effective_shipping`) substitutes the cascade estimate and reports
+    `is_estimate=True` instead of ranking the offer on a price the buyer
+    won't actually get. A genuinely unconditional "FREE delivery" (no
+    conditional marker in the text) is untouched and stays 0; a paid
+    delivery charge is untouched regardless of wording, since this only
+    ever fires on `shipping_minor == 0`.
+    """
+    if shipping_minor != 0:
+        return shipping_minor
+    if delivery_text is not None and _CONDITIONAL_DELIVERY_RE.search(delivery_text):
+        return None
+    return shipping_minor
+
+
 def parse_dp(
     html: str,
     fallback_url: str,
@@ -584,6 +621,7 @@ def parse_dp(
     seller = _extract_dp_seller(tree)
     shipping_minor = _extract_dp_shipping_minor(tree)
     delivery_text = _extract_dp_delivery_text(tree)
+    shipping_minor = _conditional_free_shipping_to_unknown(shipping_minor, delivery_text)
     condition = _extract_dp_condition(tree, seller)
 
     return [
@@ -675,6 +713,7 @@ def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | Non
 
     shipping_minor = _extract_shipping_minor(row)
     delivery_text = _extract_offer_delivery_text(row)
+    shipping_minor = _conditional_free_shipping_to_unknown(shipping_minor, delivery_text)
     condition = _extract_condition(row)
     seller = _extract_offer_seller(row)
 

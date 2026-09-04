@@ -674,3 +674,109 @@ def test_parse_offer_listing_raises_and_writes_debug_capture_on_unrecognized_pag
     dumps = list((tmp_path / "amazon_uk_product").glob("*.html"))
     assert len(dumps) == 1
     assert dumps[0].read_text(encoding="utf-8") == html
+
+
+# --- T2.5: conditional "first order" delivery promise -----------------------
+
+
+def test_conditional_free_shipping_to_unknown_matches_the_evidenced_marker() -> None:
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    # The exact verbatim wording confirmed live (wave0 probe + the
+    # B0F3NVWM37 fixture below) — must become unknown, not stay free.
+    assert _conditional_free_shipping_to_unknown(
+        0, "FREE delivery 19 - 23 October on your first order to UK or Ireland."
+    ) is None
+    # Case-insensitive, and tolerant of the surrounding wording varying.
+    assert _conditional_free_shipping_to_unknown(
+        0, "Free Delivery Monday, 18 May ON YOUR FIRST ORDER to UK or Ireland."
+    ) is None
+    assert _conditional_free_shipping_to_unknown(
+        0, "on your first order"
+    ) is None
+
+
+def test_conditional_free_shipping_to_unknown_leaves_genuine_cases_alone() -> None:
+    """The other half of the fix: conflating "free" with "unknown" would
+    be a different bug of the same size. A genuinely unconditional free
+    offer must stay 0, and a paid charge must never be touched regardless
+    of what the text says (the function only ever acts on shipping==0)."""
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    assert _conditional_free_shipping_to_unknown(0, "FREE delivery Monday, 18 May.") == 0
+    assert _conditional_free_shipping_to_unknown(0, None) == 0
+    assert _conditional_free_shipping_to_unknown(None, None) is None
+    # Paid charge is untouched even if the text happened to mention the
+    # marker (can't happen on real Amazon markup, but the guard is
+    # "shipping_minor == 0", not "text contains the marker", on purpose).
+    assert _conditional_free_shipping_to_unknown(
+        280, "£2.80 delivery on your first order to UK or Ireland."
+    ) == 280
+
+
+def test_parse_offer_listing_first_order_promo_becomes_unknown_shipping() -> None:
+    """THE T2.5 acceptance test — this is the proof the S1 bug (finding F1,
+    8 of 9 offers on a live page recorded as free shipping when the promise
+    was a first-order-only promo) is fixed.
+
+    Real capture, B0F3NVWM37, 10 genuine AOD offer rows: 8 read "FREE
+    delivery ... on your first order to UK or Ireland" and must come back
+    with shipping_minor=None (unknown -> effective_shipping falls back to
+    the cascade estimate). The remaining 2 rows are the control: one
+    genuinely unconditional "FREE delivery" (no marker) must stay 0, and
+    one real paid charge ("£2.99 delivery") must stay 299 untouched.
+    """
+    html = (PRODUCT_FIXTURES / "B0F3NVWM37-uk-aod-2026-09-04.html").read_text(
+        encoding="utf-8"
+    )
+    offers = parse_offer_listing(
+        html, fallback_url="https://x.example/", source_name="amazon_uk_product"
+    )
+    assert len(offers) == 10
+
+    conditional = [
+        o for o in offers
+        if o.delivery_text and "on your first order" in o.delivery_text.lower()
+    ]
+    assert len(conditional) == 8, "expected 8 of 10 real rows to carry the promo"
+    assert all(o.shipping_minor is None for o in conditional), (
+        "every first-order-promo row must report unknown shipping, not free"
+    )
+
+    unconditional_free = [
+        o for o in offers
+        if o.delivery_text
+        and o.delivery_text.lower().startswith("free delivery")
+        and "on your first order" not in o.delivery_text.lower()
+    ]
+    assert len(unconditional_free) == 1
+    assert unconditional_free[0].shipping_minor == 0, (
+        "a genuinely unconditional free offer must NOT be conflated with unknown"
+    )
+
+    paid = [o for o in offers if o.delivery_text and o.delivery_text.startswith("£")]
+    assert len(paid) == 1
+    assert paid[0].shipping_minor == 299, "a real paid charge must be untouched"
+
+
+def test_parse_dp_first_order_promo_becomes_unknown_shipping() -> None:
+    """T2.5 applies wherever delivery_text is captured, not just the
+    offer-listing path — the dp buy-box is exposed to the exact same
+    promo."""
+    html = _load("9780747532699-uk-dp-conditional-delivery.html")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
+    assert len(offers) == 1
+    o = offers[0]
+    assert o.delivery_text is not None
+    assert "on your first order" in o.delivery_text.lower()
+    assert o.shipping_minor is None
+
+    # Control: the pre-existing free/paid dp fixtures (no conditional
+    # wording) must be completely unaffected by this change.
+    free_html = _load("9780747532699-uk-dp-free-delivery.html")
+    free_offers = parse_dp(free_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert free_offers[0].shipping_minor == 0
+
+    paid_html = _load("9780747532699-uk-dp-paid-delivery.html")
+    paid_offers = parse_dp(paid_html, fallback_url="https://www.amazon.co.uk/dp/x")
+    assert paid_offers[0].shipping_minor == 280
