@@ -5,7 +5,26 @@ import { AlertsSidebar } from "@/components/alerts/AlertsSidebar";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/layout/ThemeToggle";
 import { apiGet, ApiError } from "@/api/client";
+import { useAlerts } from "@/hooks/useAlerts";
 import { cn, navLinkClass } from "@/lib/utils";
+
+// Same `{ dismissed: false, limit: 20 }` query `AlertsSidebar` already runs
+// — same query key, so TanStack Query shares one cached subscription (one
+// network request) between the badge and the sidebar when both are
+// mounted, rather than this badge triggering a second fetch. The alerts
+// feed is already a union over books and products (`item_kind` on every
+// row — see `useAlerts.ts`/`AlertItem.tsx`), so the count is correct for
+// both without any book-only filtering to remove.
+function AlertsNavBadge() {
+  const alertsQuery = useAlerts({ dismissed: false, limit: 20 });
+  const count = alertsQuery.data?.items.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <span className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-primary px-1 py-0.5 text-[10px] font-medium leading-none text-primary-foreground">
+      {count === 20 ? "20+" : count}
+    </span>
+  );
+}
 
 const SIDEBAR_STORAGE_KEY = "book-alerter:alerts-sidebar-open";
 
@@ -97,6 +116,7 @@ export function AppShell() {
             </NavLink>
             <NavLink to="/alerts" className={navLinkClass}>
               Alerts
+              <AlertsNavBadge />
             </NavLink>
             <NavLink to="/settings" className={navLinkClass}>
               Settings

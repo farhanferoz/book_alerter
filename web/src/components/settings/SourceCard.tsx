@@ -383,9 +383,17 @@ function LastRunBadge({ source }: { source: SourceStatus }) {
         : last.status === "partial"
           ? "text-amber-600 dark:text-amber-400"
           : "text-muted-foreground";
+  // `books_attempted`/`books_succeeded` on `SourceRunOut` are named for
+  // books historically but hold whatever kind(s) this source actually ran
+  // last (a product-only source like `amazon_uk_product` reports its
+  // product counts here) — previously only visible by expanding "Recent
+  // runs" below; surfaced here too so a glance at the card shows it.
   return (
     <span className={`text-xs ${tone}`}>
-      Last run: {last.status} · {formatRelativeTime(last.started_at)}
+      Last run: {last.status}
+      {last.books_attempted > 0 &&
+        ` · ${last.books_succeeded}/${last.books_attempted} succeeded`}{" "}
+      · {formatRelativeTime(last.started_at)}
     </span>
   );
 }
