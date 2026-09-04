@@ -201,10 +201,16 @@ class AlertPipeline:
         for k in kinds:
             # At this point detect_alert_kinds guarantees current_best is non-None.
             assert stats.current_best_total_minor is not None
+            # D34: every user-facing price reads current_effective_total_minor,
+            # never current_best_total_minor (item-only when shipping was never
+            # observed — scheduler._persist folds unknown shipping to 0 before
+            # storing total_minor). Guaranteed non-None here: it's None only
+            # when current_best_total_minor is (see _stats_for_one_item).
+            assert stats.current_effective_total_minor is not None
             alert = self.models.alert_model(
                 **{self.models.alert_item_id_attr: item.id},
                 kind=k,
-                price_minor=stats.current_best_total_minor,
+                price_minor=stats.current_effective_total_minor,
                 currency=item.currency,
                 source=stats.current_best_source or "",
                 condition=stats.current_best_condition or "",
@@ -280,24 +286,48 @@ class AlertPipeline:
         percentage — the prior `(was median X, +P%)` format made
         "below median" read as a positive number, which most readers
         parsed as ABOVE median. See commit `0051dea`.
+
+        `current` is `current_effective_total_minor` (D34), not
+        `current_best_total_minor` — the latter is item-only when shipping
+        was never observed, and `stats.windows[...].p50` is built from
+        cascade-*imputed* totals, so comparing the raw total against it
+        would mix two different metrics (S3).
         """
         assert stats.current_best_total_minor is not None
-        current = stats.current_best_total_minor
+        assert stats.current_effective_total_minor is not None
+        current = stats.current_effective_total_minor
         item_minor = stats.current_best_price_minor
         ship_minor = stats.current_best_shipping_minor
         ccy = item.currency
-        if item_minor is not None and ship_minor is not None:
-            if ship_minor == 0:
-                breakdown = f" (item {item_minor / 100:.2f}, free ship)"
-            else:
-                breakdown = (
-                    f" (item {item_minor / 100:.2f} + "
-                    f"{ship_minor / 100:.2f} ship)"
-                )
-        else:
-            # current_best_* came from a non-buyable row (shipping unknown);
+        # Four-way split matched from the existing, already-correct FE
+        # treatment (web/src/components/books/detail/SnapshotCard.tsx) —
+        # "free shipping" / "incl. £X shipping" / "shipping not listed
+        # (ranked using ~£X estimate)" / "shipping not listed" — kept in
+        # this message's existing "(item X ...)" parenthetical shape
+        # rather than the card's dot-separated line, so the two surfaces
+        # agree on substance without the notification inventing its own
+        # wording for "we don't actually know the shipping".
+        if item_minor is None:
+            # current_best_price_minor came from a non-buyable row;
             # alerts shouldn't normally fire on these but stay defensive.
             breakdown = ""
+        elif ship_minor == 0:
+            breakdown = f" (item {item_minor / 100:.2f}, free shipping)"
+        elif ship_minor is not None:
+            breakdown = (
+                f" (item {item_minor / 100:.2f}, incl. "
+                f"{ship_minor / 100:.2f} shipping)"
+            )
+        elif stats.shipping_estimate_minor is not None:
+            breakdown = (
+                f" (item {item_minor / 100:.2f}; shipping not listed, "
+                f"ranked using ~{stats.shipping_estimate_minor / 100:.2f} estimate)"
+            )
+        else:
+            # Defensive: today's _stats_for_one_item always sets
+            # shipping_estimate_minor alongside a NULL current_best_
+            # shipping_minor, so this branch shouldn't fire in practice.
+            breakdown = f" (item {item_minor / 100:.2f}; shipping not listed)"
 
         cfg_label = label_for_days(stats.percentile_window_days)
         delta = ""
