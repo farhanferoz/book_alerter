@@ -83,6 +83,41 @@ docker compose up -d
 - The container runs as an unprivileged `pwuser` (uid/gid 1001) under `init: true` with `shm_size: 1gb` so Playwright's Chromium has enough `/dev/shm` to render non-trivial pages.
 - Port `8000` is published on `0.0.0.0` so Tailscale peers can reach it; lock down at the Tailscale ACL or firewall layer. Bind to `127.0.0.1:8000:8000` in `docker-compose.yml` if you're behind a reverse proxy on the same host.
 
+## Deploying to the NAS
+
+The NAS compose file is **not** kept in this repo. It is tracked in the
+`workspace-sync` repo at `nas/compose/book_alerter/docker-compose.yml`, which is the
+source of truth and is synced one way (repo → NAS) by `nas/deploy_compose.sh`; a drift
+check fails if the NAS copy diverges. `book_alerter` is deliberately excluded from the
+fleet auto-updater, so publishing a new image is always a manual act.
+
+Container Station's docker binary is **not on the PATH** for a non-interactive ssh, so
+deploy commands must use its full path.
+
+```bash
+NASDOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+
+# 1. Back up first if the release carries a migration.
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
+  cp book_alerter.db book_alerter.db.pre-$(date +%Y%m%d)"
+
+# 2. Publish. Pushing to master is what triggers the GHCR image build
+#    (.github/workflows/build.yml); pushing a branch does not.
+git checkout master && git merge --no-ff <branch> && git push origin master
+gh run watch --repo farhanferoz/book_alerter
+
+# 3. Deploy.
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter && \
+  $NASDOCKER compose pull && $NASDOCKER compose up -d"
+
+# 4. After a row-deleting migration, reclaim the freed space.
+ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
+  sqlite3 book_alerter.db 'VACUUM'"
+```
+
+Then check `/api/health` (it reports `janitor_last_run_at`) and re-run
+`scripts/smoke_check.py` against a fresh copy of the deployed database.
+
 ## Adding a tracked book
 
 Via the UI: click **Add book**, paste an ISBN-10 or ISBN-13, confirm the metadata lookup.

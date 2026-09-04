@@ -80,60 +80,22 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
 - **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe above),
   `/checkpoint --final`. NAS deploy stays out of scope.
 
-### WHERE BOOK_ALERTER'S CONTAINER LIVES (answered 2026-09-04, all verified by diff)
-The user asked; `~/dev/workspace-sync` now organises the fleet. Three copies of the NAS compose
-file exist and one of them is stale:
+### Where the container lives (answered 2026-09-04, verified by diff)
+- Live: `/share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml` on the NAS.
+- **Source of truth: `~/dev/workspace-sync/nas/compose/book_alerter/docker-compose.yml`** —
+  byte-identical to live, synced one way (repo → NAS) by `nas/deploy_compose.sh`, drift-checked.
+  `book_alerter` is deliberately excluded from `tools/fleet-update`, so image updates are manual.
+- ⚠️ **TODO (deferred at checkpoint):** this repo's `docker-compose.nas.yml` is a **third copy
+  that nothing syncs and has already drifted** (missing `labels: ["lifecycle=service"]`). Delete
+  it — README's new "Deploying to the NAS" section now carries the real instructions, and only a
+  historical `docs/CHANGELOG.md` line references the file.
+- Full runbook: `README.md` → "Deploying to the NAS".
 
-| Copy | Status |
-|---|---|
-| `/share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml` (NAS) | **LIVE** |
-| `~/dev/workspace-sync/nas/compose/book_alerter/docker-compose.yml` | **SOURCE OF TRUTH — byte-identical to live** |
-| `~/dev/book_alerter/docker-compose.nas.yml` | ⚠️ **STALE** — missing `labels: ["lifecycle=service"]`; synced by nothing |
-
-- workspace-sync syncs **one way, repo → NAS**, via `nas/deploy_compose.sh` (`--apply`; default is
-  a dry-run drift report). It deliberately does **not** recreate containers. `validate.sh
-  check nas/compose-files` fails on drift.
-- **`book_alerter` is EXCLUDED ON PURPOSE from `tools/fleet-update`** — named in that file's
-  exclusion list and absent from its `services:` block, so the weekly auto-updater will never
-  touch its image. Deploying a new image is a deliberate manual act.
-- **TODO (not done, deliberately deferred at checkpoint):** delete this repo's stale
-  `docker-compose.nas.yml` and point the README's deploy section at workspace-sync. It is
-  referenced only by a historical `docs/CHANGELOG.md` line, so removal is safe. Leaving a third,
-  unsynced copy of a deployment file is exactly the drift class workspace-sync exists to end —
-  and this one has already drifted by one line.
-
-### Deployment handover (verified environment, NOT executed — deploy is out of scope)
-Production today: container `book_alerter`, image `ghcr.io/farhanferoz/book_alerter:latest`,
-**Up 21 hours (healthy)**, compose at `/share/CACHEDEV1_DATA/Container/book_alerter/` (note:
-`docker-compose.yml` there, plus a `.env`).
-
-⚠️ **The plan §5 deploy command fails as written.** `which docker` returns *nothing* over a
-non-interactive ssh to the NAS — Container Station's binary is not on that PATH. Use the full
-path (verified: Docker Compose v2.29.1-qnap2):
-
-```bash
-NASDOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
-
-# 1. Back up BEFORE deploying — migration 0021 deletes ~78k rows.
-ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
-  cp book_alerter.db book_alerter.db.pre-0021-$(date +%Y%m%d)"
-
-# 2. Publish. Pushing to master is what triggers the GHCR image build
-#    (.github/workflows/build.yml); pushing the branch alone does not.
-git checkout master && git merge --no-ff wave-execution
-GH_TOKEN=$(gh auth token --user farhanferoz) git push origin master
-
-# 3. Wait for the build, then deploy.
-gh run watch --repo farhanferoz/book_alerter
-ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter && \
-  $NASDOCKER compose pull && $NASDOCKER compose up -d"
-
-# 4. After the migration has run once, reclaim the space it freed.
-ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
-  sqlite3 book_alerter.db 'VACUUM'"
-```
-Then check `/api/health` (it now reports `janitor_last_run_at`) and re-pull a DB copy to re-run
-`scripts/smoke_check.py` against the deployed state.
+### Deployment handover
+- **The runbook now lives in `README.md` → "Deploying to the NAS"** (verified 2026-09-04:
+  full docker path required, GHCR build triggers on `master` only, pre-migration backup,
+  post-migration `VACUUM`). Deploying is **out of scope** for this run — "ready for
+  deployment" is the bar the user set.
 
 ### Pushing (verified 2026-09-04, dry-run only — nothing pushed yet)
 The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
@@ -148,18 +110,6 @@ GH_TOKEN=$(gh auth token --user farhanferoz) git push origin wave-execution
 Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. Note that a push to
 **`master`** triggers `.github/workflows/build.yml` and publishes a GHCR image — that is the step
 that makes the work deployable, and it is the last thing to do, after review.
-
-### Verified operational facts (root, 2026-09-04)
-- **Backup restore path is lossless.** A real 49.9 MB backup compresses to 6.6 MB (86.8%), and
-  `gunzip -c <file>.gz > book_alerter.db` yields a **byte-identical** database (md5 match) that
-  boots and serves. Satisfies the §8 clause "restore path documented and tested once against a
-  copy". The README restore instructions are correct as written.
-- **Janitor against real NAS artefacts:** 87.8% of sampled bytes freed in 0.84 s; every deletion
-  audited individually (stale keepa charts past the 24 h-TTL horizon, plus one orphaned chart and
-  cover for an item no longer tracked).
-- **Fixture/test audit:** 7 committed product fixtures currently have no test loading them —
-  T4.2 is now a hard gate to fix that (see its plan entry).
-- **Logging audit:** no per-item INFO logging in the source layer; §8 clause met.
 
 ### Pending gates before the endgame
 - **Re-run the Docker e2e from committed HEAD once T3.2 lands.** A run on 2026-09-04 gave
@@ -220,24 +170,8 @@ that makes the work deployable, and it is the last thing to do, after review.
 - Cleanup standard — plan §8 binds every task; janitor T6.5; repo tidy T6.6.
 
 ### Decisions
-- See `DECISIONS.md` (D1–D19 in force; Q1–Q4 open). Run-local decisions taken autonomously:
-- **D20** (2026-09-04) Git history restored by cloning the GitHub remote and moving `.git` into
-  the existing working copy, rather than relocating work to a fresh clone. Reversible; the
-  working tree was already identical to `origin/master`. Continuity files (`CHANGELOG.md`,
-  `DECISIONS.md`, ccage pid files) are excluded via `.git/info/exclude` so no task commit can
-  sweep them in. `RESUME.md` is tracked upstream already — left tracked, never staged by tasks.
-- **D21** (2026-09-04) Waves 0 and 3 run **concurrently**, deviating from the plan's stated
-  `0 → 1 → (2 ∥ 3)` ordering. Rationale: their write sets are provably disjoint (Wave 0 =
-  `scripts/`, `tests/fixtures/`, the probe-results doc; Wave 3 = `stats.py`, `db/views.py`,
-  migrations, `api/`), and T0.2 has an irreducible ≥2 h wall-clock requirement that would
-  otherwise idle the run. No Wave 3 task consumes a Wave 0 output.
-- **D22** (2026-09-04) Added **T6.7: validation harness** (`scripts/smoke_check.py`) — boots the
-  real app against a copy of the production DB and exercises the real endpoints, asserting
-  structural invariants and timing. Rationale: the user's explicit instruction that validation
-  must be real ("not just unit tests") and fast (<1 min). Built early so it captures baseline
-  behaviour and can then catch regressions from every later wave. It asserts health/shape/timing
-  invariants, never the buggy pricing behaviour Wave 2 is fixing.
-
+- See `DECISIONS.md` — D1–D31 in force, Q1/Q2/Q4 open (Q1 and Q3 resolved).
+  Run-local rulings from this execution are D20–D31 there; nothing decision-shaped lives here.
 ### Plan
 - `/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`
   — now carries a checkbox per task (39 incl. T6.7); **the checkboxes are the authoritative
@@ -247,12 +181,27 @@ that makes the work deployable, and it is the last thing to do, after review.
 - Prod DB read-only snapshot in the session scratchpad (`proddb/book_alerter.db` + WAL), pulled
   2026-09-04 15:54. Not in the repo. No probe rows written to production.
 
-## Session 2026-09-04 (review)
-Read-only review of the whole codebase against a production DB copy and the live NAS instance.
-Established that shipping is now rarely missing but the same Amazon offer flips between £0 and
-£2.80 across scrapes (337 of 2,952 offers), WoB shipping is hard-coded to zero, unknown shipping
-ranks as free, and there is no Prime setting; that no product has ever existed in production
-although the add → refetch → stats flow works when Amazon isn't serving a bot challenge; that
-the browser presents `HeadlessChrome` from a fresh profile per item; and that the dashboard runs
-the stats view once per book. Plan written with 38 tasks in six waves plus a binding cleanup
-standard; decisions D10–D19 and open questions Q1–Q4 recorded.
+## Session 2026-09-04
+Two phases in one day. **Morning:** read-only review of the whole codebase against a production
+copy, producing the 38-task plan and findings F1–F25.
+
+**Afternoon — autonomous execution of that plan**, four workers under a dispatcher. 22 of 40
+tasks ticked (T6.7 and T6.8 were added mid-run; T1.2 was dropped on evidence). The plan's one
+stated blocker was cleared first: git history was cloned back from the GitHub remote.
+
+The headline result is that **F1, the shipping bug the plan was written around, is fixed and
+proven**. It was not what the plan hypothesised: Amazon serves a cookieless visitor a
+*conditional* "FREE delivery … on your first order" promise, and the parser recorded £0.00 —
+8 of 9 offers wrong on a live capture. Postcode pinning (the plan's theory) does not work and
+made no difference, so T1.2 was dropped and T2.5 now maps a conditional promise to unknown
+shipping. Verified on one real 10-offer page: 8 → unknown, the genuinely-free row still free,
+the paid row untouched. Also fixed: F3 (unknown shipping ranked as free), F8 (product alerts
+written but never shown), F17 (`GET /api/books` 2101 ms → 453 ms), F2, F12, F26.
+
+Three findings corrected the plan itself (`channel="chromium"` does not clear the
+`HeadlessChrome` UA; the `#twister` marker is stale; F12 was wrong in a worse way — "Delete"
+warned about a cascading delete and silently archived). A new S1, **F26**: Amazon can serve a
+*different ASIN's* page with no bot markers, attributing one product's prices to another.
+
+Not finished: the heartbeat-compaction commit (verified but uncommitted — see `### Next`), the
+Prime toggle, add-product reliability, and the endgame (review tiers, plan audit, push).
