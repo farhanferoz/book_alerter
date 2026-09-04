@@ -85,6 +85,18 @@ Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. No
 **`master`** triggers `.github/workflows/build.yml` and publishes a GHCR image — that is the step
 that makes the work deployable, and it is the last thing to do, after review.
 
+### Verified operational facts (root, 2026-09-04)
+- **Backup restore path is lossless.** A real 49.9 MB backup compresses to 6.6 MB (86.8%), and
+  `gunzip -c <file>.gz > book_alerter.db` yields a **byte-identical** database (md5 match) that
+  boots and serves. Satisfies the §8 clause "restore path documented and tested once against a
+  copy". The README restore instructions are correct as written.
+- **Janitor against real NAS artefacts:** 87.8% of sampled bytes freed in 0.84 s; every deletion
+  audited individually (stale keepa charts past the 24 h-TTL horizon, plus one orphaned chart and
+  cover for an item no longer tracked).
+- **Fixture/test audit:** 7 committed product fixtures currently have no test loading them —
+  T4.2 is now a hard gate to fix that (see its plan entry).
+- **Logging audit:** no per-item INFO logging in the source layer; §8 clause met.
+
 ### Integration status (root-verified on a clean checkout of the branch tip)
 - **2026-09-04, commit `31b0b03`: `uv run pytest -q` → 520 passed, 3 skipped, 0 failed** (22 s).
   Baseline before this run was 426 passed. The earlier red state (11 `test_book_stats_view.py`
