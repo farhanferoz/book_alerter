@@ -41,7 +41,11 @@ import {
 
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ItemObservation } from "@/lib/item";
-import { formatDateTime, formatMoneyMinor } from "@/lib/format";
+import {
+  formatDateTime,
+  formatMoneyMinor,
+  sourceDisplayName,
+} from "@/lib/format";
 
 type Range = "7d" | "30d" | "90d" | "all";
 
@@ -74,21 +78,6 @@ const SERIES_COLORS = [
   "#65a30d", // lime-600
 ];
 
-// One readable label per source; unknown sources fall back to the raw key.
-// (`amazon` and `amazon_uk_product` never co-occur on one item, so collapsing
-// both to "Amazon" is safe.)
-const SOURCE_LABEL: Record<string, string> = {
-  amazon: "Amazon",
-  amazon_uk_product: "Amazon",
-  wob: "World of Books",
-  bookfinder: "eBay (BookFinder)",
-  keepa: "Keepa",
-};
-
-function sourceLabel(source: string): string {
-  return SOURCE_LABEL[source] ?? source;
-}
-
 type ChartRow = { ts: number } & Record<string, number | null>;
 
 // An offer as a live interval. Dedup keeps only the FIRST sighting of a stable
@@ -109,7 +98,7 @@ function buildSeries(observations: ItemObservation[], range: Range): {
   for (const o of observations) {
     const last = new Date(o.last_seen).getTime();
     if (last < cutoff) continue;
-    const key = sourceLabel(o.source);
+    const key = sourceDisplayName(o.source);
     const offers = bySource.get(key) ?? [];
     offers.push({
       observed: new Date(o.observed_at).getTime(),

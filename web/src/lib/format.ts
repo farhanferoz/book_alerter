@@ -102,6 +102,23 @@ export function isBookfinderSourcedLabel(
   return source === "bookfinder";
 }
 
+// Prose-friendly source name for banners/legends (contrast with
+// `displaySourceLabel` above, which uppercases the raw key for compact table
+// cells). `amazon` and `amazon_uk_product` never co-occur on one item, so
+// collapsing both to "Amazon" is safe; unknown sources fall back to the raw
+// key.
+const SOURCE_DISPLAY_NAME: Record<string, string> = {
+  amazon: "Amazon",
+  amazon_uk_product: "Amazon",
+  wob: "World of Books",
+  bookfinder: "eBay (BookFinder)",
+  keepa: "Keepa",
+};
+
+export function sourceDisplayName(source: string): string {
+  return SOURCE_DISPLAY_NAME[source] ?? source;
+}
+
 export function formatCondition(
   condition: string | null | undefined,
 ): string {

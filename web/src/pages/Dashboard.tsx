@@ -15,7 +15,9 @@ import { DataTable } from "@/components/books/BookTable";
 import { buildBookColumns } from "@/components/books/columns";
 import { bookSignal, type Signal } from "@/components/books/signal";
 import { useBooks, type Book } from "@/hooks/useBooks";
+import { useSources } from "@/hooks/useSources";
 import { rank3mOrInf } from "@/lib/windows";
+import { sourceDisplayName } from "@/lib/format";
 import { formatErrorMessage } from "@/lib/utils";
 
 const SIGNAL_ORDER: Record<Signal, number> = {
@@ -97,6 +99,33 @@ function ErrorCard({ error }: { error: unknown }) {
   );
 }
 
+// Scrape-health banner (T6.1). `last_24h.challenged` is a rolled-up proxy —
+// see `SourceHealthOut` on the backend — so it's worded as "in the last 24
+// hours" (the actual window the number covers, possibly several runs) rather
+// than "in the last run", and the caveat line makes clear it isn't an exact
+// bot-block count. Fails silently (renders nothing) while loading or on
+// error — this is a supplementary heads-up, not the page's primary data.
+function ScrapeHealthBanner() {
+  const { data } = useSources();
+  const challenged = (data ?? []).filter((s) => s.last_24h.challenged > 0);
+  if (challenged.length === 0) return null;
+
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+      {challenged.map((s) => (
+        <p key={s.name}>
+          {sourceDisplayName(s.name)} blocked {s.last_24h.challenged} of{" "}
+          {s.last_24h.attempted} items in the last 24 hours.
+        </p>
+      ))}
+      <p className="mt-1 text-xs opacity-80">
+        Counts every failed scrape attempt in the window, not confirmed bot
+        blocks alone.
+      </p>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const [filters, setFilters] = useState<BookFiltersValue>(DEFAULT_FILTERS);
   const [addBookOpen, setAddBookOpen] = useState(false);
@@ -123,6 +152,8 @@ export function Dashboard() {
         </div>
         <Button onClick={onAddBook}>Add book</Button>
       </header>
+
+      <ScrapeHealthBanner />
 
       <BookFilters value={filters} onChange={setFilters} />
 

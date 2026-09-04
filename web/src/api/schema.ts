@@ -69,9 +69,9 @@ export interface paths {
          * List Observations
          * @description Paginated price history for a book (newest-first).
          *
-         *     Excludes deduplicated rows (`is_duplicate_of IS NOT NULL`). Cursor via
-         *     `before` (ISO 8601 `observed_at`); response includes `next_before` for the
-         *     next page.
+         *     Cursor via `before` (ISO 8601 `observed_at`); response includes
+         *     `next_before` for the next page. One row per distinct offer since
+         *     migration 0021 (T3.2) — no more `is_duplicate_of` rows to filter out.
          */
         get: operations["list_observations_api_books__book_id__observations_get"];
         put?: never;
@@ -222,7 +222,7 @@ export interface paths {
         /**
          * List Product Observations
          * @description Paginated price history for a product (newest-first). Mirror of the
-         *     book observations endpoint — same dedup-aware filter, same cursor shape.
+         *     book observations endpoint — same cursor shape.
          */
         get: operations["list_product_observations_api_products__product_id__observations_get"];
         put?: never;
@@ -964,18 +964,17 @@ export interface components {
         };
         /**
          * PriceObservationOut
-         * @description Wire mirror of `book_alerter.db.models.PriceObservation`.
+         * @description Wire mirror of `book_alerter.db.models.PriceObservation`. Excludes the
+         *     internal `raw` source payload.
          *
-         *     Excludes the internal `raw` source payload and the `is_duplicate_of`
-         *     dedup pointer — the observations endpoint filters duplicates out before
-         *     serializing, so the pointer is irrelevant to callers.
-         *
-         *     Each returned row is a dedup *canonical* (first-sighting) row. `observed_at`
-         *     is therefore the FIRST time this offer was seen — the right x for a price
-         *     timeline. `last_seen` is the most recent scrape that re-confirmed the offer
-         *     (MAX over the dedup group), and `url` is that latest sighting's link — the
-         *     canonical row's own link can be a stale page an older parser recorded. The
-         *     dedup key excludes url, so the latest link is for the same offer.
+         *     `observed_at` is the FIRST time this offer was seen — the right x for a
+         *     price timeline; it never changes. `last_seen` is the most recent scrape
+         *     that re-confirmed the offer and `url` is that scrape's link (a
+         *     parser-corrected link supersedes a stale one an older parser recorded)
+         *     — both live directly on the row (`PriceObservation.last_seen_at` /
+         *     `.url`), updated in place by `scheduler._persist` on every re-confirming
+         *     scrape since migration 0021 (T3.2, heartbeat compaction) replaced
+         *     duplicate-row heartbeats with this update-in-place model.
          */
         PriceObservationOut: {
             /** Id */
@@ -1207,6 +1206,36 @@ export interface components {
             max_consecutive_errors: number;
         };
         /**
+         * SourceHealthOut
+         * @description Rolled-up scrape health over the last 24 hours.
+         *
+         *     `challenged` is a **proxy**, not a direct count. `SourceRun` records only
+         *     attempted/succeeded totals, and per-item bot challenges are caught inside
+         *     the scheduler and written to `Book.last_scrape_error` (last-write-wins, no
+         *     history) rather than rolled up onto the run. So this counts every item
+         *     failure, of which bot challenges are the dominant but not the only cause.
+         *     Plan task T1.3 adds `SourceRun.items_challenged`; when it lands this
+         *     becomes an exact figure and `_last_24h_health_per_source` changes by one
+         *     line.
+         */
+        SourceHealthOut: {
+            /**
+             * Attempted
+             * @default 0
+             */
+            attempted: number;
+            /**
+             * Succeeded
+             * @default 0
+             */
+            succeeded: number;
+            /**
+             * Challenged
+             * @default 0
+             */
+            challenged: number;
+        };
+        /**
          * SourcePatch
          * @description Partial update to a `SourceConfig`. `None` means "don't change".
          *
@@ -1262,6 +1291,14 @@ export interface components {
             name: string;
             config: components["schemas"]["SourceConfigOut"];
             last_run: components["schemas"]["SourceRunOut"] | null;
+            /**
+             * @default {
+             *       "attempted": 0,
+             *       "succeeded": 0,
+             *       "challenged": 0
+             *     }
+             */
+            last_24h: components["schemas"]["SourceHealthOut"];
         };
         /** TriggerRunResult */
         TriggerRunResult: {
