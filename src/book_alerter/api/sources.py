@@ -25,9 +25,11 @@ Design notes:
 - PATCH uses Pydantic's `model_copy(update=...)`: merge only fields the caller
   explicitly set (`exclude_unset=True`) and skip `None` values so missing patch
   fields don't clobber the existing config with defaults.
-- The `last_run` query runs once per source (small `LIMIT 1` ordered by
-  `started_at DESC`). With <20 sources this stays well under the 1ms budget;
-  if source count balloons, switch to a single windowed query.
+- `GET /api/sources`' last-run-per-source lookup is one windowed query
+  (`ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC)`), not a
+  `LIMIT 1` query repeated per source (T3.3, plan 2026-09-04). `PATCH
+  /api/sources/{name}` and any other single-source caller still use the plain
+  `LIMIT 1` lookup — a windowed query is pointless overhead for one source.
 """
 
 from __future__ import annotations
@@ -36,6 +38,8 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from book_alerter.api._serializers import UtcDateTime
@@ -144,6 +148,27 @@ def _last_run_for(session, source_name: str) -> models.SourceRun | None:
     return session.exec(stmt).first()
 
 
+def _latest_run_per_source(session) -> dict[str, models.SourceRun]:
+    """Most recent `SourceRun` for every source that has ever run, in one
+    query (T3.3) — replaces the N-query `_last_run_for` loop `list_sources`
+    used to run once per configured source.
+
+    `ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC)` picks
+    exactly one (the newest) row per source, the same semantics as
+    `_last_run_for`'s `ORDER BY started_at DESC LIMIT 1`. Selecting the
+    windowed subquery back through `aliased(models.SourceRun, subq)` yields
+    real `SourceRun` instances, so `SourceRunOut.from_run` needs no change.
+    """
+    rn = func.row_number().over(
+        partition_by=models.SourceRun.source,
+        order_by=models.SourceRun.started_at.desc(),  # type: ignore[attr-defined]
+    ).label("rn")
+    subq = select(models.SourceRun, rn).subquery()
+    latest = aliased(models.SourceRun, subq)
+    stmt = select(latest).where(subq.c.rn == 1)
+    return {run.source: run for run in session.exec(stmt).all()}
+
+
 def _runs_for(
     session, source_name: str, limit: int
 ) -> list[models.SourceRun]:
@@ -157,9 +182,8 @@ def _runs_for(
 
 
 def _status_for(
-    session, name: str, sc: SourceConfig
+    name: str, sc: SourceConfig, last: models.SourceRun | None
 ) -> SourceStatusOut:
-    last = _last_run_for(session, name)
     return SourceStatusOut(
         name=name,
         config=SourceConfigOut.from_config(sc),
@@ -173,8 +197,9 @@ def _status_for(
 @router.get("", response_model=list[SourceStatusOut])
 def list_sources(session: SessionDep, cfg: ConfigDep) -> list[SourceStatusOut]:
     """Per-source status, sorted alphabetically by source name."""
+    latest_runs = _latest_run_per_source(session)
     return [
-        _status_for(session, name, cfg.sources[name])
+        _status_for(name, cfg.sources[name], latest_runs.get(name))
         for name in sorted(cfg.sources.keys())
     ]
 
@@ -277,4 +302,4 @@ async def patch_source(
     else:
         sc = current
 
-    return _status_for(session, name, sc)
+    return _status_for(name, sc, _last_run_for(session, name))

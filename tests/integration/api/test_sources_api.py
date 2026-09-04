@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
+from sqlalchemy import event
 from sqlmodel import Session
 
 from book_alerter.config import Config, SourceConfig
@@ -74,6 +75,44 @@ def test_get_sources_last_run_is_most_recent(
     body = resp.json()
     assert len(body) == 1
     assert body[0]["last_run"]["status"] == "partial"
+
+
+def test_get_sources_last_run_is_one_query_regardless_of_source_count(
+    api_client, engine_with_view, make_source_run
+):
+    """T3.3: the last-run-per-source lookup is one windowed query, not one
+    `LIMIT 1` query per configured source. Verified with a real
+    `before_cursor_execute` counter, not assumed from reading the code."""
+    names = ("wob", "amazon", "bookfinder", "amazon_uk_product")
+    sources = {name: SourceConfig() for name in names}
+    _install_sources(api_client, **sources)
+    base = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with Session(engine_with_view) as s:
+        for name in sources:
+            make_source_run(s, source=name, started_at=base, status="success")
+            make_source_run(
+                s, source=name, started_at=base + timedelta(hours=1), status="error"
+            )
+
+    select_count = 0
+
+    def _on_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        nonlocal select_count
+        if "sourcerun" in statement.lower() and statement.strip().upper().startswith("SELECT"):
+            select_count += 1
+
+    engine = api_client.app.state.engine
+    event.listen(engine, "before_cursor_execute", _on_cursor_execute)
+    try:
+        resp = api_client.get("/api/sources")
+    finally:
+        event.remove(engine, "before_cursor_execute", _on_cursor_execute)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == len(sources)
+    assert all(s["last_run"]["status"] == "error" for s in body)  # latest wins
+    assert select_count == 1, f"expected 1 sourcerun SELECT, got {select_count}"
 
 
 # --- POST /api/sources/{name}/run -------------------------------------------
