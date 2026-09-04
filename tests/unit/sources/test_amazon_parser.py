@@ -864,3 +864,214 @@ def test_parse_offer_listing_spend_threshold_promo_becomes_unknown_shipping() ->
     assert o.delivery_text is not None
     assert "over £35" in o.delivery_text.lower()
     assert o.shipping_minor is None
+
+
+# --- D35: machine-readable data-csa-c-mir-sub-type as the primary signal --
+
+
+def _delivery_price_span(
+    *, price: str = "FREE", sub_type: str = "", condition: str = ""
+) -> str:
+    """A minimal but structurally faithful copy of the real
+    `data-csa-c-delivery-price` span (see
+    tests/fixtures/amazon/products/B0F3NVWM37-uk-aod-2026-09-04.html) —
+    same attributes D35's extractors read, everything else omitted."""
+    return (
+        f'<span data-csa-c-delivery-price="{price}" '
+        f'data-csa-c-delivery-condition="{condition}" '
+        f'data-csa-c-mir-sub-type="{sub_type}">{price} delivery</span>'
+    )
+
+
+def test_extract_dp_delivery_condition_attrs_reads_conditional_marker() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_delivery_condition_attrs
+
+    html = (
+        '<div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">'
+        + _delivery_price_span(
+            sub_type="CONDITIONALLY_FREE",
+            condition="on orders dispatched by Amazon over £35",
+        )
+        + "</div>"
+    )
+    tree = HTMLParser(html)
+    conditional, condition_text = _extract_dp_delivery_condition_attrs(tree)
+    assert conditional is True
+    assert condition_text == "on orders dispatched by Amazon over £35"
+
+
+def test_extract_dp_delivery_condition_attrs_reads_unconditional_marker() -> None:
+    """The attribute is PRESENT (empty value) on a genuine unconditional
+    promise, per every real capture on file — this must resolve to a real
+    False verdict, not None (which means "attribute absent entirely")."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_delivery_condition_attrs
+
+    html = (
+        '<div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">'
+        + _delivery_price_span(sub_type="", condition="")
+        + "</div>"
+    )
+    tree = HTMLParser(html)
+    conditional, condition_text = _extract_dp_delivery_condition_attrs(tree)
+    assert conditional is False
+    assert condition_text is None
+
+
+def test_extract_dp_delivery_condition_attrs_none_when_attribute_absent_entirely() -> None:
+    """Every synthetic test fixture (and any legacy layout) has no
+    data-csa-c-* attributes at all — must be None (attribute layer
+    unavailable), not False (attribute layer says unconditional)."""
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_dp_delivery_condition_attrs
+
+    html = (
+        '<div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">'
+        "FREE delivery Monday, 18 May."
+        "</div>"
+    )
+    tree = HTMLParser(html)
+    assert _extract_dp_delivery_condition_attrs(tree) == (None, None)
+
+
+def test_extract_offer_delivery_condition_attrs_reads_conditional_marker() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_offer_delivery_condition_attrs
+
+    tree = HTMLParser(
+        "<div>"
+        + _delivery_price_span(
+            sub_type="CONDITIONALLY_FREE", condition="on your first order to UK or Ireland"
+        )
+        + "</div>"
+    )
+    row = tree.css_first("div")
+    conditional, condition_text = _extract_offer_delivery_condition_attrs(row)
+    assert conditional is True
+    assert condition_text == "on your first order to UK or Ireland"
+
+
+def test_extract_offer_delivery_condition_attrs_reads_unconditional_marker() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_offer_delivery_condition_attrs
+
+    tree = HTMLParser("<div>" + _delivery_price_span(sub_type="", condition="") + "</div>")
+    row = tree.css_first("div")
+    conditional, condition_text = _extract_offer_delivery_condition_attrs(row)
+    assert conditional is False
+    assert condition_text is None
+
+
+def test_extract_offer_delivery_condition_attrs_none_when_node_absent() -> None:
+    from selectolax.parser import HTMLParser
+
+    from book_alerter.sources.amazon import _extract_offer_delivery_condition_attrs
+
+    tree = HTMLParser('<div id="aod-offer-shipping">FREE delivery</div>')
+    row = tree.css_first("div")
+    assert _extract_offer_delivery_condition_attrs(row) == (None, None)
+
+
+def test_conditional_free_shipping_to_unknown_attribute_is_primary() -> None:
+    """The attribute wins even when the English text wouldn't have
+    matched on its own — this is the whole point of D35: it doesn't
+    depend on guessing the right phrase."""
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    result = _conditional_free_shipping_to_unknown(
+        0,
+        "FREE delivery — some future wording the regex has never seen",
+        attribute_conditional=True,
+        attribute_condition_text="a new condition Amazon hasn't used before",
+    )
+    assert result is None
+
+
+def test_conditional_free_shipping_to_unknown_falls_back_when_attribute_unavailable() -> None:
+    """attribute_conditional=None (the default) means "no signal" — the
+    existing English-marker behaviour from T2.5/D33 must be completely
+    unchanged when the attribute isn't present at all."""
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    assert _conditional_free_shipping_to_unknown(
+        0, "FREE delivery on your first order to UK or Ireland."
+    ) is None
+    assert _conditional_free_shipping_to_unknown(0, "FREE delivery Monday, 18 May.") == 0
+
+
+def test_conditional_free_shipping_to_unknown_logs_disagreement() -> None:
+    """D35's load-bearing diagnostic: when the attribute and the text
+    layer disagree, the decision still follows the attribute (primary),
+    but the disagreement itself must be logged with the raw condition
+    text — same reasoning as condition_normalizers.grade_unmapped (D26):
+    the fallback is best-effort, the log line is what makes drift
+    visible."""
+    from structlog.testing import capture_logs
+
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    with capture_logs() as logs:
+        result = _conditional_free_shipping_to_unknown(
+            0,
+            "FREE delivery Monday, 18 May.",  # text layer: unconditional
+            attribute_conditional=True,  # attribute layer: conditional
+            attribute_condition_text="some new condition wording",
+            source_name="amazon_uk_product",
+        )
+
+    assert result is None, "attribute is primary — must win the disagreement"
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert len(warnings) == 1, logs
+    assert warnings[0]["event"] == "amazon.conditional_delivery.layers_disagree"
+    assert warnings[0]["source"] == "amazon_uk_product"
+    assert warnings[0]["attribute_conditional"] is True
+    assert warnings[0]["text_conditional"] is False
+    assert warnings[0]["delivery_condition"] == "some new condition wording"
+
+
+def test_conditional_free_shipping_to_unknown_no_log_when_layers_agree() -> None:
+    from structlog.testing import capture_logs
+
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    with capture_logs() as logs:
+        _conditional_free_shipping_to_unknown(
+            0,
+            "FREE delivery on your first order to UK or Ireland.",
+            attribute_conditional=True,
+            attribute_condition_text="on your first order to UK or Ireland",
+        )
+        _conditional_free_shipping_to_unknown(
+            0,
+            "FREE delivery Monday, 18 May.",
+            attribute_conditional=False,
+            attribute_condition_text=None,
+        )
+
+    assert logs == []
+
+
+def test_parse_dp_spend_threshold_promo_detected_via_attribute_on_real_fixture() -> None:
+    """D35 regression on the real B0CYT8WL1G fixture: confirms the
+    attribute layer (not just the D33 text regex) independently drives
+    this result — both layers agree on this real capture, so this test
+    doesn't distinguish which one fired, but it pins that the combined
+    function still gives the right answer on real markup post-D35."""
+    from book_alerter.sources.amazon import _extract_dp_delivery_condition_attrs
+
+    html = (PRODUCT_FIXTURES / "B0CYT8WL1G-uk-dp-2026-09-04.html").read_text(encoding="utf-8")
+    offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/B0CYT8WL1G")
+    assert offers[0].shipping_minor is None
+
+    from selectolax.parser import HTMLParser
+
+    tree = HTMLParser(html)
+    conditional, condition_text = _extract_dp_delivery_condition_attrs(tree)
+    assert conditional is True
+    assert condition_text == "on orders dispatched by Amazon over £35"

@@ -12,6 +12,7 @@ from selectolax.parser import HTMLParser, Node
 
 from book_alerter.db.models import Book, Condition, Product
 from book_alerter.enums import ItemKind
+from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import (
     ObservationCandidate,
     SourceError,
@@ -26,6 +27,8 @@ from book_alerter.sources.normalizers import (
     asin_for_amazon_uk,
     to_asin,
 )
+
+log = get_logger(__name__)
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
 # that doesn't render JS in a real browser (verified 2026-05-14: headless
@@ -540,6 +543,71 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     return None
 
 
+# D35: Amazon renders a machine-readable verdict inside the exact element
+# `_extract_dp_shipping_minor`/`_extract_offer_delivery_text` already read —
+# `data-csa-c-mir-sub-type="CONDITIONALLY_FREE"` plus a free-text
+# `data-csa-c-delivery-condition="<why>"` — that the codebase ignored
+# entirely until now. Verified across every committed capture: 10 nodes
+# read `CONDITIONALLY_FREE` (the 8 first-order + 2 spend-threshold rows
+# D20/D33 already found by English wording) and 47 read empty/absent,
+# perfect agreement with ground truth and with the regex markers below.
+# `data-csa-c-mir-sub-type` (a controlled-vocabulary status field) is used
+# as the key rather than `data-csa-c-delivery-condition` (free descriptive
+# text): a status enum is the more reliable signal for a boolean decision
+# because it doesn't depend on Amazon also having populated human-readable
+# text alongside it. The condition text is kept only for the diagnostic
+# log line below, not for the decision itself.
+#
+# Caveat carried forward from the review that found this: 10 captures is
+# the whole evidence base, so `CONDITIONALLY_FREE` is not assumed to be
+# the only non-empty value `mir-sub-type` can take — this checks for that
+# exact string, not "any non-empty value".
+def _extract_dp_delivery_condition_attrs(tree: HTMLParser) -> tuple[bool | None, str | None]:
+    """`(attribute_says_conditional, raw_condition_text)` for the dp buy-box.
+
+    Same selector scan as `_extract_dp_delivery_text` (see that function's
+    docstring, and S6 in the shipping-chain review, for the known caveat
+    that this doesn't always land on the exact block
+    `_extract_dp_shipping_minor` used — latent, not observed on any capture
+    on file). `None` means the attribute itself is absent on every scanned
+    block (a layout Amazon hasn't tagged this way at all, e.g. the
+    synthetic test fixtures) — the caller falls back to the English-marker
+    regex in that case rather than treating `None` as "unconditional".
+    """
+    for sel in _DELIVERY_BLOCK_SELECTORS:
+        block = tree.css_first(sel)
+        if block is None:
+            continue
+        node = block.css_first("[data-csa-c-mir-sub-type]")
+        if node is None:
+            continue
+        sub_type = (node.attributes.get("data-csa-c-mir-sub-type") or "").strip()
+        condition_text = (
+            node.attributes.get("data-csa-c-delivery-condition") or ""
+        ).strip() or None
+        return sub_type == "CONDITIONALLY_FREE", condition_text
+    return None, None
+
+
+def _extract_offer_delivery_condition_attrs(row: Node) -> tuple[bool | None, str | None]:
+    """D35 equivalent of `_extract_dp_delivery_condition_attrs` for an AOD
+    row — reads the same `[data-csa-c-delivery-price]` node
+    `_extract_shipping_minor` already finds, so this can never disagree
+    with that function about *which* node the row's delivery data lives in
+    (unlike the dp side's S6 caveat, there is only one such node per row on
+    every capture on file)."""
+    node = row.css_first("[data-csa-c-delivery-price]")
+    if node is None or "data-csa-c-mir-sub-type" not in node.attributes:
+        return None, None
+    # selectolax normalises `attr=""` to `None` via `.get()`, so `or ""` is
+    # needed to tell "present but empty" (a real "not conditional" verdict)
+    # apart from a lookup failure — the presence check above already ruled
+    # out "genuinely absent".
+    sub_type = (node.attributes.get("data-csa-c-mir-sub-type") or "").strip()
+    condition_text = (node.attributes.get("data-csa-c-delivery-condition") or "").strip() or None
+    return sub_type == "CONDITIONALLY_FREE", condition_text
+
+
 # T2.5 (D20) + D33: the project's worst data bug (finding F1). A visitor
 # gets shown one of Amazon's conditional "FREE delivery" promises — a price
 # this particular order would not actually qualify for — and the old parser
@@ -571,6 +639,17 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
 # only ever in unrelated product-variant JSON
 # ("PRIME_SAVINGS_UPSELL":"With Prime"), never near a delivery line. Widen
 # this set only against a new capture, per D20's own revisit trigger.
+#
+# D35 demoted this regex from primary detection to FALLBACK: an adversarial
+# review found Amazon ships its own machine-readable verdict
+# (`data-csa-c-mir-sub-type="CONDITIONALLY_FREE"`) inside the very node
+# these functions already read, in perfect agreement with both markers
+# below across every capture on file — see
+# `_extract_dp_delivery_condition_attrs` / `_extract_offer_delivery_
+# condition_attrs` and `_conditional_free_shipping_to_unknown`. This regex
+# stays as the second layer precisely because that attribute is
+# undocumented and Amazon can drop it silently — D20's own evidence (8 of
+# 9 rows wrongly free) is what trusting only one detection layer costs.
 _CONDITIONAL_DELIVERY_RE = re.compile(
     r"on your first order|over\s*£\s*\d",
     re.IGNORECASE,
@@ -578,24 +657,58 @@ _CONDITIONAL_DELIVERY_RE = re.compile(
 
 
 def _conditional_free_shipping_to_unknown(
-    shipping_minor: int | None, delivery_text: str | None
+    shipping_minor: int | None,
+    delivery_text: str | None,
+    *,
+    attribute_conditional: bool | None = None,
+    attribute_condition_text: str | None = None,
+    source_name: str = "amazon",
 ) -> int | None:
-    """T2.5/D33: when `shipping_minor` reads as free (0) but `delivery_text`
-    is a conditional promise (currently: "on your first order", or a
-    spend-threshold promise worded as "... over £<amount>"), the shipping
-    cost is unknown, not zero — return `None` so downstream
-    (`effective_shipping`) substitutes the cascade estimate and reports
-    `is_estimate=True` instead of ranking the offer on a price the buyer
-    won't actually get. A genuinely unconditional "FREE delivery" (no
-    conditional marker in the text) is untouched and stays 0; a paid
-    delivery charge is untouched regardless of wording, since this only
-    ever fires on `shipping_minor == 0`.
+    """T2.5/D33/D35: when `shipping_minor` reads as free (0) but the promise
+    is conditional, the shipping cost is unknown, not zero — return `None`
+    so downstream (`effective_shipping`) substitutes the cascade estimate
+    and reports `is_estimate=True` instead of ranking the offer on a price
+    the buyer won't actually get. A genuinely unconditional "FREE delivery"
+    is untouched and stays 0; a paid delivery charge is untouched
+    regardless of wording, since this only ever fires on
+    `shipping_minor == 0`.
+
+    D35: `attribute_conditional` — Amazon's own `data-csa-c-mir-sub-type`
+    verdict (`None` when that attribute isn't present on this page's
+    layout at all, e.g. the synthetic test fixtures) — is now the PRIMARY
+    signal when available, because it is Amazon's own maintained
+    categorisation rather than a guess at English wording. The
+    `delivery_text` regex (D20/D33) is the FALLBACK, used outright when the
+    attribute is unavailable, and always evaluated as a cross-check when it
+    isn't — a disagreement between the two is logged with the raw
+    `data-csa-c-delivery-condition` text (D35's load-bearing diagnostic:
+    same reasoning as `condition_normalizers.grade_unmapped`, D26 — the
+    fallback is best-effort, the log line is what makes drift visible)
+    rather than silently trusting one layer over the other. The English
+    markers are NOT retired: the attribute is undocumented and Amazon can
+    drop it without notice, and D20's own evidence (8 of 9 rows wrongly
+    free) is what a silent detection failure costs.
     """
     if shipping_minor != 0:
         return shipping_minor
-    if delivery_text is not None and _CONDITIONAL_DELIVERY_RE.search(delivery_text):
-        return None
-    return shipping_minor
+
+    text_conditional = bool(
+        delivery_text is not None and _CONDITIONAL_DELIVERY_RE.search(delivery_text)
+    )
+
+    if attribute_conditional is None:
+        return None if text_conditional else shipping_minor
+
+    if attribute_conditional != text_conditional:
+        log.warning(
+            "amazon.conditional_delivery.layers_disagree",
+            source=source_name,
+            attribute_conditional=attribute_conditional,
+            text_conditional=text_conditional,
+            delivery_condition=attribute_condition_text,
+            delivery_text=delivery_text,
+        )
+    return None if attribute_conditional else shipping_minor
 
 
 def parse_dp(
@@ -656,7 +769,14 @@ def parse_dp(
     seller = _extract_dp_seller(tree)
     shipping_minor = _extract_dp_shipping_minor(tree)
     delivery_text = _extract_dp_delivery_text(tree)
-    shipping_minor = _conditional_free_shipping_to_unknown(shipping_minor, delivery_text)
+    attribute_conditional, attribute_condition_text = _extract_dp_delivery_condition_attrs(tree)
+    shipping_minor = _conditional_free_shipping_to_unknown(
+        shipping_minor,
+        delivery_text,
+        attribute_conditional=attribute_conditional,
+        attribute_condition_text=attribute_condition_text,
+        source_name=source_name,
+    )
     condition = _extract_dp_condition(tree, seller)
 
     return [
@@ -724,7 +844,7 @@ def parse_offer_listing(
 
     offers: list[ObservationCandidate] = []
     for row in rows:
-        offer = _parse_offer_row(row, fallback_url)
+        offer = _parse_offer_row(row, fallback_url, source_name=source_name)
         if offer is not None:
             offers.append(offer)
     if (
@@ -748,14 +868,23 @@ def parse_offer_listing(
     return offers
 
 
-def _parse_offer_row(row: Node, fallback_url: str) -> ObservationCandidate | None:
+def _parse_offer_row(
+    row: Node, fallback_url: str, *, source_name: str = "amazon"
+) -> ObservationCandidate | None:
     price_minor = _extract_price_minor(row)
     if price_minor is None:
         return None
 
     shipping_minor = _extract_shipping_minor(row)
     delivery_text = _extract_offer_delivery_text(row)
-    shipping_minor = _conditional_free_shipping_to_unknown(shipping_minor, delivery_text)
+    attribute_conditional, attribute_condition_text = _extract_offer_delivery_condition_attrs(row)
+    shipping_minor = _conditional_free_shipping_to_unknown(
+        shipping_minor,
+        delivery_text,
+        attribute_conditional=attribute_conditional,
+        attribute_condition_text=attribute_condition_text,
+        source_name=source_name,
+    )
     condition = _extract_condition(row)
     seller = _extract_offer_seller(row)
 
