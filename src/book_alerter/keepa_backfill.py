@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_chart
 from book_alerter.db import models
+from book_alerter.logging_setup import get_logger
 from book_alerter.sources.normalizers import amazon_uk_dp_url, amazon_uk_product_dp_url
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,24 @@ def backfill_blocking(
         return 0
 
     extractions = keepa_chart.extract_observations(png)
+    if not extractions:
+        return 0
+
+    # Defence in depth against `_DateCalib.__call__`'s clamp: even if a
+    # future change to the chart calibration reintroduces a rounding
+    # artefact that pushes a date past today, no future-dated row reaches
+    # the DB. Dropped rows are logged (not silently discarded) so a
+    # regression here is visible without a DB invariant check catching it.
+    today = datetime.now(UTC).date()
+    future = [ext for ext in extractions if ext.observed_at > today]
+    if future:
+        log.warning(
+            "keepa_backfill.future_dated_dropped",
+            item_id=item_id,
+            identifier=identifier,
+            count=len(future),
+        )
+        extractions = [ext for ext in extractions if ext.observed_at <= today]
     if not extractions:
         return 0
 

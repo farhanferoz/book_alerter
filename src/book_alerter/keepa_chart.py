@@ -323,7 +323,15 @@ class _DateCalib:
 
     def __call__(self, pixel_x: float) -> date:
         offset = round(self.slope_days * pixel_x + self.epoch_offset)
-        return self.epoch + timedelta(days=offset)
+        computed = self.epoch + timedelta(days=offset)
+        # The linear fit can round a point near the right edge of the chart
+        # past midnight (observed: a probe product got a Keepa row stamped
+        # tomorrow, extracted today). Clamp to "today" in UTC — the same
+        # convention `_calibrate_x_axis` uses to anchor its year-assignment
+        # walk above — so the rounding artefact can never produce a
+        # future-dated observation.
+        today = datetime.now(UTC).date()
+        return min(computed, today)
 
 
 # --- Series tracing ---------------------------------------------------------

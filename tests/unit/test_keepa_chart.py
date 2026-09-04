@@ -13,6 +13,7 @@ from io import BytesIO
 
 import numpy as np
 import pytest
+from freezegun import freeze_time
 from PIL import Image
 
 from book_alerter.keepa_chart import (
@@ -55,6 +56,21 @@ def test_date_calib_fits_monthly_labels():
     assert abs((calib(400.0) - date(2026, 2, 1)).days) <= 2
     mid = calib(250.0)
     assert abs((mid - date(2026, 1, 16)).days) <= 2
+
+
+def test_date_calib_clamps_past_today_to_today():
+    # T4.3 / F9: the probe product got a Keepa row stamped 2026-09-05 while
+    # extracted on 2026-09-04 — a right-edge pixel whose linear fit rounds
+    # past midnight. Reproduce that shape: two calibration points close
+    # enough together that a later pixel extrapolates one day past "today".
+    points = [(100.0, date(2026, 9, 1)), (400.0, date(2026, 9, 4))]
+    calib = _DateCalib.fit(points)
+    with freeze_time("2026-09-04 12:00:00"):
+        # Unclamped this pixel extrapolates to 2026-09-05 — one day into
+        # the (frozen) future.
+        assert calib(500.0) == date(2026, 9, 4)
+        # A pixel that lands within range is untouched by the clamp.
+        assert calib(100.0) == date(2026, 9, 1)
 
 
 def test_enforce_monotonic_decreasing_keeps_good_points():
