@@ -74,3 +74,16 @@ class Source(ABC):
 
     async def healthcheck(self) -> bool:
         return True
+
+    async def prepare(self) -> None:
+        """Called once by the scheduler before it iterates this source's
+        items for a run. Default no-op — httpx-based sources (WoB) have
+        nothing to set up. Browser-backed sources override this to open a
+        `BrowserSession` and stash the resulting context for `fetch()`."""
+        return None
+
+    async def cleanup(self) -> None:
+        """Called once by the scheduler in a `finally` after a run,
+        whether or not it raised. Default no-op; browser-backed sources
+        override this to close their `BrowserSession`."""
+        return None

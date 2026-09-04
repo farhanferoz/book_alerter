@@ -27,7 +27,9 @@ __pycache__/
 web/dist/
 web/.vite/
 
-# Runtime data — SQLite DB, logs, backups, scenario artefacts.
+# Runtime data — SQLite DB, logs, backups, scenario artefacts. Includes the
+# persistent Playwright profile dirs (data/browser-profiles/) — host-side
+# session state that must never be baked into the image.
 data/
 
 # Tests & docs aren't needed in the image (the broad `tests/` exclude covers

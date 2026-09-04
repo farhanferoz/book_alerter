@@ -2,6 +2,11 @@
 data/
 !data/.gitkeep
 
+# Persistent Playwright profile dirs (cookies, local storage) — already
+# covered by the blanket `data/` rule above; called out explicitly because
+# they hold session state that must never be committed, mode 700 on disk.
+data/browser-profiles/
+
 # Scenario artifacts (test DB + per-scenario config)
 tests/scenarios/.test.db
 tests/scenarios/.scenario_config.yaml
