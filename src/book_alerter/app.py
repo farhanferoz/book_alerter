@@ -29,6 +29,7 @@ from book_alerter.notifications.dispatcher import (
 from book_alerter.notifications.inapp import InAppNotifier
 from book_alerter.notifications.ntfy import NtfyNotifier
 from book_alerter.scheduler import Scheduler
+from book_alerter.sources.browser import configure_browser_concurrency
 from book_alerter.sources.registry import build_sources
 from book_alerter.stats import MediansCache
 
@@ -57,6 +58,10 @@ def _build_runtime(
     `app.state.http` is reused — we don't tear it down on config swaps)."""
     if http is None:
         http = getattr(app.state, "http", None)
+    # T1.4: process-wide browser cap, applied before any source is built so
+    # a reload that lowers the limit takes effect on the next session opened
+    # rather than the next restart.
+    configure_browser_concurrency(cfg.scheduler.max_concurrent_browsers)
     sources = build_sources(cfg, http=http)
     notifiers = _build_notifiers(cfg, http=http)
     book_pipeline = AlertPipeline(

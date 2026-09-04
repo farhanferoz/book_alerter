@@ -1,6 +1,8 @@
+import pytest
 import yaml
+from pydantic import ValidationError
 
-from book_alerter.config import Config
+from book_alerter.config import Config, SchedulerConfig
 
 
 def test_config_defaults_when_no_file(tmp_path):
@@ -39,3 +41,22 @@ def test_config_env_substitution(tmp_path, monkeypatch):
     }))
     cfg = Config.load(path)
     assert cfg.notifications.channels.ntfy.topic == "secret-topic"
+
+
+def test_default_source_schedules_are_staggered() -> None:
+    """T1.4. All four defaulted to `0 */6 * * *`, so every Playwright-backed
+    source launched a browser on the same instant — the load spike
+    `max_concurrent_browsers` caps, and a needlessly synchronised burst of
+    traffic at Amazon from one address."""
+    sources = Config().sources
+    minutes = [s.schedule.split()[0] for s in sources.values()]
+    assert sorted(minutes) == ["0", "15", "30", "45"]
+    assert len(set(minutes)) == len(minutes), "no two sources may share a slot"
+
+
+def test_max_concurrent_browsers_defaults_to_two_and_rejects_zero() -> None:
+    """Zero would deadlock every source at the first `start()` rather than
+    failing loudly, so the floor is enforced by the model, not by a caller."""
+    assert Config().scheduler.max_concurrent_browsers == 2
+    with pytest.raises(ValidationError):
+        SchedulerConfig(max_concurrent_browsers=0)

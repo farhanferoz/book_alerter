@@ -213,6 +213,24 @@ Existing book-source configs do NOT need an `item_kinds` field — it defaults t
 - The **Settings** UI exposes the same config under four tabs (Sources, Recommendation, Notifications, Advanced). The Advanced tab is a Monaco YAML editor with dry-run validation + a diff preview before save.
 - Any `${VAR}` reference in `config.yaml` is substituted from process env at load time, so the convention for secrets (ntfy topic, etc.) is to put the value in `.env` and reference it from YAML.
 
+**Scrape schedules are staggered by default**, and it is worth keeping them that
+way. The four sources default to `0`, `15`, `30` and `45` past every sixth hour
+rather than all firing on the hour. Three of them drive a real browser, so
+running them together means several Chromium processes at once on the NAS, and
+it sends a synchronised burst of traffic to Amazon from a single address — which
+is the behaviour bot-protection is looking for. A `scheduler:` section caps the
+damage independently of the schedules:
+
+```yaml
+scheduler:
+  max_concurrent_browsers: 2   # process-wide, across all sources
+```
+
+Sessions beyond the cap wait rather than failing. **Changing an existing
+`config.yaml` is up to you** — the staggering applies to the defaults written on
+first boot, so an install created before this change keeps whatever schedules it
+already has.
+
 See `.env.example` for every supported env var. The notable ones:
 
 | Var | Purpose | Default |

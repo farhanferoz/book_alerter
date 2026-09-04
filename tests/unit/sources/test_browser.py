@@ -330,3 +330,84 @@ async def test_browser_session_acquire_timeout_none_waits_indefinitely() -> None
     get — spot-check it doesn't accidentally inherit a default bound."""
     session = BrowserSession("amazon")
     assert session._acquire_timeout is None
+
+
+# --- T1.4: process-wide concurrency cap --------------------------------------
+
+
+@pytest.fixture
+def reset_browser_concurrency():
+    """Restore the module-level cap, which is process-wide state."""
+    saved_limit = browser_mod._browser_limit
+    saved_sem = browser_mod._browser_semaphore
+    yield
+    browser_mod._browser_limit = saved_limit
+    browser_mod._browser_semaphore = saved_sem
+
+
+def test_configure_browser_concurrency_is_a_noop_when_unchanged(
+    reset_browser_concurrency,
+) -> None:
+    """A config reload that doesn't touch this setting must not swap the
+    semaphore out from under live sessions."""
+    before = browser_mod._browser_semaphore
+    browser_mod.configure_browser_concurrency(browser_mod._browser_limit)
+    assert browser_mod._browser_semaphore is before
+
+    browser_mod.configure_browser_concurrency(browser_mod._browser_limit + 3)
+    assert browser_mod._browser_semaphore is not before
+    assert browser_mod._browser_limit == before._value + 3
+
+
+async def test_concurrency_slot_is_released_when_start_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reset_browser_concurrency,
+) -> None:
+    """A failed launch must give the slot back. Leak it and the cap silently
+    tightens with every failure until no source can open a browser at all --
+    and bot challenges make launch failures a routine event, not a rare one.
+    """
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", None)
+    browser_mod.configure_browser_concurrency(1)
+    semaphore = browser_mod._browser_semaphore
+
+    class _Boom:
+        async def start(self):
+            raise RuntimeError("driver failed to start")
+
+    monkeypatch.setattr(browser_mod, "async_playwright", lambda: _Boom())
+
+    session = BrowserSession("amazon", profile_root=tmp_path)
+    with pytest.raises(RuntimeError, match="driver failed to start"):
+        await session.start()
+
+    assert semaphore._value == 1, "the slot must be returned on failure"
+    # The profile lock must come back too, or the next start() on this
+    # profile hangs forever.
+    assert not browser_mod._profile_dir_lock(
+        (tmp_path / "amazon").resolve()
+    ).locked()
+
+
+async def test_close_releases_the_semaphore_it_acquired_not_the_current_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reset_browser_concurrency,
+) -> None:
+    """A config reload mid-session swaps the module-level semaphore. `close()`
+    must release the object `start()` took a slot from, or the new semaphore
+    gains a phantom slot and the old one never gets its back."""
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", None)
+    fake_pw = _FakePlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+
+    browser_mod.configure_browser_concurrency(2)
+    old_sem = browser_mod._browser_semaphore
+
+    session = BrowserSession("amazon", profile_root=tmp_path)
+    await session.start()
+    assert old_sem._value == 1, "a slot is held while the session is open"
+
+    browser_mod.configure_browser_concurrency(5)  # reload mid-session
+    new_sem = browser_mod._browser_semaphore
+    await session.close()
+
+    assert old_sem._value == 2, "the original semaphore got its slot back"
+    assert new_sem._value == 5, "the new one was never touched"

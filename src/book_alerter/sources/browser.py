@@ -151,6 +151,36 @@ async def _get_chrome_version(playwright: Playwright) -> str:
 _profile_dir_locks: dict[Path, asyncio.Lock] = {}
 
 
+# T1.4: process-wide cap on concurrently OPEN browser sessions.
+#
+# Distinct from `_profile_dir_locks` above, which serialises sessions on the
+# SAME profile because Chromium refuses two `launch_persistent_context()`
+# calls on one directory (D24). This one bounds total resource use across
+# DIFFERENT profiles: four staggered sources plus a user-triggered metadata
+# lookup could otherwise put four Chromiums on a NAS at once.
+#
+# Rebuilt rather than resized on a config change, because `asyncio.Semaphore`
+# has no public resize. A session that is already open holds a slot on the
+# OLD object and releases that same object in `close()` (it is stashed on the
+# instance), so the counts never corrupt -- the only effect of a mid-flight
+# change is that the old and new limits briefly coexist.
+_DEFAULT_MAX_CONCURRENT_BROWSERS = 2
+_browser_limit = _DEFAULT_MAX_CONCURRENT_BROWSERS
+_browser_semaphore = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENT_BROWSERS)
+
+
+def configure_browser_concurrency(limit: int) -> None:
+    """Set the process-wide open-session cap. Called from `_build_runtime`,
+    including on a config reload. A no-op when the limit is unchanged, so a
+    reload that doesn't touch this setting never disturbs live sessions."""
+    global _browser_semaphore, _browser_limit
+    if limit == _browser_limit:
+        return
+    _browser_limit = limit
+    _browser_semaphore = asyncio.Semaphore(limit)
+    log.info("browser_session.concurrency_configured", limit=limit)
+
+
 def _profile_dir_lock(path: Path) -> asyncio.Lock:
     # No `await` anywhere in this function, so the whole get-or-create is
     # atomic with respect to other coroutines — two concurrent callers for
@@ -313,6 +343,7 @@ class BrowserSession:
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
         self._held_lock: asyncio.Lock | None = None
+        self._held_semaphore: asyncio.Semaphore | None = None
 
     async def start(self) -> BrowserContext:
         if self._context is not None:
@@ -339,6 +370,23 @@ class BrowserSession:
                 # its own waiter and never leaves `_locked` set — nothing to
                 # release here, the lock genuinely was not acquired.
                 raise BrowserSessionBusy(self._profile, self._acquire_timeout) from e
+
+        # T1.4: the concurrency slot is taken AFTER the profile lock, never
+        # before. Two reasons, both load-bearing:
+        #   * Deadlock freedom. The two are always acquired in this order, so
+        #     no session can hold a semaphore slot while waiting on a profile
+        #     lock held by a session waiting for a slot. Reverse the order and
+        #     that cycle becomes reachable.
+        #   * Throughput. A session queued behind its own profile lock would
+        #     otherwise sit on a browser slot without a browser open.
+        # Captured on the instance so close() releases THIS object even if a
+        # config reload has since swapped the module-level semaphore.
+        semaphore = _browser_semaphore
+        try:
+            await semaphore.acquire()
+        except BaseException:
+            lock.release()
+            raise
         try:
             playwright = await async_playwright().start()
             try:
@@ -363,11 +411,13 @@ class BrowserSession:
             # never assigns `_browser_session` when `start()` raises, so its
             # cleanup() has nothing to call close() on) — release it here or
             # every later start() on this profile directory deadlocks.
+            semaphore.release()
             lock.release()
             raise
         self._playwright = playwright
         self._context = context
         self._held_lock = lock
+        self._held_semaphore = semaphore
         return context
 
     async def close(self) -> None:
@@ -378,6 +428,7 @@ class BrowserSession:
         context, self._context = self._context, None
         playwright, self._playwright = self._playwright, None
         lock, self._held_lock = self._held_lock, None
+        semaphore, self._held_semaphore = self._held_semaphore, None
         if context is not None:
             try:
                 await context.close()
@@ -396,6 +447,9 @@ class BrowserSession:
                     profile=self._profile,
                     error=str(e),
                 )
+        # Released in the reverse of start()'s acquisition order.
+        if semaphore is not None:
+            semaphore.release()
         if lock is not None:
             lock.release()
 

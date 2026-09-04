@@ -66,6 +66,13 @@ class RecommendationConfig(BaseModel):
     # Post-compaction each row is one distinct observation, so the same
     # confidence level needs proportionally fewer of them.
     min_global_median_observations: int = 5
+    # T2.2: user has an Amazon Prime subscription, so Amazon-fulfilled
+    # delivery is free regardless of what was observed or estimated for
+    # this scrape. Applied at stats time only (`stats.effective_shipping`)
+    # — raw `shipping_minor` on the stored observation is left exactly as
+    # scraped (D10), so toggling this never rewrites history, only how it
+    # is read.
+    amazon_prime: bool = False
 
 
 class QuietHours(BaseModel):
@@ -183,12 +190,36 @@ class JanitorConfig(BaseModel):
     compress_backups: bool = True
 
 
+class SchedulerConfig(BaseModel):
+    """Process-wide scheduler limits (T1.4).
+
+    `max_concurrent_browsers` caps how many `BrowserSession`s may be open at
+    once across the whole process, independent of how many sources are
+    enabled. The default of 2 preserves today's behaviour for the four
+    shipped sources, because their schedules are staggered (see
+    `_default_sources`) and at most two Playwright-backed runs overlap in
+    practice. It exists so that adding a fifth source, or a user tightening
+    the cron schedules, cannot silently start launching four Chromium
+    instances on a NAS.
+    """
+
+    max_concurrent_browsers: int = Field(default=2, ge=1)
+
+
 def _default_sources() -> dict[str, SourceConfig]:
+    # Staggered by 15 minutes (T1.4). All four previously defaulted to
+    # `0 */6 * * *`, so every Playwright-backed source launched a browser at
+    # the same instant -- the load spike `max_concurrent_browsers` caps, and
+    # a needlessly synchronised burst of traffic at Amazon from one address.
+    # Only these DEFAULTS change; a user's existing config.yaml keeps its own
+    # schedules untouched, so this is not a silent behaviour change for an
+    # existing install.
     return {
-        "wob": SourceConfig(),
-        "bookfinder": SourceConfig(timeout_seconds=90),
-        "amazon": SourceConfig(timeout_seconds=90),
+        "wob": SourceConfig(schedule="0 */6 * * *"),
+        "bookfinder": SourceConfig(schedule="15 */6 * * *", timeout_seconds=90),
+        "amazon": SourceConfig(schedule="30 */6 * * *", timeout_seconds=90),
         "amazon_uk_product": SourceConfig(
+            schedule="45 */6 * * *",
             timeout_seconds=90,
             item_kinds=[ItemKind.PRODUCT],
         ),
@@ -203,6 +234,7 @@ class Config(BaseModel):
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     janitor: JanitorConfig = Field(default_factory=JanitorConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @classmethod
     def load(cls, path: Path) -> Config:
