@@ -196,6 +196,17 @@ that makes the work deployable, and it is the last thing to do, after review.
   you DID name that already holds someone else's edits — run `git diff <path>` first.**
 
 ### Integration status (root-verified on a clean checkout of the branch tip)
+- **FINAL GATE, 2026-09-04, HEAD `de78ec5`, isolated worktree — ALL 40 PLAN TASKS RESOLVED**
+  (39 ticked + T1.2 dropped by its own gate, D21):
+  `uv run pytest -q` → **633 passed, 3 skipped** (run baseline was 426) ·
+  `ruff check src tests scripts` → clean · frontend `tsc -b --noEmit` / `eslint .` /
+  `npm run build` → clean · against a migrated production copy:
+  **`smoke_check.py` 12/12 in 0.74 s**, **`bench_stats.py` 0.093 s** for 13 books against
+  D23's ≤0.35 s gate. `git status --short` clean.
+- Janitor verified end-to-end against a COPY of the real `data/` (never the live one): sweeps
+  run, 28 files / 0.66 MB reclaimed. `data/debug` holding at exactly its 20-file cap per
+  source — **correct, not a leak**; note it is a COUNT cap while browser profiles use a SIZE
+  cap, so a source dumping 2 MB pages legitimately holds ~44 MB.
 - **2026-09-04, HEAD `fc433ba`, from an isolated worktree (never this dirty tree):**
   `uv run pytest -q` → **605 passed, 3 skipped**; `import book_alerter.app` OK.
 - **Against a real production copy, same clean HEAD:** migration 0019→head clean
