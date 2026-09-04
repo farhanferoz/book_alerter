@@ -49,9 +49,21 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
 - `uv run python scripts/bench_stats.py <copy-of-prod.db>` — T3.1 benchmark.
 - Frontend, from `web/`: `./node_modules/.bin/tsc -b --noEmit` (~3.5 s) ·
   `./node_modules/.bin/eslint .` (~4 s) · `npm run build` (~4.3 s).
-  **Gotcha:** `npx tsc` / `npx eslint` silently no-op under npm 12 here — call the binaries in
-  `node_modules/.bin/` directly. Install deps with `npm ci --legacy-peer-deps` (the Dockerfile's
-  own convention; a plain `npm ci` fails on a TS 6 vs openapi-typescript peer conflict).
+  **CORRECTED 2026-09-04 — the previous entry here was WRONG.** It claimed `npx tsc` / `npx
+  eslint` "silently no-op under npm 12"; that is false and was propagated into several worker
+  briefs as measured fact without being checked. `npx` works fine (it just prints npm notices).
+  **The real defect is the missing `-b`.** Measured, by breaking `web/src/lib/format.ts` with a
+  real type error in a throwaway worktree and running all four combinations:
+  - `tsc --noEmit` (no `-b`) → **exit 0, error NOT reported** — via `npx` AND via the direct
+    binary. This project uses TypeScript **project references**, so without `-b` tsc checks
+    nothing.
+  - `tsc -b --noEmit` → **exit 2, error reported** — again via `npx` and directly, identically.
+  So: **always `-b`**; `npx` vs the direct binary is irrelevant. ⚠️ **Plan §4's conventions
+  paragraph prescribes `npx tsc --noEmit`, without `-b` — that gate passes regardless of type
+  errors.** No harm done in practice: every frontend task this session was briefed with
+  `tsc -b --noEmit` and used it.
+  Install deps with `npm ci --legacy-peer-deps` (the Dockerfile's own convention; a plain
+  `npm ci` fails on a TS 6 vs openapi-typescript peer conflict).
 - **Migrations:** point alembic at a copy with `BOOK_ALERTER_DATABASE_URL="sqlite:///<path>"`.
   **`alembic -x db_url=...` is silently IGNORED** — `env.py` calls `get_database_url()`, which
   reads only that env var. A round-trip test that forgets this migrates the app's own
