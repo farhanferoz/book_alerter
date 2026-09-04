@@ -143,10 +143,21 @@ def run_weekly_backup(
     size = target.stat().st_size if target.exists() else 0
     log.info("backup.created", path=str(target), bytes=size)
 
-    # Retention: keep the newest `retain` files; delete the rest. ISO names
-    # sort lexicographically == chronologically.
+    # Retention: keep the newest `retain` files; delete the rest. Glob for
+    # `.db*` rather than just `.db` -- the janitor's `sweep_backups`
+    # (janitor.py) compresses each backup to `book_alerter_<ts>.db.gz` and
+    # unlinks the original within a day of it being written (F-B2), so by
+    # the time this job runs a second time almost every prior backup is the
+    # `.gz` form. Matching only `.db` meant retention only ever saw the one
+    # not-yet-compressed file and never pruned anything.
+    #
+    # ISO names still sort lexicographically == chronologically with the
+    # mixed suffix: the timestamp is fixed-width and precedes the suffix, so
+    # two filenames only ever differ within the timestamp itself (`.db` vs
+    # `.db.gz` only breaks the tie for an identical timestamp, which cannot
+    # happen -- one backup is written per run).
     try:
-        files = sorted(backup_dir.glob("book_alerter_*.db"))
+        files = sorted(backup_dir.glob("book_alerter_*.db*"))
         old = files[:-retain] if retain > 0 else files
         for f in old:
             try:
@@ -175,6 +186,18 @@ class Scheduler:
     # roughly 15.5 hours before a row is marked FAILED.
     _METADATA_REFRESH_BASE_MINUTES = 30
     _METADATA_REFRESH_MAX_ATTEMPTS = 6
+    # F-B3: FAILED is deliberately not terminal (MetadataStatus's docstring),
+    # so a FAILED row stays in this job's query rather than being dropped for
+    # good. But it must not resume the same exponential climb that got it
+    # there -- that would mean re-admitting it barely changes anything (the
+    # next few "doublings" are already 32h/64h/128h/...), while resetting the
+    # counter would hammer Playwright at the 30-minute base rate forever.
+    # Instead, once a row is FAILED, `metadata_attempts` is frozen and it is
+    # retried on this fixed slower cadence: one Playwright hit a day for as
+    # long as the ASIN keeps failing, which is cheap, bounded, and still
+    # gives a transient problem (a temporary Amazon outage, a bot challenge
+    # that later relaxes) same-day odds of resolving instead of none.
+    _METADATA_REFRESH_FAILED_RETRY_HOURS = 24
 
     def __init__(
         self,
@@ -257,13 +280,15 @@ class Scheduler:
                 replace_existing=True,
             )
 
-        # T4.1: retry Amazon product-metadata lookups for rows still PENDING.
-        # Add-product no longer blocks on a live fetch (F7: that returned 502
-        # on a bot challenge), so this job is what eventually fills in the
-        # title/image when the price scraper's own dp parse hasn't already.
-        # Registered unconditionally: the tick is a single indexed query when
-        # nothing is pending, and gating it behind config would mean a user
-        # could disable the only thing that ever resolves a PENDING row.
+        # T4.1: retry Amazon product-metadata lookups for rows still PENDING,
+        # plus rows that went FAILED but are still due their (slower, F-B3)
+        # retry cadence. Add-product no longer blocks on a live fetch (F7:
+        # that returned 502 on a bot challenge), so this job is what
+        # eventually fills in the title/image when the price scraper's own
+        # dp parse hasn't already. Registered unconditionally: the tick is a
+        # single indexed query when nothing is due, and gating it behind
+        # config would mean a user could disable the only thing that ever
+        # resolves a PENDING or FAILED row on its own.
         self._sched.add_job(
             self._run_metadata_refresh,
             trigger=IntervalTrigger(minutes=self._METADATA_REFRESH_BASE_MINUTES),
@@ -343,11 +368,19 @@ class Scheduler:
     async def _metadata_refresh_tick(self) -> None:
         now = datetime.now(UTC)
         with self._session_factory() as session:
-            pending = session.exec(
-                select(Product).where(Product.metadata_status == MetadataStatus.PENDING)
+            # F-B3: FAILED is included so a row that exhausted its retry
+            # budget keeps getting the slow-cadence retries
+            # `_metadata_refresh_due` grants it, instead of being dropped
+            # from this query for good the moment it goes FAILED.
+            candidates = session.exec(
+                select(Product).where(
+                    Product.metadata_status.in_(
+                        (MetadataStatus.PENDING, MetadataStatus.FAILED)
+                    )
+                )
             ).all()
             due_ids = [
-                p.id for p in pending
+                p.id for p in candidates
                 if p.id is not None and self._metadata_refresh_due(p, now)
             ]
         # Sequential, not gathered: each call drives a real browser and D24
@@ -358,8 +391,9 @@ class Scheduler:
             await self._refresh_one_product_metadata(pid)
 
     def _metadata_refresh_due(self, product: Product, now: datetime) -> bool:
-        """Exponential-backoff gate. Attempt 1 is always due, which covers
-        both a freshly-created PENDING row and the case where the immediate
+        """Exponential-backoff gate for a PENDING row; fixed slow cadence for
+        a FAILED one (F-B3). Attempt 1 is always due, which covers both a
+        freshly-created PENDING row and the case where the immediate
         post-create attempt raced and lost."""
         if product.metadata_attempts == 0 or product.metadata_last_attempt_at is None:
             return True
@@ -368,10 +402,15 @@ class Scheduler:
         # the two without this raises rather than mis-comparing, but the
         # failure would be at the worst moment, so normalise here.
         last = last if last.tzinfo is not None else last.replace(tzinfo=UTC)
-        backoff = timedelta(
-            minutes=self._METADATA_REFRESH_BASE_MINUTES
-            * (2 ** (product.metadata_attempts - 1))
-        )
+        if product.metadata_status == MetadataStatus.FAILED:
+            # Budget already exhausted -- see the constant's docstring for
+            # why this is a fixed cadence rather than a continued doubling.
+            backoff = timedelta(hours=self._METADATA_REFRESH_FAILED_RETRY_HOURS)
+        else:
+            backoff = timedelta(
+                minutes=self._METADATA_REFRESH_BASE_MINUTES
+                * (2 ** (product.metadata_attempts - 1))
+            )
         return now - last >= backoff
 
     async def _refresh_one_product_metadata(self, product_id: int) -> None:
@@ -379,14 +418,16 @@ class Scheduler:
 
         Re-reads and re-checks `metadata_status` immediately before AND after
         the fetch. The product scraper's own dp parse can resolve a PENDING
-        row between this tick's query and now, or while the fetch is in
-        flight -- and that flight can legitimately last minutes, because D24
-        serialises `BrowserSession` on the `amazon_uk_product` profile and a
-        scheduled run may hold it.
+        or FAILED row (F-B3) between this tick's query and now, or while the
+        fetch is in flight -- and that flight can legitimately last minutes,
+        because D24 serialises `BrowserSession` on the `amazon_uk_product`
+        profile and a scheduled run may hold it.
         """
         with self._session_factory() as session:
             product = session.get(Product, product_id)
-            if product is None or product.metadata_status != MetadataStatus.PENDING:
+            if product is None or product.metadata_status not in (
+                MetadataStatus.PENDING, MetadataStatus.FAILED,
+            ):
                 return
             asin = product.asin
 
@@ -407,7 +448,9 @@ class Scheduler:
         now = datetime.now(UTC)
         with self._session_factory() as session:
             product = session.get(Product, product_id)
-            if product is None or product.metadata_status != MetadataStatus.PENDING:
+            if product is None or product.metadata_status not in (
+                MetadataStatus.PENDING, MetadataStatus.FAILED,
+            ):
                 return
             if result is not None:
                 product.title = result.title
@@ -417,10 +460,17 @@ class Scheduler:
                     product.brand = result.brand
                 product.metadata_status = MetadataStatus.OK
             else:
-                product.metadata_attempts += 1
                 product.metadata_last_attempt_at = now
-                if product.metadata_attempts >= self._METADATA_REFRESH_MAX_ATTEMPTS:
-                    product.metadata_status = MetadataStatus.FAILED
+                if product.metadata_status == MetadataStatus.FAILED:
+                    # F-B3: already exhausted the budget on a prior tick --
+                    # leave `metadata_attempts` frozen at that count. The
+                    # fixed FAILED cadence in `_metadata_refresh_due` is what
+                    # throttles retries from here, not a growing counter.
+                    pass
+                else:
+                    product.metadata_attempts += 1
+                    if product.metadata_attempts >= self._METADATA_REFRESH_MAX_ATTEMPTS:
+                        product.metadata_status = MetadataStatus.FAILED
             product.updated_at = now
             session.add(product)
             session.commit()
@@ -669,10 +719,14 @@ class Scheduler:
         persist observations, return
         (affected_ids, attempted, succeeded, challenged).
 
-        `challenged` counts items whose FINAL outcome was a bot challenge --
-        i.e. the retry was also challenged. An item that recovers on the retry
-        is a success and is deliberately not counted, because the number feeds
-        a backoff rule about how blocked we actually are, not how often the
+        `challenged` counts items whose FIRST attempt was a bot challenge and
+        whose retry did not succeed -- whatever shape that failure takes (a
+        repeat challenge, an ordinary `SourceError`/`TimeoutError`, or a
+        wholly unexpected exception; F-B4/F-B5). All of those mean the
+        challenge was never overcome, which is what the backoff rule this
+        feeds actually needs to know. An item that recovers on the retry is a
+        success and is deliberately not counted, because the number feeds a
+        backoff rule about how blocked we actually are, not how often the
         challenge appeared.
         """
         routing = _KIND_ROUTING[kind]
@@ -730,8 +784,19 @@ class Scheduler:
                             src.fetch(item), timeout=sc.timeout_seconds + 5,
                         )
                     except (TimeoutError, SourceError) as retry_exc:
-                        if is_bot_challenge(retry_exc):
-                            challenged += 1
+                        # F-B5: unconditional, not gated on
+                        # is_bot_challenge(retry_exc). The first attempt
+                        # already established this item as challenged; ANY
+                        # failure on the retry -- a repeat challenge, or an
+                        # ordinary SourceError/TimeoutError (e.g. the
+                        # challenge interstitial itself just never resolves,
+                        # which surfaces as a plain TimeoutError from the
+                        # asyncio.wait_for above, not a SourceError) -- means
+                        # the challenge was never overcome. Gating on the
+                        # retry's own exception type is what let a
+                        # challenged-then-timed-out run reset the backoff
+                        # counter to 0 in production.
+                        challenged += 1
                         log.warning(
                             "source.item.error",
                             source=source_name,
@@ -739,6 +804,38 @@ class Scheduler:
                             identifier=getattr(item, identifier_attr, None),
                             error=str(retry_exc),
                             after_challenge_retry=True,
+                        )
+                        self._record_item_failure(
+                            item_model, item.id, str(retry_exc)
+                        )
+                        return
+                    except Exception as retry_exc:
+                        # F-B4: previously absent. An exception from the
+                        # retry that is NEITHER TimeoutError NOR SourceError
+                        # (a Playwright crash, a stray sqlite error, etc) was
+                        # raised from inside the `except (TimeoutError,
+                        # SourceError) as e:` block above -- which means it
+                        # propagated straight out of this whole try/except,
+                        # skipping the sibling `except Exception as e:`
+                        # below (that one belongs to the OUTER try, around
+                        # attempt 1, and Python does not consult sibling
+                        # except clauses for an exception raised while
+                        # already handling another one). It reached
+                        # `asyncio.gather(..., return_exceptions=True)` and
+                        # was silently dropped: no log line, no
+                        # last_scrape_error, no `_record_item_failure` call
+                        # -- the item kept whatever scrape-health it had
+                        # from a PRIOR run, so the UI could show it healthy.
+                        # Recorded via the same path attempt 1 uses for its
+                        # own "anything else" case below, and counted as
+                        # challenged for the same F-B5 reason as the sibling
+                        # except above.
+                        challenged += 1
+                        log.exception(
+                            "source.item.unexpected",
+                            source=source_name,
+                            kind=kind.value,
+                            identifier=getattr(item, identifier_attr, None),
                         )
                         self._record_item_failure(
                             item_model, item.id, str(retry_exc)
@@ -887,9 +984,18 @@ class Scheduler:
                     # 30-minute metadata_refresh job, so take the title here
                     # rather than making a new product wait for a job tick.
                     # Only dp candidates carry `item_title`; AOD rows never do.
+                    #
+                    # F-B3: FAILED is included alongside PENDING. MetadataStatus's
+                    # docstring is explicit that FAILED is "deliberately NOT
+                    # terminal" -- a later scrape's dp parse must still be able
+                    # to resolve a title for a row that exhausted its retry
+                    # budget. Gating this on PENDING only meant a FAILED product
+                    # showed its ASIN placeholder as its title forever, with no
+                    # path back to a real one short of delete-and-recreate.
                     if (
                         item_model is Product
-                        and fresh_item.metadata_status == MetadataStatus.PENDING
+                        and fresh_item.metadata_status
+                        in (MetadataStatus.PENDING, MetadataStatus.FAILED)
                     ):
                         titled = next(
                             (c for c in candidates if c.item_title is not None), None

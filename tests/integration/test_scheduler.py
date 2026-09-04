@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -8,10 +9,11 @@ import pytest
 from sqlmodel import Session, select
 
 import book_alerter.scheduler as scheduler_mod
-from book_alerter.config import Config, SourceConfig
+from book_alerter.config import Config, JanitorConfig, SourceConfig
 from book_alerter.db import models
 from book_alerter.enums import ItemKind, MetadataStatus
-from book_alerter.scheduler import Scheduler
+from book_alerter.janitor import sweep_backups
+from book_alerter.scheduler import Scheduler, run_weekly_backup
 from book_alerter.sources.base import Source, SourceError
 from book_alerter.sources.wob import WobInlineSource
 from tests.integration.conftest import WOB_CARRIED_ISBN
@@ -422,6 +424,68 @@ async def test_scheduler_calls_cleanup_once_when_prepare_raises(sqlite_engine, m
     assert "chromium launch failed" in (run.error_message or "")
 
 
+# --- F-B2: weekly backup retention survives janitor compression -------------
+
+
+class _FakeWeeklyDatetime:
+    """Stands in for `scheduler_mod.datetime` so each simulated weekly backup
+    gets a distinct, monotonically increasing timestamp. `run_weekly_backup`
+    only ever calls `.now(UTC)`, once, to build the target filename -- a real
+    weekly cadence would never produce two backups in the same second, but a
+    tight test loop would, and `VACUUM INTO` refuses to overwrite an existing
+    target file."""
+
+    _t = datetime(2026, 1, 1, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):  # matches datetime.now's signature; tz is unused
+        cls._t = cls._t + timedelta(weeks=1)
+        return cls._t
+
+
+def test_backup_retention_settles_at_retain_across_janitor_compression(
+    tmp_path, monkeypatch,
+):
+    """Reproduces F-B2: `sweep_backups` (janitor.py) compresses each backup to
+    `book_alerter_<ts>.db.gz` and unlinks the plain `.db` original. Retention
+    in `run_weekly_backup` used to glob only `book_alerter_*.db`, so after the
+    first janitor pass it saw at most the one not-yet-compressed backup and
+    `files[:-retain]` was always empty -- unbounded growth of the single
+    largest thing the app writes (~35 MB per backup per the JanitorConfig
+    comment). The real backup schedule (Sun 03:00) runs before the daily
+    janitor (04:00), so every backup is compressed within a day and then
+    immortal.
+
+    Interleaves the real `run_weekly_backup` and the real `sweep_backups`
+    over 10 weekly cycles, exactly as the two jobs run in production, and
+    asserts the file count settles at `retain` rather than growing to 10.
+    """
+    db_path = tmp_path / "book_alerter.db"
+    sqlite3.connect(str(db_path)).close()  # a valid, empty SQLite file
+    backup_dir = tmp_path / "backups"
+    retain = 7
+
+    monkeypatch.setattr(scheduler_mod, "datetime", _FakeWeeklyDatetime)
+    jcfg = JanitorConfig()
+    assert jcfg.compress_backups is True  # the production default this bug needs
+
+    created = []  # the plain `.db` name each cycle's backup was created as
+    for _ in range(10):
+        target = run_weekly_backup(db_path, backup_dir, retain=retain)
+        created.append(target.name)
+        sweep_backups(backup_dir, jcfg)
+
+    files = sorted(f.name for f in backup_dir.iterdir())
+    assert len(files) == retain, files
+    assert all(name.endswith(".gz") for name in files), (
+        "the janitor should have compressed every retained backup"
+    )
+    # Retention kept exactly the newest `retain` cycles (as their compressed
+    # form) and pruned the rest -- not "whatever was left after the janitor
+    # broke the glob", which before the fix was every `.gz` file ever made.
+    assert files == [f"{name}.gz" for name in created[-retain:]]
+
+
 # --- T6.5: janitor job registration -----------------------------------------
 
 
@@ -648,6 +712,94 @@ async def test_heavily_challenged_run_engages_backoff_despite_a_success(
     assert "amazon" in sched._backoff_until, "backoff must engage"
 
 
+async def test_unexpected_exception_on_challenge_retry_is_recorded_and_counted(
+    sqlite_engine, make_book, no_challenge_wait,
+):
+    """F-B4 + F-B5, reproduced together since they're the same code path.
+
+    Before the fix: an exception from the retry that is NEITHER TimeoutError
+    NOR SourceError (here a RuntimeError, standing in for a Playwright
+    assertion or a stray sqlite error mid-fetch) was raised from inside the
+    `except (TimeoutError, SourceError)` block wrapping the retry, so it
+    propagated straight out of the whole try/except -- past the sibling
+    `except Exception` (which belongs to the OUTER try, around attempt 1,
+    and is never consulted for an exception raised while another is already
+    being handled) -- into `asyncio.gather(..., return_exceptions=True)`,
+    where it was silently dropped: no log line, no `last_scrape_error`, no
+    `_record_item_failure` call, and `challenged` never incremented.
+    """
+    with Session(sqlite_engine) as s:
+        book = make_book(s, isbn13="9780000000001")
+        book_id = book.id
+
+    src = _ScriptedSource(
+        {"9780000000001": [_challenged(), RuntimeError("playwright target closed")]}
+    )
+    run_id = await _challenge_scheduler(sqlite_engine, src).trigger_now("amazon")
+
+    assert src.calls == ["9780000000001"] * 2, "the retry must still happen"
+    with Session(sqlite_engine) as s:
+        run = s.get(models.SourceRun, run_id)
+        # The fix: this run is neither silently dropped nor status "success".
+        assert run.books_attempted == 1
+        assert run.books_succeeded == 0
+        assert run.status == "error"
+        # F-B5: the item's first attempt was a challenge, so it counts
+        # towards `challenged` regardless of the retry's own exception type.
+        assert run.items_challenged == 1
+
+        book_row = s.get(models.Book, book_id)
+        assert book_row.last_scrape_attempt_at is not None
+        assert book_row.last_scrape_error is not None
+        assert "playwright target closed" in book_row.last_scrape_error
+
+
+async def test_mixed_challenged_then_timed_out_and_succeeded_engages_backoff(
+    sqlite_engine, make_book, no_challenge_wait,
+):
+    """F-B5's mixed case, the gap T1.3 exists for. 2 of 3 items are
+    challenged and then time out on the retry (`TimeoutError`, not
+    `SourceError` -- the shape a challenge interstitial takes when it simply
+    never resolves rather than raising its own error) while 1 succeeds.
+
+    Before the fix: `challenged` only incremented when the RETRY's own
+    exception was itself `is_bot_challenge` -- a plain `TimeoutError` never
+    is, so `challenged_total` stayed 0, `heavily_challenged` was False, and
+    the one success reset `_consecutive_errors` to 0. Backoff never engaged
+    even though 2 of 3 items were plainly still blocked.
+    """
+    n_seeded_books = 3
+    n_challenged_then_timed_out = 2
+
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+        make_book(s, isbn13="9780000000002")
+        make_book(s, isbn13="9780000000003")
+
+    src = _ScriptedSource({
+        "9780000000001": [_challenged(), TimeoutError()],
+        "9780000000002": [_challenged(), TimeoutError()],
+        "9780000000003": [[]],
+    })
+    # max_consecutive_errors=0 so the very first counted error engages
+    # backoff -- asserts the whole path, not just the counter.
+    sched = _challenge_scheduler(sqlite_engine, src, max_consecutive_errors=0)
+    run_id = await sched.trigger_now("amazon")
+
+    with Session(sqlite_engine) as s:
+        run = s.get(models.SourceRun, run_id)
+        assert run.books_attempted == n_seeded_books
+        assert run.books_succeeded == 1
+        assert run.items_challenged == n_challenged_then_timed_out, (
+            "non-zero: the fix this test targets"
+        )
+
+    # 2 of 3 attempted >= 50% threshold -> heavily_challenged, so backoff
+    # engages despite the one genuine success.
+    assert sched._consecutive_errors["amazon"] == 1
+    assert "amazon" in sched._backoff_until, "backoff must engage"
+
+
 # --- T6.3: weekly Keepa refresh registration ---------------------------------
 
 
@@ -733,3 +885,135 @@ async def test_metadata_refresh_backoff_handles_a_naive_timestamp():
     now = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
     naive = datetime(2026, 9, 4, 10, 0)
     assert sched._metadata_refresh_due(_pending_product(1, naive), now) is True
+
+
+# --- F-B3: a FAILED product can recover its title ---------------------------
+
+
+def _failed_product(attempts: int, last_attempt: datetime | None) -> models.Product:
+    return models.Product(
+        asin="B09B96TG33", title="Amazon product B09B96TG33",
+        metadata_status=MetadataStatus.FAILED,
+        metadata_attempts=attempts,
+        metadata_last_attempt_at=last_attempt,
+        created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+
+
+async def test_metadata_refresh_due_uses_a_fixed_cadence_once_failed():
+    """A FAILED row is retried on the fixed cadence
+    `_METADATA_REFRESH_FAILED_RETRY_HOURS`, not a continued exponential
+    doubling from `metadata_attempts` -- attempts is frozen once FAILED (see
+    `_refresh_one_product_metadata`), so the exponential formula would divide
+    by nothing meaningful and, worse, would keep accelerating retries every
+    time a row failed again rather than throttling them."""
+    sched = _janitor_sched(Config(sources={}))
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
+    cap_hours = Scheduler._METADATA_REFRESH_FAILED_RETRY_HOURS
+
+    assert sched._metadata_refresh_due(
+        _failed_product(6, now - timedelta(hours=cap_hours - 1)), now
+    ) is False
+    assert sched._metadata_refresh_due(
+        _failed_product(6, now - timedelta(hours=cap_hours)), now
+    ) is True
+    # A row that has failed many times since (attempts grown well past the
+    # 6-attempt budget in an earlier build, or just hypothetically) still
+    # uses the SAME fixed cadence -- not a further-exploded exponential wait.
+    assert sched._metadata_refresh_due(
+        _failed_product(40, now - timedelta(hours=cap_hours)), now
+    ) is True
+
+
+async def test_metadata_refresh_tick_re_admits_a_due_failed_row(
+    sqlite_engine, make_product, monkeypatch,
+):
+    """`_metadata_refresh_tick`'s query used to select PENDING only, so a
+    FAILED row was dropped from it for good the moment it went FAILED --
+    the scheduler-side half of F-B3's re-admission. One FAILED row past its
+    cadence, one FAILED row still inside it: only the former is fetched."""
+    cap_hours = Scheduler._METADATA_REFRESH_FAILED_RETRY_HOURS
+    now = datetime.now(UTC)
+
+    with Session(sqlite_engine) as s:
+        due = make_product(s, asin="B0DUEFAIL1")
+        due.metadata_status = MetadataStatus.FAILED
+        due.metadata_attempts = Scheduler._METADATA_REFRESH_MAX_ATTEMPTS
+        due.metadata_last_attempt_at = now - timedelta(hours=cap_hours + 1)
+        s.add(due)
+
+        not_due = make_product(s, asin="B0NOTDUEF1")
+        not_due.metadata_status = MetadataStatus.FAILED
+        not_due.metadata_attempts = Scheduler._METADATA_REFRESH_MAX_ATTEMPTS
+        not_due.metadata_last_attempt_at = now - timedelta(hours=1)
+        s.add(not_due)
+        s.commit()
+
+    scheduler = Scheduler(
+        config=Config(sources={}),
+        sources={},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipelines={ItemKind.BOOK: AsyncMock(), ItemKind.PRODUCT: AsyncMock()},
+    )
+    calls: list[str] = []
+
+    async def _fake_fetch(asin: str) -> None:
+        calls.append(asin)
+        return None
+
+    monkeypatch.setattr("book_alerter.scheduler.fetch_amazon_uk_product_metadata", _fake_fetch)
+
+    await scheduler._metadata_refresh_tick()
+
+    assert calls == ["B0DUEFAIL1"], "only the due FAILED row should have been refreshed"
+
+
+@pytest.mark.parametrize("start_status", [MetadataStatus.PENDING, MetadataStatus.FAILED])
+async def test_persist_adopts_a_title_for_pending_and_failed_products(
+    sqlite_engine, make_product, start_status,
+):
+    """The core F-B3 regression, reproduced the way the reviewer did: feed
+    `_persist` an `ObservationCandidate` carrying `item_title` for a product
+    that starts PENDING (already worked) and one that starts FAILED
+    (previously never resolved -- `_persist`'s title-adoption gate checked
+    PENDING only, so a FAILED product showed its ASIN placeholder as its
+    title forever with no path back short of delete-and-recreate)."""
+    from book_alerter.sources.base import ObservationCandidate
+
+    with Session(sqlite_engine) as s:
+        product = make_product(
+            s, asin="B0TEST0001", title="Amazon product B0TEST0001",
+        )
+        product.metadata_status = start_status
+        if start_status == MetadataStatus.FAILED:
+            product.metadata_attempts = Scheduler._METADATA_REFRESH_MAX_ATTEMPTS
+        s.add(product)
+        s.commit()
+        product_id = product.id
+
+    scheduler = Scheduler(
+        config=Config(),
+        sources={},
+        session_factory=lambda: Session(sqlite_engine),
+        alert_pipelines={ItemKind.PRODUCT: AsyncMock()},
+    )
+
+    candidate = ObservationCandidate(
+        seller="Amazon",
+        condition="new",
+        price_minor=1999,
+        shipping_minor=0,
+        currency="GBP",
+        url="https://www.amazon.co.uk/dp/B0TEST0001",
+        item_title="Real Product Title",
+    )
+
+    with Session(sqlite_engine) as s:
+        product_row = s.get(models.Product, product_id)
+        assert product_row is not None
+        scheduler._persist("amazon_uk_product", ItemKind.PRODUCT, product_row, [candidate])
+
+    with Session(sqlite_engine) as s:
+        product_row = s.get(models.Product, product_id)
+        assert product_row.title == "Real Product Title"
+        assert product_row.metadata_status == MetadataStatus.OK
