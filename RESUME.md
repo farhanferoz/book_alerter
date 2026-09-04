@@ -87,7 +87,15 @@ Tiers per §5: Wave 0 none · Waves 1, 2, 4, 5, 6 **Tier 2** (`simplify` → `fi
 `/second-opinion` → `fp-check`) · Wave 3 **Tier 4** (property tests before the migration +
 fresh-session review).
 - **Wave 0** — n/a (artefacts only). ✅
-- **Wave 1** (T1.1–T1.4) — Tier 2 **NOT RUN**.
+- **DEVIATION, stated not silent (2026-09-04):** §5's Tier 2 is a four-step pipeline
+  (`simplify` → `find-bugs` → `/second-opinion` → `fp-check`) **per wave**. Run instead: two
+  branch-wide adversarial reviews, backend and frontend, both read-only at HEAD. Reason: the
+  waves interleave heavily in the same files (`scheduler.py`, `stats.py` and `amazon.py` are
+  each touched by three waves), so a per-wave slice would review the same code repeatedly while
+  missing cross-wave interactions — which is where every real bug today has actually been.
+  **This is a substitution, not the tier as written**, and it does not discharge `simplify` or
+  `fp-check`. Judge whether it was enough from the reports, not from this bullet.
+- **Wave 1** (T1.1–T1.4) — Tier 2 **NOT RUN as specified**; covered by the backend review above.
 - **Wave 2** (T2.1–T2.6) — Tier 2 **NOT RUN**, but the shipping chain it owns had a full
   adversarial review (S1–S8, report in the session scratchpad), which is stronger than
   Tier 2 on the part that mattered. Findings all fixed except S2 (queued) and S8→D38.
