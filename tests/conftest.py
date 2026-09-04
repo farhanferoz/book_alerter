@@ -45,7 +45,7 @@ def transient_stats():
         days_of_history: int = 30,
         current_percentile_rank: int | None = None,
         current_best_shipping_minor: int | None = 0,
-        current_effective_total_minor: int | None | object = _USE_BEST,
+        current_effective_total_minor: int | object | None = _USE_BEST,
     ) -> BookStats:
         """The p50_total_minor / current_percentile_rank kwargs are legacy
         shape hooks for the dispatcher message body and signal-percentile

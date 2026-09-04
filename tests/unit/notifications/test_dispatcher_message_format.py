@@ -45,7 +45,7 @@ def _stats(
     item_minor: int | None,
     ship_minor: int | None,
     p50_90d: int | None,
-    effective: int | None | object = _USE_CURRENT,
+    effective: int | object | None = _USE_CURRENT,
     shipping_estimate: int | None = None,
 ) -> BookStats:
     if effective is _USE_CURRENT:
