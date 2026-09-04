@@ -84,6 +84,60 @@ export function itemHref(item: Pick<Item, "kind" | "id">): string {
   return `/${segment}/${item.id}`;
 }
 
+/** Dashboard/list route for an item's kind. Not simply `itemHref` minus the
+ * id — the books dashboard is mounted at `/` (see `App.tsx`), not `/books`
+ * (there is no `/books` route), while the products dashboard is at
+ * `/products`. Used after a delete to navigate back to the right list. */
+export function itemListHref(kind: ItemKind): string {
+  return kind === "product" ? "/products" : "/";
+}
+
+// `/api/books/{book_id}/...` and `/api/products/{product_id}/...` are the
+// only two endpoint families an item can belong to; the base path and the
+// list/detail query keys all key off `kind` as plain data. Shared by
+// `useItems.ts`'s hooks, `ItemRowMenu`, `ActionBar`, `SettingsPanel` and
+// `KeepaChart` so there's one definition of "books" vs "products", not one
+// per component.
+export function itemApiBase(kind: ItemKind): "/api/books" | "/api/products" {
+  return kind === "product" ? "/api/products" : "/api/books";
+}
+
+export function itemListQueryKey(kind: ItemKind): "books" | "products" {
+  return kind === "product" ? "products" : "books";
+}
+
+export function itemDetailQueryKey(kind: ItemKind): "book" | "product" {
+  return kind === "product" ? "product" : "book";
+}
+
+// --- Observations ---------------------------------------------------------
+
+export type PriceObservation = components["schemas"]["PriceObservationOut"];
+export type ProductObservation = components["schemas"]["ProductObservationOut"];
+
+/**
+ * Shared shape for the detail-page history/breakdown components
+ * (`HistoryChart`, `SourceBreakdown`). `PriceObservationOut` and
+ * `ProductObservationOut` are the same wire type except for their FK field
+ * (`book_id` vs `product_id` — verified against `web/src/api/schema.ts`),
+ * which neither of those components reads, so this omits it rather than
+ * unioning the two FK-bearing types. A `PriceObservation`/`ProductObservation`
+ * satisfies this structurally as-is — no mapping function needed.
+ */
+export type ItemObservation = {
+  id: number;
+  source: string;
+  seller: string | null;
+  condition: string;
+  price_minor: number;
+  currency: string;
+  shipping_minor: number | null;
+  total_minor: number;
+  url: string;
+  observed_at: string;
+  last_seen: string;
+};
+
 // --- Dashboard filter/sort -----------------------------------------------
 //
 // Shared with the products dashboard (`ProductsDashboard.tsx`) so it gets

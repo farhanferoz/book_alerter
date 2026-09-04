@@ -1,6 +1,6 @@
 // Snapshot card — current best total + source + condition + age.
 
-import type { Book } from "@/hooks/useBook";
+import type { Item } from "@/lib/item";
 import {
   displaySourceLabel,
   formatCondition,
@@ -8,8 +8,8 @@ import {
   formatRelativeTime,
 } from "@/lib/format";
 
-export function SnapshotCard({ book }: { book: Book }) {
-  const s = book.stats;
+export function SnapshotCard({ item }: { item: Item }) {
+  const s = item.stats;
   const hasObs = s.current_best_total_minor != null;
   return (
     <div className="rounded-md border border-border bg-card p-4">
@@ -19,7 +19,7 @@ export function SnapshotCard({ book }: { book: Book }) {
       {hasObs ? (
         <>
           <p className="mt-1 text-2xl font-semibold">
-            {formatMoneyMinor(s.current_best_total_minor, book.currency)}
+            {formatMoneyMinor(s.current_best_total_minor, item.currency)}
             <span className="ml-2 align-middle text-xs font-normal text-muted-foreground">
               {/* Disambiguates the figure: when shipping is null, the displayed
                   "total" is actually item-only. Labelling it as such removes
@@ -35,9 +35,9 @@ export function SnapshotCard({ book }: { book: Book }) {
             {s.current_best_shipping_minor === 0
               ? " · free shipping"
               : s.current_best_shipping_minor != null
-                ? ` · incl. ${formatMoneyMinor(s.current_best_shipping_minor, book.currency)} shipping`
+                ? ` · incl. ${formatMoneyMinor(s.current_best_shipping_minor, item.currency)} shipping`
                 : s.shipping_estimate_minor != null
-                  ? ` · shipping not listed (ranked using ~${formatMoneyMinor(s.shipping_estimate_minor, book.currency)} estimate)`
+                  ? ` · shipping not listed (ranked using ~${formatMoneyMinor(s.shipping_estimate_minor, item.currency)} estimate)`
                   : " · shipping not listed"}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">

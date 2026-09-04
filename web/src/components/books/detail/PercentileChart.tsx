@@ -2,7 +2,7 @@
 // imputed totals, with a vertical current-price line cutting all rows.
 // Hand-rolled SVG — Recharts has no native box-plot shape.
 
-import type { Book } from "@/hooks/useBook";
+import type { Item } from "@/lib/item";
 import { formatMoneyMinor } from "@/lib/format";
 import { WINDOW_KEYS } from "@/lib/windows";
 
@@ -33,12 +33,12 @@ function niceTicks(min: number, max: number, target = 5): number[] {
   return ticks;
 }
 
-export function PercentileChart({ book }: { book: Book }) {
-  const windows = book.stats.windows ?? {};
-  const current = book.stats.current_effective_total_minor;
-  const shippingEstimate = book.stats.shipping_estimate_minor;
+export function PercentileChart({ item }: { item: Item }) {
+  const windows = item.stats.windows ?? {};
+  const current = item.stats.current_effective_total_minor;
+  const shippingEstimate = item.stats.shipping_estimate_minor;
   const usedImputedShipping =
-    book.stats.current_best_shipping_minor == null && shippingEstimate != null;
+    item.stats.current_best_shipping_minor == null && shippingEstimate != null;
 
   const hasAnyData = WINDOW_KEYS.some((k) => windows[k]?.p5 != null);
   if (!hasAnyData) {
@@ -86,11 +86,11 @@ export function PercentileChart({ book }: { book: Book }) {
           <span className="text-xs text-muted-foreground">
             {usedImputedShipping ? "Effective" : "Current"}{" "}
             <span className="font-medium text-foreground">
-              {formatMoneyMinor(current, book.currency)}
+              {formatMoneyMinor(current, item.currency)}
             </span>
             {usedImputedShipping && (
               <span className="ml-1">
-                (incl. ~{formatMoneyMinor(shippingEstimate, book.currency)} est. ship)
+                (incl. ~{formatMoneyMinor(shippingEstimate, item.currency)} est. ship)
               </span>
             )}
           </span>
@@ -123,7 +123,7 @@ export function PercentileChart({ book }: { book: Book }) {
               textAnchor="middle"
               className="fill-muted-foreground text-[10px]"
             >
-              {formatMoneyMinor(t, book.currency)}
+              {formatMoneyMinor(t, item.currency)}
             </text>
           </g>
         ))}
@@ -225,7 +225,7 @@ export function PercentileChart({ book }: { book: Book }) {
               textAnchor="middle"
               className="fill-emerald-700 text-[10px] font-medium dark:fill-emerald-300"
             >
-              {formatMoneyMinor(current, book.currency)}
+              {formatMoneyMinor(current, item.currency)}
             </text>
           </g>
         )}

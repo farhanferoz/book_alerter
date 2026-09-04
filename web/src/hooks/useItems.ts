@@ -25,10 +25,14 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ApiError, apiGet } from "@/api/client";
 import {
   bookToItem,
+  itemApiBase,
+  itemDetailQueryKey,
+  itemListQueryKey,
   productToItem,
   type Book,
   type Item,
   type ItemKind,
+  type ItemObservation,
   type Product,
 } from "@/lib/item";
 
@@ -44,12 +48,12 @@ export function useItems(
   params: ItemsQueryParams = {},
 ): UseQueryResult<Item[], ApiError> {
   return useQuery<Item[], ApiError>({
-    queryKey: [kind === "book" ? "books" : "products", params],
+    queryKey: [itemListQueryKey(kind), params],
     queryFn: async () => {
       const search = new URLSearchParams();
       if (params.include_archived) search.set("include_archived", "true");
       const qs = search.toString();
-      const base = kind === "book" ? "/api/books" : "/api/products";
+      const base = itemApiBase(kind);
       const path = (qs ? `${base}?${qs}` : base) as "/api/books" | "/api/products";
       const body = await apiGet(path);
       return kind === "book"
@@ -61,10 +65,9 @@ export function useItems(
 
 export function useItem(kind: ItemKind, id: number | null): UseQueryResult<Item, ApiError> {
   return useQuery<Item, ApiError>({
-    queryKey: [kind === "book" ? "book" : "product", id],
+    queryKey: [itemDetailQueryKey(kind), id],
     queryFn: async () => {
-      const base = kind === "book" ? "/api/books" : "/api/products";
-      const path = `${base}/${id}` as
+      const path = `${itemApiBase(kind)}/${id}` as
         | "/api/books/{book_id}"
         | "/api/products/{product_id}";
       const body = await apiGet(path);
@@ -77,5 +80,33 @@ export function useItem(kind: ItemKind, id: number | null): UseQueryResult<Item,
       if (err instanceof ApiError && err.status === 404) return false;
       return count < 2;
     },
+  });
+}
+
+export type ItemObservationsPage = {
+  items: ItemObservation[];
+  next_before: string | null;
+};
+
+/** Mirrors `useBookObservations`/`useProductObservations` (`./useBook.ts`,
+ * `./useProduct.ts`) — same query keys (`["book"|"product", id,
+ * "observations", limit]`), same default limit — one `useQuery` call with
+ * `kind` picking the endpoint, for the same rules-of-hooks reason `useItems`/
+ * `useItem` above do. */
+export function useItemObservations(
+  kind: ItemKind,
+  id: number | null,
+  limit = 500,
+): UseQueryResult<ItemObservationsPage, ApiError> {
+  return useQuery<ItemObservationsPage, ApiError>({
+    queryKey: [itemDetailQueryKey(kind), id, "observations", limit],
+    queryFn: async () => {
+      const path = `${itemApiBase(kind)}/${id}/observations?limit=${limit}` as
+        | "/api/books/{book_id}/observations"
+        | "/api/products/{product_id}/observations";
+      const body = await apiGet(path);
+      return body as ItemObservationsPage;
+    },
+    enabled: id != null,
   });
 }

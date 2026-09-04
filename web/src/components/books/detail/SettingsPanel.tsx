@@ -1,10 +1,17 @@
-// Settings panel — target / threshold / alert kinds / mute / notes.
+// Settings panel — target / threshold / alert kinds / mute / notes, plus a
+// products-only "track used market" toggle.
 //
 // Pattern: a single `<form>` carrying local state for every editable field,
-// "Save" PATCHes the whole bundle via `PATCH /api/books/{id}`. We rebuild
-// state from `book` whenever a fresh book lands (via `key={book.updated_at}`
-// on the parent's render — see `BookDetail.tsx`). That keeps the form
-// straightforward without effect-driven sync.
+// "Save" PATCHes the whole bundle via `PATCH /api/books/{id}` or
+// `PATCH /api/products/{id}`. We rebuild state from `item` whenever a fresh
+// item lands (via `key={item.updated_at}` on the parent's render — see
+// `BookDetail.tsx`/`ProductDetail.tsx`). That keeps the form straightforward
+// without effect-driven sync.
+//
+// Every field here (target price, percentile threshold/window, alert-kind
+// disable, mute-until, notes) is already on both `BookPatch` and
+// `ProductPatch` — `track_used` is the one products-only field, rendered
+// only when `item.kind === "product"` (T5.4).
 //
 // Money: the user enters whole pounds; we convert to/from minor units at the
 // form edge via `poundsToMinor` / `minorToPoundsInput` (see `lib/format.ts`).
@@ -21,11 +28,18 @@ import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { minorToPoundsInput, poundsToMinor } from "@/lib/format";
-import type { Book } from "@/hooks/useBook";
+import {
+  itemApiBase,
+  itemDetailQueryKey,
+  itemListQueryKey,
+  type Item,
+} from "@/lib/item";
 
 type BookPatch = components["schemas"]["BookPatch"];
+type ItemPatch = BookPatch & { track_used?: boolean };
 type AlertKind = "target_hit" | "percentile_cross" | "new_low";
 
 const ALERT_KINDS: ReadonlyArray<{ kind: AlertKind; label: string }> = [
@@ -57,38 +71,43 @@ function localInputToIso(value: string): string | null {
   return d.toISOString();
 }
 
-export function SettingsPanel({ book }: { book: Book }) {
+export function SettingsPanel({ item }: { item: Item }) {
   const qc = useQueryClient();
   const [targetPounds, setTargetPounds] = useState(
-    minorToPoundsInput(book.target_price_minor),
+    minorToPoundsInput(item.target_price_minor),
   );
   const [threshold, setThreshold] = useState<string>(
-    book.percentile_threshold == null ? "" : String(book.percentile_threshold),
+    item.percentile_threshold == null ? "" : String(item.percentile_threshold),
   );
   const [windowDays, setWindowDays] = useState<string>(
-    book.percentile_window_days == null ? "" : String(book.percentile_window_days),
+    item.percentile_window_days == null ? "" : String(item.percentile_window_days),
   );
   const initialDisabled = new Set<AlertKind>(
-    (book.alert_kinds_disabled ?? []).filter(
+    (item.alert_kinds_disabled ?? []).filter(
       (k): k is AlertKind =>
         k === "target_hit" || k === "percentile_cross" || k === "new_low",
     ),
   );
   const [disabledKinds, setDisabledKinds] =
     useState<Set<AlertKind>>(initialDisabled);
-  const [mute, setMute] = useState<string>(isoToLocalInput(book.muted_until));
-  const [notes, setNotes] = useState<string>(book.notes ?? "");
+  const [mute, setMute] = useState<string>(isoToLocalInput(item.muted_until));
+  const [notes, setNotes] = useState<string>(item.notes ?? "");
+  const [trackUsed, setTrackUsed] = useState<boolean>(
+    item.kind === "product" ? item.track_used : false,
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const save = useMutation<Book, ApiError, BookPatch>({
+  const save = useMutation<Item, ApiError, ItemPatch>({
     mutationFn: async (body) => {
-      const path = `/api/books/${book.id}` as "/api/books/{book_id}";
-      return (await apiPatch(path, body)) as Book;
+      const path = `${itemApiBase(item.kind)}/${item.id}` as
+        | "/api/books/{book_id}"
+        | "/api/products/{product_id}";
+      return (await apiPatch(path, body)) as Item;
     },
     onSuccess: () => {
       setError(null);
-      void qc.invalidateQueries({ queryKey: ["book", book.id] });
-      void qc.invalidateQueries({ queryKey: ["books"] });
+      void qc.invalidateQueries({ queryKey: [itemDetailQueryKey(item.kind), item.id] });
+      void qc.invalidateQueries({ queryKey: [itemListQueryKey(item.kind)] });
     },
     onError: (err) => {
       setError(`Save failed (${err.status}) — ${err.message}`);
@@ -135,15 +154,21 @@ export function SettingsPanel({ book }: { book: Book }) {
       win = Math.round(parsed);
     }
 
-    save.mutate({
+    const body: ItemPatch = {
       target_price_minor: targetMinor,
       percentile_threshold: pct,
       percentile_window_days: win,
       alert_kinds_disabled: [...disabledKinds],
       muted_until: localInputToIso(mute),
       notes: notes.trim() === "" ? null : notes.trim(),
-    });
+    };
+    if (item.kind === "product") {
+      body.track_used = trackUsed;
+    }
+    save.mutate(body);
   };
+
+  const noun = item.kind === "product" ? "product" : "book";
 
   return (
     <form
@@ -206,6 +231,27 @@ export function SettingsPanel({ book }: { book: Book }) {
             Override the global percentile window. Empty = use default.
           </p>
         </div>
+
+        {item.kind === "product" && (
+          <div className="space-y-1.5">
+            <Label htmlFor="track-used">Track used market</Label>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="track-used"
+                checked={trackUsed}
+                onCheckedChange={setTrackUsed}
+              />
+              <span className="text-xs text-muted-foreground">
+                {trackUsed ? "New + used" : "New only"}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              When on, also tracks used grades from the Amazon offer-listing
+              page. Default off — most non-book products have no meaningful
+              used market.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="space-y-1.5">
@@ -231,7 +277,7 @@ export function SettingsPanel({ book }: { book: Book }) {
           })}
         </div>
         <p className="text-xs text-muted-foreground">
-          Toggle off the kinds you don&apos;t want for this book.
+          Toggle off the kinds you don&apos;t want for this {noun}.
         </p>
       </div>
 

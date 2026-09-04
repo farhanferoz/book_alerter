@@ -6,16 +6,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alerts } from "@/pages/Alerts";
 import { Dashboard } from "@/pages/Dashboard";
 import { ProductsDashboard } from "@/pages/ProductsDashboard";
-import { ProductDetail } from "@/pages/ProductDetail";
 import { Settings } from "@/pages/Settings";
 import { SettingsSources } from "@/pages/settings/Sources";
 import { SettingsRecommendation } from "@/pages/settings/Recommendation";
 import { SettingsNotifications } from "@/pages/settings/Notifications";
 
-// BookDetail pulls Recharts, which is heavy (~300 KB raw). Lazy-loading
-// keeps it off the dashboard's critical path.
+// BookDetail and ProductDetail both pull Recharts (via the shared
+// HistoryChart/PercentileChart detail components, T5.3), which is heavy
+// (~300 KB raw). Lazy-loading keeps it off the dashboard's critical path —
+// an eager import of either one drags Recharts into the main chunk
+// regardless of the other's lazy() wrapper, so both need it.
 const BookDetail = lazy(() =>
   import("@/pages/BookDetail").then((m) => ({ default: m.BookDetail })),
+);
+const ProductDetail = lazy(() =>
+  import("@/pages/ProductDetail").then((m) => ({ default: m.ProductDetail })),
 );
 
 // SettingsAdvanced pulls Monaco editor (~2 MB raw). Route-split so the
@@ -45,7 +50,14 @@ function App() {
           }
         />
         <Route path="products" element={<ProductsDashboard />} />
-        <Route path="products/:id" element={<ProductDetail />} />
+        <Route
+          path="products/:id"
+          element={
+            <Suspense fallback={<RouteSpinner />}>
+              <ProductDetail />
+            </Suspense>
+          }
+        />
         <Route path="alerts" element={<Alerts />} />
         <Route path="settings" element={<Settings />}>
           <Route index element={<Navigate replace to="/settings/sources" />} />

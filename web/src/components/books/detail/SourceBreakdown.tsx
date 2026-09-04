@@ -8,7 +8,7 @@
 
 import { useMemo } from "react";
 
-import type { Book, PriceObservation } from "@/hooks/useBook";
+import type { Item, ItemObservation } from "@/lib/item";
 import {
   Table,
   TableBody,
@@ -30,7 +30,7 @@ import {
 // page to click "buy" on. Filter it out of the per-source breakdown so the
 // table only lists offers the user could actually transact on. Keepa still
 // drives the chart and percentile distribution via its own code paths.
-function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
+function latestPerGroup(observations: ItemObservation[]): ItemObservation[] {
   // Key off `last_seen` (the most recent scrape that re-confirmed each offer),
   // NOT `observed_at` (first sighting). A stable-but-live offer is deduped on
   // every scrape, so its canonical observed_at is frozen at the first sighting
@@ -50,7 +50,7 @@ function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
   // (source, condition). Two copies at identical prices collapse (same
   // offer scraped twice); copies at different prices each get a row.
   // Drops listings no longer in the latest scrape (last_seen doesn't match).
-  const seen = new Map<string, PriceObservation>();
+  const seen = new Map<string, ItemObservation>();
   for (const o of observations) {
     if (o.source === "keepa") continue;
     const groupKey = `${o.source}::${o.condition}`;
@@ -81,10 +81,10 @@ function latestPerGroup(observations: PriceObservation[]): PriceObservation[] {
 // exactly one observation; if it doesn't, returning null + falling back
 // to no-pin is strictly better than pinning a near-miss.
 function findCurrentBestObservation(
-  book: Book,
-  observations: PriceObservation[],
-): PriceObservation | null {
-  const s = book.stats;
+  item: Item,
+  observations: ItemObservation[],
+): ItemObservation | null {
+  const s = item.stats;
   if (
     s.current_best_url == null ||
     s.current_best_source == null ||
@@ -107,11 +107,11 @@ function findCurrentBestObservation(
 }
 
 export function SourceBreakdown({
-  book,
+  item,
   observations,
 }: {
-  book: Book;
-  observations: PriceObservation[];
+  item: Item;
+  observations: ItemObservation[];
 }) {
   // Single memoized pass: derive both `rows` and `currentBestId` together
   // so they cannot disagree about which observation is "Current best"
@@ -121,7 +121,7 @@ export function SourceBreakdown({
   // the table between scrapes.
   const { rows, currentBestId } = useMemo(() => {
     const latest = latestPerGroup(observations);
-    const currentBest = findCurrentBestObservation(book, observations);
+    const currentBest = findCurrentBestObservation(item, observations);
     if (currentBest == null) {
       return { rows: latest, currentBestId: null };
     }
@@ -130,7 +130,7 @@ export function SourceBreakdown({
       rows: [currentBest, ...rest],
       currentBestId: currentBest.id,
     };
-  }, [book, observations]);
+  }, [item, observations]);
 
   return (
     <div className="rounded-md border border-border bg-card">

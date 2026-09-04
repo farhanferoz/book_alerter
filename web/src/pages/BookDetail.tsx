@@ -1,14 +1,21 @@
 // Book detail (`/books/:id`).
 //
 // Two queries run in parallel:
-//   - `useBook(id)`              → book + computed stats
-//   - `useBookObservations(id)`  → up to 500 most-recent price observations
+//   - `useItem("book", id)`               → book + computed stats, as `Item`
+//   - `useItemObservations("book", id)`   → up to 500 most-recent price observations
 //
 // The page is a stack of cards (header, snapshot, signal, history chart,
 // source breakdown, settings, actions) — each card consumes its slice of the
-// data. SettingsPanel and ActionBar own their own mutations and invalidate
-// the `["book", id]` cache via TanStack so changes round-trip without a
-// full reload.
+// `Item`/`ItemObservation[]` data and is shared with `ProductDetail.tsx`.
+// SettingsPanel and ActionBar own their own mutations and invalidate the
+// `["book", id]` cache via TanStack so changes round-trip without a full
+// reload — see `@/lib/item`'s `itemDetailQueryKey`/`itemListQueryKey`.
+//
+// Re-pointed at the shared `Item` hooks/components (T5.3) — `useBook`/
+// `useBookObservations` (`@/hooks/useBook`) are unchanged and still used by
+// nothing else that matters here; `useItem("book", id)` uses the identical
+// query key and 404-no-retry behaviour, so this is a like-for-like swap,
+// not a behaviour change.
 
 import { Link, useParams } from "react-router-dom";
 
@@ -22,7 +29,7 @@ import { SettingsPanel } from "@/components/books/detail/SettingsPanel";
 import { SignalCard } from "@/components/books/detail/SignalCard";
 import { SnapshotCard } from "@/components/books/detail/SnapshotCard";
 import { SourceBreakdown } from "@/components/books/detail/SourceBreakdown";
-import { useBook, useBookObservations } from "@/hooks/useBook";
+import { useItem, useItemObservations } from "@/hooks/useItems";
 import { formatErrorMessage } from "@/lib/utils";
 
 function NotFound() {
@@ -68,8 +75,8 @@ export function BookDetail() {
       ? numericId
       : null;
 
-  const bookQuery = useBook(validId);
-  const obsQuery = useBookObservations(validId);
+  const bookQuery = useItem("book", validId);
+  const obsQuery = useItemObservations("book", validId);
 
   if (validId == null) return <NotFound />;
   if (bookQuery.isLoading) return <PageSkeleton />;
@@ -77,7 +84,7 @@ export function BookDetail() {
   if (bookQuery.isError) return <ErrorBox error={bookQuery.error} />;
   if (!bookQuery.data) return <PageSkeleton />;
 
-  const book = bookQuery.data;
+  const item = bookQuery.data;
   const observations = obsQuery.data?.items ?? [];
 
   return (
@@ -86,26 +93,26 @@ export function BookDetail() {
         ← Dashboard
       </Link>
 
-      <HeaderCard book={book} />
+      <HeaderCard item={item} />
 
-      <ActionBar book={book} />
+      <ActionBar item={item} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <SnapshotCard book={book} />
-        <SignalCard book={book} />
+        <SnapshotCard item={item} />
+        <SignalCard item={item} />
       </div>
 
-      <PercentileChart book={book} />
+      <PercentileChart item={item} />
 
       <HistoryChart observations={observations} isLoading={obsQuery.isLoading} />
 
-      <KeepaChart bookId={book.id} />
+      <KeepaChart item={item} />
 
-      <SourceBreakdown book={book} observations={observations} />
+      <SourceBreakdown item={item} observations={observations} />
 
       {/* Remount Settings whenever the book's updated_at changes so the form
           resets to the saved state without an effect. */}
-      <SettingsPanel key={book.updated_at} book={book} />
+      <SettingsPanel key={item.updated_at} item={item} />
     </section>
   );
 }

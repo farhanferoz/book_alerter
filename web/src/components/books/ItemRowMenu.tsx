@@ -27,7 +27,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { Book, Item, Product } from "@/lib/item";
+import {
+  itemApiBase,
+  itemListQueryKey,
+  type Book,
+  type Item,
+  type Product,
+} from "@/lib/item";
 
 type RefetchResult = components["schemas"]["RefetchResult"];
 type ConfirmKind = "archive" | "delete" | null;
@@ -51,22 +57,11 @@ function confirmCopy(kind: Item["kind"], confirm: Exclude<ConfirmKind, null>) {
       };
 }
 
-// `/api/books/{book_id}` and `/api/products/{product_id}` are the only two
-// endpoint families a row can belong to — the base path and the list
-// query key both key off `item.kind` as plain data.
-function apiBase(kind: Item["kind"]): "/api/books" | "/api/products" {
-  return kind === "product" ? "/api/products" : "/api/books";
-}
-
-function listQueryKey(kind: Item["kind"]): "books" | "products" {
-  return kind === "product" ? "products" : "books";
-}
-
 export function ItemRowMenu({ item }: { item: Item }) {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
-  const base = apiBase(item.kind);
-  const listKey = listQueryKey(item.kind);
+  const base = itemApiBase(item.kind);
+  const listKey = itemListQueryKey(item.kind);
 
   const onError = (label: string) => (err: ApiError) =>
     window.alert(`${label} failed (${err.status}) — ${err.message}`);

@@ -40,7 +40,7 @@ import {
 } from "recharts";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import type { PriceObservation } from "@/hooks/useBook";
+import type { ItemObservation } from "@/lib/item";
 import { formatDateTime, formatMoneyMinor } from "@/lib/format";
 
 type Range = "7d" | "30d" | "90d" | "all";
@@ -96,7 +96,7 @@ type ChartRow = { ts: number } & Record<string, number | null>;
 // each offer as alive across [observed, last].
 type LiveOffer = { observed: number; last: number; total: number };
 
-function buildSeries(observations: PriceObservation[], range: Range): {
+function buildSeries(observations: ItemObservation[], range: Range): {
   rows: ChartRow[];
   series: string[];
 } {
@@ -199,7 +199,7 @@ export function HistoryChart({
   observations,
   isLoading,
 }: {
-  observations: PriceObservation[];
+  observations: ItemObservation[];
   isLoading: boolean;
 }) {
   const [range, setRange] = useState<Range>("90d");
