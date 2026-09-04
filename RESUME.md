@@ -61,42 +61,29 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
 ### Next
-- **Progress: 28 of 40 ticked** (+1 dropped on evidence = 29 resolved). Landed this session:
-  T3.2, T4.2, T5.5, T6.1, T6.5, T6.6, plus D33's shipping fix and migration 0022.
-- **THE BIG ONE — S1, a confirmed user-visible bug, fix in flight with the stats worker.**
-  `TARGET_HIT` fires on a total that omits shipping. `_persist` stores
-  `total = price + (shipping or 0)`, so a T2.5 "unknown" row has `total_minor == price_minor`,
-  and `alerts.py:37` + `compute_signal`'s two target branches compare that raw column.
-  Reproduced end-to-end twice (reviewer's probe + root's re-run): target £8.00, effective total
-  **£10.79**, alert fires. On this path post-T2.5 behaviour is **bit-identical to the pre-fix
-  bug**. Ratified as **D34**: every target comparison moves to `current_effective_total_minor`,
-  and when that is None the alert must NOT fire. Both sites must move together — they interact
-  through `prev_signal`, so fixing only one lets the dedup suppress the corrected alert.
-- **Remaining review findings, all confirmed by execution** (report:
-  `<scratchpad>/shipping-chain-review.md`, probes alongside it):
-  **S2** (High) the shipping cascade imputes £0.00 because missingness is not random, and tier 1
-  shadows tier 2 making tier 2's guard unreachable — production magnitude UNMEASURED, SQL is in
-  the report; **S3** (Med-High) the push notification calls an item-only figure "total" and
-  computes "% below median" across two different metrics — with the capture worker;
-  **S4** (Med) a second ranking rule survives in SQL on the divergent metric, contradicting D14,
-  plus a third copy in the frontend sorts; **S6/S7/S8** (latent, in `amazon.py`) a documented
-  invariant proved false, the £35 *threshold* read as a £35 *charge*, and `_merge_offers`
-  promoting a known `0` over a T2.5 `None`.
-- **D35 — stop guessing English marker phrases.** Amazon ships
-  `data-csa-c-mir-sub-type="CONDITIONALLY_FREE"` and `data-csa-c-delivery-condition` inside the
-  node the parser already reads. Verified over every capture: 10 conditional vs 47 empty,
-  agreeing perfectly with both markers; `grep -rn "delivery-condition" src/` returns nothing.
-  Switch to it, KEEP the English markers as fallback, and log disagreement. With the browser
-  worker.
-- **T1.3 is half done.** Schema + migration 0022 + property test are committed; the scheduler
-  half (per-item challenge retry, >=50%-challenged backoff rule) is NOT, because `scheduler.py`
-  holds the stats worker's uncommitted T3.4 hunk. Do it once that commits.
-- Unstarted: **T4.1** (biggest remaining), T1.4 (needs `config.py`, contended by T2.2), T2.3
-  (blocked on T2.2), T4.4, T6.2, T6.3, T6.4's remainder.
+- **Progress: 33 of 40 ticked** (+T1.2 dropped on evidence = 34 resolved). Root landed this
+  session: T1.3, T1.4, T3.2/T4.2/T5.5/T6.1/T6.2/T6.3/T6.5/T6.6 verification+ticks, S4's frontend
+  half, the janitor's missing `product-images` sweep, the e2e `last_seen_at` break, and a RUF036
+  lint break that only a current ruff sees.
+- **Six open, ALL with workers or blocked behind them:** T2.2 + T2.4 + **S1/D34** (stats worker,
+  in flight) → T2.3 (Prime UI) and T6.4 (Prime docs) unblock when it lands; T4.1 (capture worker,
+  in flight — migration 0023 + property test already on disk); T4.4 (needs `stats.py`).
+- **S1/D34 is still the most user-visible open bug.** `TARGET_HIT` fires on a total that omits
+  shipping — reproduced end-to-end twice, target £8.00 vs effective £10.79. Fix must move BOTH
+  `alerts.py:37` and `compute_signal`'s two target branches together; they interact through
+  `prev_signal`, so a half fix lets the dedup suppress the corrected alert next run.
+- Review findings status: **S3, S4, S5 fixed. S1 in flight. S2 queued behind T2.2** (cascade
+  imputes £0.00 because missingness is not random, and tier 1 shadows tier 2 — production
+  magnitude UNMEASURED, SQL in the report). **S6/S7/S8 with the browser worker.**
+- **Expect 3 red `_merge_offers` tests** while the browser worker holds `amazon.py` for S8 —
+  that is exactly the behaviour S8 changes, not a regression.
 - **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** (write-set
   guard). Its remedy is that the orchestrator writes them — never have a worker override it.
 - **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe below),
   `/checkpoint --final`. NAS deploy stays out of scope.
+- **Unpinned ruff is a live reproducibility hole**: `pyproject` says `ruff>=0.8` and there is no
+  `uv.lock`, so "ruff clean" depends on when your venv was made (0.15.7 here, 0.16.6 fresh).
+  Two real errors were invisible on this machine. Pinning is the user's call — flag it.
 - Minor litter for the endgame tidy: a stale `git worktree` registered at
   `/tmp/claude-1000/-home-ff235-dev-book-alerter/0c646d24-.../scratchpad/clean-check`.
 
@@ -132,10 +119,11 @@ Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. No
 that makes the work deployable, and it is the last thing to do, after review.
 
 ### Pending gates before the endgame
-- **Re-run the Docker e2e from committed HEAD — now ACTIONABLE, T3.2 has landed.** The earlier
-  run (`test_docker_smoke` FAILED / `test_write_containment_during_scheduler_run` passed) built
-  its image from a tree holding the half-finished heartbeat change. `docker build` bakes in the
-  working tree, so build from a **clean checkout**, never this one.
+- ~~Re-run the Docker e2e from committed HEAD~~ — **DONE and GREEN 2026-09-04**: built from an
+  isolated `git worktree` at HEAD, `2 passed`. It first caught a real break — `test_docker_smoke`
+  injects a `PriceObservation` and had never been ported to the required `last_seen_at`, invisible
+  to every green suite because the e2e tests are marked and skipped by default. Fixed in `16b8b57`,
+  re-run green. **Always build from a clean checkout; `docker build` bakes in the working tree.**
 - **T6.8 not ticked**: still needs negative-case evidence (deliberate stray write → assertion
   fails → removed → passes). Root re-read the assertion 2026-09-04: it is correct, and it
   already guards against the always-passes trap by asserting at least one new path appeared.
