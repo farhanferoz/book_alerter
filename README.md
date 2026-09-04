@@ -128,6 +128,46 @@ lock for the duration.
 Then check `/api/health` (it reports `janitor_last_run_at`) and re-run
 `scripts/smoke_check.py` against a fresh copy of the deployed database.
 
+### After the first deploy carrying the shipping fixes — read this
+
+**Deploying does not immediately correct the prices you see.** The shipping fixes change
+how offers are *parsed*, not what is already stored, and every shipping value in the
+database today was written by the old parser. Measured on a copy of production: all 13
+tracked books currently carry an observed `shipping_minor = 0`, so the app shows free
+delivery for every one of them — which is exactly the bug the fixes address.
+
+The stored values correct themselves as scrapes run: a changed shipping value is recorded
+as a new offer row and becomes the current best. So expect the displayed prices to start
+changing after the first scheduled scrape of each source, not at deploy time.
+
+**One thing to check once a full scrape cycle has completed**, because it is the failure
+that would otherwise be invisible. Offers whose delivery promise is conditional are now
+recorded as *unknown* shipping, and an unknown value gets a cascade-estimated figure. That
+estimate is a median over the shipping values already on record — which are still mostly
+the old zeros. So the estimate can come out at or near £0.00, which puts the item back to
+looking cheaper than it is, by a different route.
+
+Check it directly:
+
+```bash
+# On a copy of the deployed DB, after a full scrape cycle.
+sqlite3 book_alerter.db "
+SELECT source,
+       SUM(shipping_minor IS NULL)  AS unknown,
+       SUM(shipping_minor = 0)      AS zero,
+       SUM(shipping_minor > 0)      AS paid
+FROM priceobservation
+WHERE observed_at >= date('now','-365 day')
+GROUP BY source;"
+```
+
+If `zero` still dwarfs `paid` for `amazon` once fresh scrapes have accumulated, the
+estimate is being dragged down by pre-fix rows and the cascade needs a cutoff that ignores
+observations older than the fix. That decision is recorded in `DECISIONS.md` as D39, along
+with why the rows are not simply deleted: nothing in a stored row says whether its £0.00
+was a genuine free delivery or a conditional promise the old parser could not read, so
+scrubbing them would discard real data on a guess.
+
 ## Adding a tracked book
 
 Via the UI: click **Add book**, paste an ISBN-10 or ISBN-13, confirm the metadata lookup.
