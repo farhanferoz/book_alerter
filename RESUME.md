@@ -127,6 +127,24 @@ fresh-session review).
   - Plus an undocumented behaviour change (book 6's 12-month window: rank 41→1, p25 +64%).
   All three are with the stats worker. **Do not merge to `master` until they land.**
 - **Wave 4** (T4.1–T4.5) — Tier 2 **NOT RUN**; T4.1 still in flight.
+- **FRONTEND review DONE 2026-09-04 — 2 HIGH + 4 MED, dispatched to W-T23-prime, NONE FIXED.**
+  Report: `<scratchpad>/review-web.md`. `tsc`/`eslint`/`build` are green with every one present.
+  - **F1 HIGH, data integrity, UNRECOVERABLE** — `AddProductModal.tsx:152` guards on the
+    *debounced* input while `:157` sends the *live* one: edit ASIN A→B, Add within 450 ms, and
+    product B is created carrying A's title/image/brand. Backend stamps `metadata_status="ok"`,
+    all three repair paths filter on `PENDING`, so nothing fixes it. No title on `ProductPatch`,
+    no retry endpoint — only escape is Delete, which also destroys the Keepa history.
+  - **F2 HIGH** — `SignalCard.tsx:25` reads `current_best_total_minor` while its own pill uses
+    the effective total: pill WAIT, text "Target met". `02bdc1e` edited that file without fixing
+    it and moved `SnapshotCard` to effective, so the two cards now visibly disagree.
+    **D34's invariant, SIXTH site** — grep `web/src` for the field, don't fix one line.
+  - **F5 MED** — `columns.tsx` missed it too: dashboard £19.80 vs detail £17.00, same offer.
+  - **F6 MED** — `useConfig.ts:143-150` never invalidates `["products"]`, so the Prime toggle
+    leaves every product price stale.
+  - **F3 MED** — `columns.tsx:158` sorts `current_best_shipping_minor ?? -1`: **unknown sorts
+    below free**. Fifth time that rule has bitten.
+  - **F4 MED** — `metadata_status="failed"` renders no badge, so the permanently-broken state is
+    the one with no indicator.
 - **Wave 5** (T5.1–T5.5) — Tier 2 **NOT RUN**.
 - **Wave 6** (T6.1–T6.8) — Tier 2 **NOT RUN**.
 - **Unpinned ruff is a live reproducibility hole**: `pyproject` says `ruff>=0.8` and there is no
