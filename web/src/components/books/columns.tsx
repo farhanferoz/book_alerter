@@ -135,18 +135,18 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                 </span>
               )}
               {/* The chip replaced a bare red dot, whose meaning was visible
-                  only on hover. `aria-label` carries the error text that the
-                  dot's own aria-label used to expose: `title` alone is not
-                  reliably surfaced to assistive tech on a non-focusable
-                  element, and it opens with the visible words so the
-                  accessible name still contains the label. */}
+                  only on hover and whose `aria-label` carried the error text.
+                  The detail comes back as real `sr-only` text rather than an
+                  `aria-label`: this span has no role, so it maps to
+                  `generic`, where ARIA prohibits naming and the label may be
+                  dropped. `title` stays for the sighted hover case. */}
               {item.last_scrape_error && (
                 <span
                   className="inline-flex shrink-0 items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
-                  aria-label={`Scrape failed: ${item.last_scrape_error}`}
                   title={`Last scrape error: ${item.last_scrape_error}`}
                 >
                   Scrape failed
+                  <span className="sr-only">: {item.last_scrape_error}</span>
                 </span>
               )}
             </div>
