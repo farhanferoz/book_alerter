@@ -103,7 +103,14 @@ ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
 
 # 2. Publish. Pushing to master is what triggers the GHCR image build
 #    (.github/workflows/build.yml); pushing a branch does not.
-git checkout master && git merge --no-ff <branch> && git push origin master
+#    NOTE: `gh`'s ACTIVE account is `reviewsenseai`, which has no write access
+#    here, so a bare `git push` fails with:
+#      remote: Permission to farhanferoz/book_alerter.git denied to reviewsenseai
+#    Scope the credential to the one command rather than `gh auth switch`,
+#    which changes the global active account for every repo:
+git checkout master && git merge --no-ff <branch>
+GH_TOKEN=$(gh auth token --user farhanferoz) git push origin master
+#    Reading runs needs no such scoping -- bare `gh` works fine:
 gh run watch --repo farhanferoz/book_alerter
 
 # 3. Deploy.
