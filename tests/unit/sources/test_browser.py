@@ -411,3 +411,161 @@ async def test_close_releases_the_semaphore_it_acquired_not_the_current_one(
 
     assert old_sem._value == 2, "the original semaphore got its slot back"
     assert new_sem._value == 5, "the new one was never touched"
+
+
+# --- F-B1: cancellation must not leak the profile lock or the browser slot --
+#
+# `asyncio.CancelledError` is a `BaseException`, not an `Exception`. Before
+# this fix, `start()` guarded the launch with `except Exception` and
+# `close()` did its two releases at the end of the function body rather than
+# in a `finally` — so a cancellation landing mid-launch or mid-close escaped
+# both and permanently wedged the per-profile lock and the process-wide
+# semaphore slot. Reachable in production: `rebuild_runtime()` (app.py)
+# calls `AsyncIOScheduler.shutdown(wait=False)`, which cancels every
+# in-flight scheduler job — so a user toggling a source's settings in the
+# UI while a scrape is in flight could hit this. Each test below hangs the
+# fake Playwright driver at the exact await point being cancelled, since a
+# fake that returns immediately would never give `task.cancel()` anything
+# real to interrupt.
+
+
+class _HangingEvent:
+    """A `.wait()` that never resolves on its own, standing in for whatever
+    Playwright call is being cancelled mid-flight."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def wait_forever(self) -> None:
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class _HangingLaunchChromium(_FakeChromium):
+    """`launch_persistent_context()` never returns on its own — the test
+    cancels the task waiting on it once the launch has actually started."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._hang = _HangingEvent()
+
+    async def launch_persistent_context(self, user_data_dir, **kwargs):
+        self.persistent_launch_calls += 1
+        await self._hang.wait_forever()
+
+
+class _HangingLaunchPlaywright(_FakePlaywright):
+    def __init__(self) -> None:
+        self.chromium = _HangingLaunchChromium()
+        self.stop_calls = 0
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+
+
+async def test_cancel_during_launch_releases_lock_semaphore_and_stops_driver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reset_browser_concurrency,
+) -> None:
+    """Reproduces the reviewer's first repro line: cancelling while
+    `launch_persistent_context()` is in flight must restore the semaphore
+    to its pre-acquire value, leave the profile lock unheld, and still stop
+    the Playwright driver (it must not become an orphan process)."""
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+    fake_pw = _HangingLaunchPlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    configured_limit = 2
+    browser_mod.configure_browser_concurrency(configured_limit)
+    semaphore = browser_mod._browser_semaphore
+
+    session = BrowserSession("amazon", profile_root=tmp_path)
+    task = asyncio.create_task(session.start())
+    await fake_pw.chromium._hang.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    resolved = (tmp_path / "amazon").resolve()
+    lock = browser_mod._profile_dir_lock(resolved)
+    assert not lock.locked(), "profile lock leaked on cancellation during launch"
+    assert semaphore._value == configured_limit, (
+        "concurrency slot leaked on cancellation during launch"
+    )
+    assert fake_pw.stop_calls == 1, "the Playwright driver must still be stopped"
+    assert not browser_mod.is_profile_in_use(resolved), (
+        "a launch that never completed must never be published as in-use"
+    )
+
+
+class _HangingCloseContext(_FakeContext):
+    def __init__(self) -> None:
+        self._hang = _HangingEvent()
+
+    async def close(self) -> None:
+        await self._hang.wait_forever()
+
+
+class _HangingCloseChromium(_FakeChromium):
+    async def launch_persistent_context(self, user_data_dir, **kwargs):
+        self.persistent_launch_calls += 1
+        return _HangingCloseContext()
+
+
+async def test_cancel_during_close_releases_lock_and_semaphore(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reset_browser_concurrency,
+) -> None:
+    """Reproduces the reviewer's second repro line: cancelling while
+    `context.close()` is in flight must still restore the semaphore and the
+    profile lock — before the fix, both releases sat after the two awaits
+    at the end of `close()`'s body rather than in a `finally`."""
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+    fake_pw = _FakePlaywright()
+    fake_pw.chromium = _HangingCloseChromium()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    configured_limit = 2
+    browser_mod.configure_browser_concurrency(configured_limit)
+    semaphore = browser_mod._browser_semaphore
+
+    session = BrowserSession("amazon", profile_root=tmp_path)
+    context = await session.start()
+    resolved = (tmp_path / "amazon").resolve()
+    assert semaphore._value == configured_limit - 1, "a slot is held while the session is open"
+    assert browser_mod.is_profile_in_use(resolved)
+
+    task = asyncio.create_task(session.close())
+    await context._hang.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    lock = browser_mod._profile_dir_lock(resolved)
+    assert not lock.locked(), "profile lock leaked on cancellation during close()"
+    assert semaphore._value == configured_limit, (
+        "concurrency slot leaked on cancellation during close()"
+    )
+    assert not browser_mod.is_profile_in_use(resolved), (
+        "in-use marker leaked on cancellation during close()"
+    )
+
+
+# --- F-B7: publishing which profile is in use for the janitor --------------
+
+
+async def test_profile_marked_in_use_only_while_session_is_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`janitor.sweep_browser_profiles` reads `is_profile_in_use` from a
+    worker thread to decide whether it's safe to rmtree a profile — this
+    locks down the lifecycle it depends on."""
+    fake_pw = _FakePlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+
+    resolved = (tmp_path / "amazon").resolve()
+    session = BrowserSession("amazon", profile_root=tmp_path)
+    assert not browser_mod.is_profile_in_use(resolved)
+
+    await session.start()
+    assert browser_mod.is_profile_in_use(resolved)
+
+    await session.close()
+    assert not browser_mod.is_profile_in_use(resolved)

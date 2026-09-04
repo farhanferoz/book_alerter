@@ -16,6 +16,7 @@ from pathlib import Path
 
 from sqlmodel import Session
 
+import book_alerter.sources.browser as browser_mod
 from book_alerter.config import JanitorConfig
 from book_alerter.db import models
 from book_alerter.janitor import (
@@ -84,6 +85,44 @@ def test_browser_profile_still_over_cap_after_caches_is_dropped_entirely(tmp_pat
     sweep_browser_profiles(tmp_path, JanitorConfig(browser_profile_max_bytes=2_048))
 
     assert not profile.exists(), "a profile still over cap must go entirely"
+
+
+def test_browser_profile_in_use_is_skipped_even_when_over_cap(tmp_path: Path):
+    """F-B7: the janitor is a sync APScheduler job running in the event
+    loop's thread-pool executor, with no coordination whatsoever with
+    `BrowserSession`'s `asyncio.Lock` — it can't even take one from a
+    worker thread. If it rmtree's a profile a live Chromium still has open
+    (`metadata_refresh` opens `amazon_uk_product` on an unconditional
+    30-minute interval, off the schedule this sweep is normally timed
+    around), the running browser gets corrupted mid-flight and the next
+    launch is a cold, cookieless visit — exactly the state the persistent
+    profile exists to avoid (see the module's F1 shipping-bug reference)."""
+    profile = tmp_path / "browser-profiles" / "amazon"
+    _write(profile / "Default" / "Cookies", 50)
+    _write(profile / "Default" / "huge-not-a-cache", 9_000)
+    browser_mod._mark_profile_in_use(profile.resolve())
+    try:
+        res = sweep_browser_profiles(tmp_path, JanitorConfig(browser_profile_max_bytes=2_048))
+    finally:
+        browser_mod._mark_profile_released(profile.resolve())
+
+    assert profile.exists(), "an in-use profile must survive the sweep even over cap"
+    assert (profile / "Default" / "huge-not-a-cache").exists()
+    assert res.files_removed == 0
+
+
+def test_browser_profile_over_cap_is_swept_once_released(tmp_path: Path):
+    """Converse of the test above: once a profile is no longer in use, the
+    normal over-cap sweep applies to it exactly as before."""
+    profile = tmp_path / "browser-profiles" / "amazon"
+    _write(profile / "Default" / "Cookies", 50)
+    _write(profile / "Default" / "huge-not-a-cache", 9_000)
+    browser_mod._mark_profile_in_use(profile.resolve())
+    browser_mod._mark_profile_released(profile.resolve())
+
+    sweep_browser_profiles(tmp_path, JanitorConfig(browser_profile_max_bytes=2_048))
+
+    assert not profile.exists(), "once released, an over-cap profile must be swept normally"
 
 
 # --- debug captures ---------------------------------------------------------

@@ -28,6 +28,7 @@ docs/superpowers/plans/2026-09-04-wave0-probe-results.md T0.2/T0.3):
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -192,6 +193,39 @@ def _profile_dir_lock(path: Path) -> asyncio.Lock:
     return lock
 
 
+# F-B7: publishes which profile directories currently have a live Chromium
+# attached, so `janitor.sweep_browser_profiles` can skip `rmtree`-ing one out
+# from under a running browser. Searched for existing machinery before adding
+# this: `_profile_dir_locks` above is the only other per-profile bookkeeping
+# in this module, but it's an `asyncio.Lock` dict — unusable here because the
+# janitor sweep runs as a sync APScheduler job, i.e. inside the event loop's
+# thread-pool executor, and cannot `await` an asyncio primitive from that
+# thread. This is a plain set behind a `threading.Lock` instead, readable
+# from any thread with no event loop involved. Keyed by the same RESOLVED
+# `user_data_dir` path `_profile_dir_lock` uses, so the two stay consistent
+# for whatever profile_root a caller passes.
+_profiles_in_use: set[Path] = set()
+_profiles_in_use_lock = threading.Lock()
+
+
+def is_profile_in_use(path: Path) -> bool:
+    """True if a live `BrowserSession` currently holds `path` (a resolved
+    profile directory) open. `janitor.sweep_browser_profiles` calls this to
+    avoid deleting a profile a running Chromium is using."""
+    with _profiles_in_use_lock:
+        return path in _profiles_in_use
+
+
+def _mark_profile_in_use(path: Path) -> None:
+    with _profiles_in_use_lock:
+        _profiles_in_use.add(path)
+
+
+def _mark_profile_released(path: Path) -> None:
+    with _profiles_in_use_lock:
+        _profiles_in_use.discard(path)
+
+
 # --- T1.5 diagnostic capture -------------------------------------------------
 #
 # On a bot challenge or an unrecognised page layout, the caller writes the
@@ -344,6 +378,7 @@ class BrowserSession:
         self._context: BrowserContext | None = None
         self._held_lock: asyncio.Lock | None = None
         self._held_semaphore: asyncio.Semaphore | None = None
+        self._user_data_dir: Path | None = None
 
     async def start(self) -> BrowserContext:
         if self._context is not None:
@@ -402,10 +437,21 @@ class BrowserSession:
                     viewport=_VIEWPORT,
                     user_agent=user_agent,
                 )
-            except Exception:
+            except BaseException:
+                # F-B1: `asyncio.CancelledError` is a `BaseException`, not an
+                # `Exception` — a plain `except Exception` here let a
+                # cancelled launch (e.g. `rebuild_runtime()` cancelling every
+                # in-flight job on a config reload, see api/sources.py) skip
+                # this cleanup entirely, leaking the Playwright driver as an
+                # orphan process and falling through to the outer handler
+                # without ever calling `playwright.stop()`.
                 await playwright.stop()
                 raise
-        except Exception:
+        except BaseException:
+            # Same reasoning as above, one level out: this must catch a
+            # cancelled launch too, or the semaphore slot and profile lock
+            # acquired above are never released.
+            #
             # start() itself failed, so there will be no corresponding
             # close() call to release the lock (BrowserSessionMixin.prepare()
             # never assigns `_browser_session` when `start()` raises, so its
@@ -418,40 +464,63 @@ class BrowserSession:
         self._context = context
         self._held_lock = lock
         self._held_semaphore = semaphore
+        self._user_data_dir = user_data_dir
+        # F-B7: publish AFTER the launch has actually succeeded — no `await`
+        # between here and `return`, so no cancellation point exists where
+        # this could be marked in-use without a real Chromium behind it, or
+        # vice versa.
+        _mark_profile_in_use(user_data_dir)
         return context
 
     async def close(self) -> None:
         """Close the context then stop the Playwright driver, then release
         the profile-directory lock `start()` acquired. Safe to call on a
         session that was never started (no-op) — callers that default-noop
-        `Source.cleanup()` don't need to track whether `prepare()` ran."""
+        `Source.cleanup()` don't need to track whether `prepare()` ran.
+
+        F-B1: the two releases live in a `finally`, not at the end of the
+        function body — `await context.close()` / `await playwright.stop()`
+        are both cancellable points, and a cancellation landing in either one
+        (same `rebuild_runtime()` scenario as `start()`, see the comments
+        there) must still release the semaphore slot and the profile lock.
+        Skipping that release wedges every later `start()` on this profile
+        directory forever, since scheduled runs pass `acquire_timeout=None`.
+        """
         context, self._context = self._context, None
         playwright, self._playwright = self._playwright, None
         lock, self._held_lock = self._held_lock, None
         semaphore, self._held_semaphore = self._held_semaphore, None
-        if context is not None:
-            try:
-                await context.close()
-            except Exception as e:
-                log.warning(
-                    "browser_session.context_close_failed",
-                    profile=self._profile,
-                    error=str(e),
-                )
-        if playwright is not None:
-            try:
-                await playwright.stop()
-            except Exception as e:
-                log.warning(
-                    "browser_session.playwright_stop_failed",
-                    profile=self._profile,
-                    error=str(e),
-                )
-        # Released in the reverse of start()'s acquisition order.
-        if semaphore is not None:
-            semaphore.release()
-        if lock is not None:
-            lock.release()
+        user_data_dir, self._user_data_dir = self._user_data_dir, None
+        try:
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception as e:
+                    log.warning(
+                        "browser_session.context_close_failed",
+                        profile=self._profile,
+                        error=str(e),
+                    )
+            if playwright is not None:
+                try:
+                    await playwright.stop()
+                except Exception as e:
+                    log.warning(
+                        "browser_session.playwright_stop_failed",
+                        profile=self._profile,
+                        error=str(e),
+                    )
+        finally:
+            # F-B7: unpublish before releasing the profile lock, so there is
+            # no window where a queued start() acquires the lock while the
+            # janitor still believes this profile is in use.
+            if user_data_dir is not None:
+                _mark_profile_released(user_data_dir)
+            # Released in the reverse of start()'s acquisition order.
+            if semaphore is not None:
+                semaphore.release()
+            if lock is not None:
+                lock.release()
 
     async def __aenter__(self) -> BrowserContext:
         return await self.start()

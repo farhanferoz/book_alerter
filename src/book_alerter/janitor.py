@@ -34,6 +34,7 @@ from sqlmodel import Session, select
 from book_alerter.config import JanitorConfig
 from book_alerter.db import models
 from book_alerter.logging_setup import get_logger
+from book_alerter.sources.browser import is_profile_in_use
 from book_alerter.sources.normalizers import asin_for_amazon_uk
 
 log = get_logger(__name__)
@@ -143,10 +144,27 @@ def sweep_browser_profiles(data_dir: Path, cfg: JanitorConfig) -> SweepResult:
     is still over its cap does the whole profile go. Losing a profile costs one
     cold visit, which matters -- a cookieless visit is what makes Amazon serve
     the first-order delivery promo -- so it is the last resort, not the first.
+
+    F-B7: this sweep runs as a sync APScheduler job, i.e. in the event loop's
+    thread-pool executor, with no coordination with `browser._profile_dir_locks`
+    -- and it couldn't take an `asyncio.Lock` from a worker thread even if it
+    wanted to. `metadata_refresh` opens the `amazon_uk_product` profile on an
+    unconditional 30-minute interval regardless of the scheduled-source
+    windows this job is normally timed to avoid, so a profile can genuinely
+    be open when this fires. Searched `browser.py` for existing per-profile
+    state before adding `is_profile_in_use`: `_profile_dir_locks` is the only
+    other one, and it's asyncio-only, unusable from this thread -- hence the
+    new thread-safe registry there instead of reusing it. A profile a live
+    Chromium is using is skipped entirely (not just the cache subdirs) rather
+    than rmtree'd out from under it, which would corrupt the profile and cost
+    exactly the cookieless-visitor regression this profile exists to avoid.
     """
     result = SweepResult(JanitorCategory.BROWSER_PROFILES)
     root = data_dir / "browser-profiles"
     for profile in _child_dirs(root):
+        if is_profile_in_use(profile.resolve()):
+            result.note = f"{profile.name}: skipped, in use"
+            continue
         before = _dir_size(profile)
         if before <= cfg.browser_profile_max_bytes:
             continue
