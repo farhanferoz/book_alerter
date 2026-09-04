@@ -28,6 +28,7 @@ from book_alerter.janitor import (
     sweep_covers,
     sweep_debug_captures,
     sweep_keepa_cache,
+    sweep_product_images,
 )
 
 DAY = 86_400.0
@@ -173,6 +174,30 @@ def test_covers_drops_only_unknown_isbns(tmp_path: Path):
     assert res.category is JanitorCategory.COVERS
 
 
+def test_sweep_product_images_drops_only_untracked_asins(tmp_path: Path):
+    """T6.5/section-8 gap found in the plan-adherence audit: `api/products.py`
+    caches `data/product-images/<asin>` but nothing swept it, so an image
+    survived every product deletion and the directory had no cap at all."""
+    d = tmp_path / "product-images"
+    _write(d / "B09B96TG33")
+    _write(d / "B0DEADBEEF")
+
+    res = sweep_product_images(tmp_path, {"B09B96TG33"})
+
+    assert (d / "B09B96TG33").exists(), "a tracked product keeps its image"
+    assert not (d / "B0DEADBEEF").exists(), "an orphan must be removed"
+    assert res.category is JanitorCategory.PRODUCT_IMAGES
+    assert res.files_removed == 1
+
+
+def test_sweep_product_images_survives_a_missing_directory(tmp_path: Path):
+    """A fresh install, or one that has never tracked a product, has no such
+    directory -- the sweep must be a no-op rather than an error."""
+    res = sweep_product_images(tmp_path, set())
+    assert res.files_removed == 0
+    assert res.errors == []
+
+
 # --- backups ----------------------------------------------------------------
 
 
@@ -225,11 +250,15 @@ def test_known_item_keys_covers_both_isbn13_and_amazon_asin(engine_with_view):
         s.add(models.Product(asin="B09B96TG33", title="P",
                              created_at=now, updated_at=now))
         s.commit()
-        asins, cover_ids = known_item_keys(s)
+        asins, cover_ids, product_asins = known_item_keys(s)
 
     assert "9780140449266" in cover_ids, "covers are keyed by ISBN-13"
     assert "B09B96TG33" in asins
     assert "0140449264" in asins, "book Keepa charts are keyed by the ISBN-10 ASIN form"
+    # Product images match tracked PRODUCTS only. If the book-derived ASIN
+    # leaked into this set, a deleted product's image would survive whenever
+    # its ASIN collided with one derived from a tracked book's ISBN.
+    assert product_asins == {"B09B96TG33"}
 
 
 def test_run_janitor_reports_every_category_and_survives_empty_dirs(

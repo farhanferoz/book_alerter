@@ -53,6 +53,7 @@ class JanitorCategory(StrEnum):
     DEBUG_CAPTURES = "debug_captures"
     KEEPA_CACHE = "keepa_cache"
     COVERS = "covers"
+    PRODUCT_IMAGES = "product_images"
     BACKUPS = "backups"
 
 
@@ -209,6 +210,28 @@ def sweep_covers(data_dir: Path, known_ids: set[str]) -> SweepResult:
     return result
 
 
+def sweep_product_images(data_dir: Path, known_asins: set[str]) -> SweepResult:
+    """Drop cached product images whose product no longer exists.
+
+    `api/products.py` caches these as `data/product-images/<asin>`, its own
+    docstring calling them "parallel to `data/covers/<isbn13>`" -- but only
+    covers were being swept, so this directory grew without a cap and kept
+    an image for every product ever deleted. Same no-age rule as covers: an
+    image for a tracked product stays useful indefinitely, so membership of
+    the tracked set is the only test.
+
+    Keyed on PRODUCT asins specifically, not the union set `sweep_keepa_cache`
+    uses -- that one folds in ASINs derived from book ISBNs, which would
+    retain an orphaned image whose product was deleted but whose ASIN happens
+    to match a tracked book's.
+    """
+    result = SweepResult(JanitorCategory.PRODUCT_IMAGES)
+    for f in _files(data_dir / "product-images"):
+        if f.name not in known_asins:
+            _remove_file(f, result)
+    return result
+
+
 def sweep_backups(backup_dir: Path, cfg: JanitorConfig) -> SweepResult:
     """Compress uncompressed backups in place.
 
@@ -248,20 +271,25 @@ def sweep_backups(backup_dir: Path, cfg: JanitorConfig) -> SweepResult:
 # --- entry point ------------------------------------------------------------
 
 
-def known_item_keys(session: Session) -> tuple[set[str], set[str]]:
-    """(asins, cover_ids) for every item that still exists.
+def known_item_keys(session: Session) -> tuple[set[str], set[str], set[str]]:
+    """(asins, cover_ids, product_asins) for every item that still exists.
 
-    Books are keyed by ISBN-13 on disk for covers but by their Amazon ASIN
-    (ISBN-10) for Keepa charts, which is why these are two different sets.
+    Three sets because three directories key their files differently. Books
+    are keyed by ISBN-13 on disk for covers but by their Amazon ASIN
+    (ISBN-10) for Keepa charts. `product_asins` is deliberately NOT folded
+    into `asins`: product images must be matched against tracked products
+    only, or a deleted product's image survives whenever its ASIN collides
+    with an ASIN derived from a tracked book's ISBN.
     """
     isbns = [row for row in session.exec(select(models.Book.isbn13)).all()]
-    asins = {row for row in session.exec(select(models.Product.asin)).all()}
+    product_asins = {row for row in session.exec(select(models.Product.asin)).all()}
+    asins = set(product_asins)
     for isbn in isbns:
         try:
             asins.add(asin_for_amazon_uk(isbn))
         except Exception:
             continue
-    return asins, set(isbns)
+    return asins, set(isbns), product_asins
 
 
 def run_janitor(
@@ -274,12 +302,13 @@ def run_janitor(
 ) -> list[SweepResult]:
     """Run every sweep. Returns one result per category, already logged."""
     clock = time.time() if now is None else now
-    asins, cover_ids = known_item_keys(session)
+    asins, cover_ids, product_asins = known_item_keys(session)
     results = [
         sweep_browser_profiles(data_dir, cfg),
         sweep_debug_captures(data_dir, cfg, clock),
         sweep_keepa_cache(data_dir, cfg, asins, clock),
         sweep_covers(data_dir, cover_ids),
+        sweep_product_images(data_dir, product_asins),
         sweep_backups(backup_dir, cfg),
     ]
     for r in results:
