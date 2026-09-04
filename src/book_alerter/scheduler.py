@@ -24,6 +24,7 @@ from book_alerter.db.models import (
     SourceRun,
 )
 from book_alerter.enums import ItemKind, ItemStatus
+from book_alerter.janitor import janitor_tick
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 
@@ -133,12 +134,17 @@ class Scheduler:
         session_factory: Callable[[], Session],
         alert_pipelines: dict[ItemKind, Callable[[list[int]], Awaitable[None]]],
         db_path: str | Path | None = None,
+        app_state: object | None = None,
     ) -> None:
         self._cfg = config
         self._sources = sources
         self._session_factory = session_factory
         self._alert_pipelines = alert_pipelines
         self._db_path = Path(db_path) if db_path is not None else None
+        # Only used to record `janitor_last_run_at` for /api/health. Optional
+        # for the same reason `db_path` is: a test that doesn't care about
+        # the janitor can omit it and still use the rest of the scheduler.
+        self._app_state = app_state
         self._sched = AsyncIOScheduler(timezone="UTC")
         self._consecutive_errors: dict[str, int] = {}
         # When a source enters backoff, we set _backoff_until[name] to a future
@@ -184,6 +190,24 @@ class Scheduler:
                 replace_existing=True,
             )
 
+        # T6.5: daily data-directory janitor. Same "enabled AND we have a path"
+        # guard as the backup job above -- `data_dir` is the database file's
+        # parent, which is the mounted volume every runtime directory the
+        # janitor sweeps (browser-profiles/, debug/, keepa-cache/, covers/,
+        # backups/) lives under. Registered AFTER the backup job and scheduled
+        # an hour later (04:00 vs 03:00 UTC) so a backup is never mid-write
+        # while `sweep_backups` is compressing that directory.
+        jcfg = self._cfg.janitor
+        if jcfg.enabled and self._db_path is not None:
+            self._sched.add_job(
+                self._run_janitor,
+                trigger=CronTrigger.from_crontab(jcfg.schedule, timezone="UTC"),
+                id="janitor",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+
         self._sched.start()
         log.info("scheduler.started", n_jobs=len(self._sched.get_jobs()))
 
@@ -200,6 +224,24 @@ class Scheduler:
                 error=str(e),
                 tb=traceback.format_exc(),
             )
+
+    def _run_janitor(self) -> None:
+        """APScheduler entrypoint for the daily janitor sweep.
+
+        No try/except here on purpose: `janitor_tick` is documented never to
+        raise (a failing janitor must not take the scheduler down with it) and
+        already logs its own failures, so wrapping it again would only add a
+        second, quieter path for the same error.
+        """
+        if self._db_path is None:
+            return
+        janitor_tick(
+            data_dir=self._db_path.parent,
+            cfg=self._cfg.janitor,
+            backup_dir=Path(self._cfg.backup.directory),
+            session_factory=self._session_factory,
+            app_state=self._app_state,
+        )
 
     def list_jobs(self) -> list[Any]:
         return self._sched.get_jobs()
@@ -579,6 +621,19 @@ class Scheduler:
                     fresh_item.last_scrape_error = None
                     session.add(fresh_item)
             session.commit()
+
+        # T3.4: a persisted observation can shift the shipping cascade's
+        # cross-item (source, seller_class) medians tier, so the dashboard's
+        # 60s-TTL cache (`stats.MediansCache`, `app.state.medians_cache`)
+        # must not keep serving a value computed before this scrape. Cheap
+        # and idempotent either way: `invalidate()` just clears the cache,
+        # and nothing recomputes until the next `GET /api/books`/`/products`
+        # actually reads it. `self._app_state` is the same optional hook
+        # `_run_janitor_tick` uses for `janitor_last_run_at` — None in tests
+        # that don't wire a real app, hence the getattr guard.
+        medians_cache = getattr(self._app_state, "medians_cache", None)
+        if medians_cache is not None:
+            medians_cache.invalidate()
 
     def _record_item_failure(
         self,

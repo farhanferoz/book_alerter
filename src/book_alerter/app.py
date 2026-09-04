@@ -79,6 +79,10 @@ def _build_runtime(
             ItemKind.PRODUCT: product_pipeline.run,
         },
         db_path=engine.url.database,
+        # Lets the janitor job record `janitor_last_run_at`, which
+        # `/api/health` reports -- a cleanup job that dies quietly is only
+        # noticed when the disk fills.
+        app_state=app.state,
     )
     scheduler.start()
     app.state.scheduler = scheduler

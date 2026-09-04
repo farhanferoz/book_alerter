@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from sqlmodel import Session, select
@@ -416,3 +417,75 @@ async def test_scheduler_calls_cleanup_once_when_prepare_raises(sqlite_engine, m
         run = s.exec(select(models.SourceRun).where(models.SourceRun.id == run_id)).one()
     assert run.status == "error"
     assert "chromium launch failed" in (run.error_message or "")
+
+
+# --- T6.5: janitor job registration -----------------------------------------
+
+
+def _janitor_sched(cfg: Config, *, db_path=None, app_state=None) -> Scheduler:
+    return Scheduler(
+        config=cfg,
+        sources={},
+        session_factory=lambda: None,
+        alert_pipelines={ItemKind.BOOK: AsyncMock()},
+        db_path=db_path,
+        app_state=app_state,
+    )
+
+
+async def test_janitor_job_registered_by_default(tmp_path):
+    sched = _janitor_sched(Config(sources={}), db_path=tmp_path / "book_alerter.db")
+    sched.start()
+    try:
+        assert "janitor" in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()
+
+
+async def test_janitor_job_not_registered_when_disabled(tmp_path):
+    cfg = Config(sources={})
+    cfg.janitor.enabled = False
+    sched = _janitor_sched(cfg, db_path=tmp_path / "book_alerter.db")
+    sched.start()
+    try:
+        assert "janitor" not in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()
+
+
+async def test_janitor_job_not_registered_without_db_path():
+    """Mirrors the weekly-backup guard: a test (or an embedding) that omits
+    `db_path` must still get a usable scheduler rather than a janitor job
+    that would sweep a directory derived from None."""
+    sched = _janitor_sched(Config(sources={}), db_path=None)
+    sched.start()
+    try:
+        assert "janitor" not in [j.id for j in sched.list_jobs()]
+    finally:
+        sched.shutdown()
+
+
+async def test_run_janitor_passes_the_data_and_backup_directories(tmp_path, monkeypatch):
+    """The registration tests above would still pass if `_run_janitor` swept
+    the wrong directories, so pin the arguments too: `data_dir` is the database
+    file's PARENT (the mounted volume), not the database file itself.
+    """
+    import book_alerter.scheduler as scheduler_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        scheduler_mod, "janitor_tick", lambda **kw: captured.update(kw) or []
+    )
+
+    cfg = Config(sources={})
+    cfg.backup.directory = str(tmp_path / "data" / "backups")
+    state = object()
+    sched = _janitor_sched(
+        cfg, db_path=tmp_path / "data" / "book_alerter.db", app_state=state
+    )
+    sched._run_janitor()
+
+    assert captured["data_dir"] == tmp_path / "data"
+    assert captured["backup_dir"] == Path(cfg.backup.directory)
+    assert captured["cfg"] is cfg.janitor
+    assert captured["app_state"] is state
