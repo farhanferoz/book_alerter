@@ -9,6 +9,12 @@
 ### Now
 - **Autonomous execution run in progress** (started 2026-09-04 ~15:55). User handed over the
   whole plan and stepped away. Root session = dispatcher + verifier; workers write code.
+- **Two shipping bugs found and fixed TODAY beyond the plan**: D33 (Amazon's spend-threshold
+  "free over £35" promise recorded as free) and D35's replacement of guessed English markers
+  with Amazon's own `CONDITIONALLY_FREE` attribute. A third, **S1/D34**, is the most
+  user-visible defect in the project and is being fixed now.
+- Performance work is DONE and proven: `GET /api/books` 2101 ms → 453 ms → **63.5 ms** (~33×);
+  D23's ≤0.35 s gate closed at 0.059–0.068 s.
 - Git blocker (F21) is **RESOLVED**: history cloned from `github.com/farhanferoz/book_alerter`
   and installed at `/home/ff235/dev/book_alerter/.git`. Working copy was byte-identical to
   `origin/master` for every tracked file. Working branch: **`wave-execution`** (off `master`).
@@ -54,31 +60,45 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
 - Measured performance baselines to beat: `GET /api/books` **2101 ms** via the API harness;
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
-### Next — RE-DISPATCH THESE (workers died with the session at checkpoint)
-- **Progress: 22 of 40 ticked.** Four workers were mid-task when the context backstop forced a
-  checkpoint; their committed work is safe in git, their in-flight work is described below.
-- **T3.2 heartbeat compaction — FURTHEST ALONG, FINISH THIS FIRST.** Migration
-  `0021_heartbeat_compaction.py` and `test_heartbeat_compaction_backfill_properties.py` are
-  **untracked on disk**; `models.py`, `views.py`, `stats.py`, `config.py`, `api/books.py`,
-  `api/products.py`, `scheduler.py` and several test files are **modified, uncommitted**. The
-  worker verified: 90,172 → 12,337 rows, canonical count identical, `last_seen_at` matching the
-  old `buyable_last_seen` formula for all 4,304 non-keepa canonical rows, FK-check clean,
-  round-trip clean, backfill 0.07 s. **All of it must land in ONE commit** — `_persist` alone
-  references a column the committed model lacks. Then: port the 2 red scheduler tests
-  (`AttributeError: is_duplicate_of`), re-run `bench_stats.py` against the **≤0.35 s** gate
-  (D23 hangs on this), and re-run `smoke_check.py`.
-  Open question for whoever picks it up: **should `last_seen_at` default to `observed_at` on the
-  model?** It is currently required with no default and 39 construction sites must pass it.
-- **T4.2** (hard gate: 7 fixtures with no test) — was with the browser worker, not started.
-- **T5.5 + the T6.1 dashboard banner** — was with the web worker. Backend for the banner is done
-  (`c0cb38a`); `web/src/api/schema.ts` still needs regenerating for `last_24h` to be typed.
-- **Adversarial shipping-chain review** (read-only) — was with the capture worker; no output yet.
-- Unstarted: T1.3, T1.4, **T2.2 (blocks the Prime UI T2.3)**, T4.1, T4.4, T6.3, T6.6 renames,
-  T2.4 estimate-flag assertion, T6.5 scheduler registration, T6.4 remaining docs.
+### Next
+- **Progress: 28 of 40 ticked** (+1 dropped on evidence = 29 resolved). Landed this session:
+  T3.2, T4.2, T5.5, T6.1, T6.5, T6.6, plus D33's shipping fix and migration 0022.
+- **THE BIG ONE — S1, a confirmed user-visible bug, fix in flight with the stats worker.**
+  `TARGET_HIT` fires on a total that omits shipping. `_persist` stores
+  `total = price + (shipping or 0)`, so a T2.5 "unknown" row has `total_minor == price_minor`,
+  and `alerts.py:37` + `compute_signal`'s two target branches compare that raw column.
+  Reproduced end-to-end twice (reviewer's probe + root's re-run): target £8.00, effective total
+  **£10.79**, alert fires. On this path post-T2.5 behaviour is **bit-identical to the pre-fix
+  bug**. Ratified as **D34**: every target comparison moves to `current_effective_total_minor`,
+  and when that is None the alert must NOT fire. Both sites must move together — they interact
+  through `prev_signal`, so fixing only one lets the dedup suppress the corrected alert.
+- **Remaining review findings, all confirmed by execution** (report:
+  `<scratchpad>/shipping-chain-review.md`, probes alongside it):
+  **S2** (High) the shipping cascade imputes £0.00 because missingness is not random, and tier 1
+  shadows tier 2 making tier 2's guard unreachable — production magnitude UNMEASURED, SQL is in
+  the report; **S3** (Med-High) the push notification calls an item-only figure "total" and
+  computes "% below median" across two different metrics — with the capture worker;
+  **S4** (Med) a second ranking rule survives in SQL on the divergent metric, contradicting D14,
+  plus a third copy in the frontend sorts; **S6/S7/S8** (latent, in `amazon.py`) a documented
+  invariant proved false, the £35 *threshold* read as a £35 *charge*, and `_merge_offers`
+  promoting a known `0` over a T2.5 `None`.
+- **D35 — stop guessing English marker phrases.** Amazon ships
+  `data-csa-c-mir-sub-type="CONDITIONALLY_FREE"` and `data-csa-c-delivery-condition` inside the
+  node the parser already reads. Verified over every capture: 10 conditional vs 47 empty,
+  agreeing perfectly with both markers; `grep -rn "delivery-condition" src/` returns nothing.
+  Switch to it, KEEP the English markers as fallback, and log disagreement. With the browser
+  worker.
+- **T1.3 is half done.** Schema + migration 0022 + property test are committed; the scheduler
+  half (per-item challenge retry, >=50%-challenged backoff rule) is NOT, because `scheduler.py`
+  holds the stats worker's uncommitted T3.4 hunk. Do it once that commits.
+- Unstarted: **T4.1** (biggest remaining), T1.4 (needs `config.py`, contended by T2.2), T2.3
+  (blocked on T2.2), T4.4, T6.2, T6.3, T6.4's remainder.
 - **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** (write-set
   guard). Its remedy is that the orchestrator writes them — never have a worker override it.
-- **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe above),
+- **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe below),
   `/checkpoint --final`. NAS deploy stays out of scope.
+- Minor litter for the endgame tidy: a stale `git worktree` registered at
+  `/tmp/claude-1000/-home-ff235-dev-book-alerter/0c646d24-.../scratchpad/clean-check`.
 
 ### Where the container lives (answered 2026-09-04, verified by diff)
 - Live: `/share/CACHEDEV1_DATA/Container/book_alerter/docker-compose.yml` on the NAS.
@@ -112,33 +132,28 @@ Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. No
 that makes the work deployable, and it is the last thing to do, after review.
 
 ### Pending gates before the endgame
-- **Re-run the Docker e2e from committed HEAD once T3.2 lands.** A run on 2026-09-04 gave
-  `test_docker_smoke` FAILED / `test_write_containment_during_scheduler_run` passed — but the
-  image was built from a working tree holding the half-finished heartbeat-compaction change
-  (`models.py`, `views.py` uncommitted). `docker build` bakes in the working tree, so **never
-  judge e2e from a dirty tree**; build from a clean checkout.
-- **T6.8 not ticked yet**: still need the worker's negative-case evidence (deliberate stray write
-  → assertion fails → removed → passes). The assertion itself reads correctly.
-- **T4.2 is a hard gate**: 7 committed product fixtures have no test loading them.
+- **Re-run the Docker e2e from committed HEAD — now ACTIONABLE, T3.2 has landed.** The earlier
+  run (`test_docker_smoke` FAILED / `test_write_containment_during_scheduler_run` passed) built
+  its image from a tree holding the half-finished heartbeat change. `docker build` bakes in the
+  working tree, so build from a **clean checkout**, never this one.
+- **T6.8 not ticked**: still needs negative-case evidence (deliberate stray write → assertion
+  fails → removed → passes). Root re-read the assertion 2026-09-04: it is correct, and it
+  already guards against the always-passes trap by asserting at least one new path appeared.
+  D27's `/home/pwuser/{.cache,.config,.local}` exclusion is present and carries its evidence.
+- ~~Plan §8's write-containment assertion is missing~~ — **RESOLVED**: it exists at
+  `tests/e2e/test_smoke.py:243`. Only the negative-case evidence above is outstanding.
+- ~~T4.2 hard gate (7 fixtures with no test)~~ — **CLEARED**, all 8 product fixtures load.
 
 ### Expected in-flight churn (do NOT mistake for regressions)
-- **`src/book_alerter/scheduler.py`'s `_persist` is edited but deliberately UNCOMMITTED.** The
-  orchestrator applied it (the write-set guard held the file); it must be committed *atomically*
-  with migration 0021 + `models.py` + `views.py`, because on its own it references a
-  `last_seen_at` column the committed model lacks. The stats worker owns that commit.
-  `_persist` now refreshes an unchanged offer in place (`last_seen_at` **and** `url`) instead of
-  inserting a heartbeat row. The `url` refresh is deliberate: migration 0019 exists because
-  current-best must show the latest sighting's URL, and `url` is not part of the dedup key — drop
-  it and that bug returns.
-- As of 2026-09-04 ~16:10 the working tree holds the **uncommitted** heartbeat-compaction change
-  (`db/models.py`, `db/views.py`, `stats.py`, `config.py`, migration 0020/0021). While it is
-  uncommitted, a scoped run shows ~12 failures, all traceable to
-  `NOT NULL constraint failed: priceobservation.last_seen_at` — the new required model field.
-  **Judge the branch from a clean checkout, never from this tree.**
-- Raised with the stats worker: `last_seen_at` should default to `observed_at` on the model
-  (39 construction sites otherwise need updating, and a forgetful future caller gets a runtime
-  IntegrityError instead of correct behaviour). Their call, but it must be deliberate.
-- `tests/integration/test_unknown_shipping_ranking.py` is affected either way.
+- `stats.py`, `api/books.py`, `api/products.py`, `app.py`, `scheduler.py` carry the stats
+  worker's uncommitted **T2.2 + S1 + T3.4** work. `app.py`'s `MediansCache` import is
+  meaningless without `stats.py` — they MUST land in one commit.
+- `sources/amazon.py` carries the browser worker's D35 work.
+- **Judge the branch from a clean checkout, never from this tree.** Root broke HEAD once today
+  by committing `app.py` while it held another worker's edits: HEAD imported a symbol HEAD
+  didn't define, and the dirty tree hid it completely. Amended and verified via an isolated
+  `git worktree`. **The lesson D25 does not cover: an explicit pathspec does NOT protect a file
+  you DID name that already holds someone else's edits — run `git diff <path>` first.**
 
 ### Integration status (root-verified on a clean checkout of the branch tip)
 - **2026-09-04, commit `31b0b03`: `uv run pytest -q` → 520 passed, 3 skipped, 0 failed** (22 s).
@@ -149,25 +164,14 @@ that makes the work deployable, and it is the last thing to do, after review.
 - Checked in an isolated `git worktree` under the session scratchpad so concurrent workers'
   uncommitted edits cannot skew the result — worth repeating that way.
 
-### Threads
-- Shipping inconsistency (F1–F7) — Wave 1 (browser identity, postcode pinning) + Wave 2 (WoB
-  rule, Prime toggle, effective-total ranking). Wave 0 captures settle Q1.
-- Products never tracked (F7–F12) — Wave 4 then Wave 5 parity.
-- Bot blocking (F13–F16) — root driver. Wave 1.
-- Performance (F17–F20) — Wave 3. Baseline re-measured 2026-09-04 on the prod copy:
-  **1.455 s** for 13 per-book stats queries vs **0.124 s** for one all-books query; 90,172
-  observation rows of which 77,835 (86%) are heartbeats. Plan's evidence base confirmed.
-- **T3.1 view-equivalence evidence (root-verified 2026-09-04):** on the production copy, taking
-  `MIN(total_minor)` from the new `book_live_offers` view with the documented tie-break
-  (source, condition, `COALESCE(seller,'')` ascending) reproduces the old
-  `book_stats.current_best_*` for **all 13 books, 0 mismatches**, and no book lost its
-  current-best. Migration 0020 also round-trips clean (upgrade, downgrade, `foreign_key_check`).
-- **Open gap found 2026-09-04 (not yet a numbered task):** plan §8 requires "the Docker e2e test
-  asserts that the only new paths after a scheduler run are under `/app/data`". No such
-  assertion exists — `tests/e2e/test_smoke.py` does not check write containment. Deliberately
-  deferred rather than written blind, because verifying it needs a Docker build and the
-  Dockerfile area was being edited concurrently. **Address in the final plan-adherence audit.**
-- Cleanup standard — plan §8 binds every task; janitor T6.5; repo tidy T6.6.
+### Threads (only what is still open — settled ones are in CHANGELOG.md)
+- **Shipping correctness is the live thread and it got WORSE before better**: the parse-layer
+  fix (F1/D20) is real, but the review proved the persist and consume layers reintroduce the
+  same class downstream (S1–S4). Fixes in flight.
+- Products parity (Wave 5) — **T4.1 is the biggest unstarted item.**
+- Bot blocking — T1.1 done (5 commits, incl. D24's per-profile lock and the live canary passing
+  against real amazon.co.uk for the first time). T1.3 half done, T1.4 unstarted.
+- Cleanup standard — plan §8 binds every task; T6.5 and T6.6 both done.
 
 ### Decisions
 - See `DECISIONS.md` — D1–D31 in force, Q1/Q2/Q4 open (Q1 and Q3 resolved).
@@ -205,3 +209,10 @@ warned about a cascading delete and silently archived). A new S1, **F26**: Amazo
 
 Not finished: the heartbeat-compaction commit (verified but uncommitted — see `### Next`), the
 Prime toggle, add-product reliability, and the endgame (review tiers, plan audit, push).
+
+### Unstopped agents at last context boundary
+Entries below are SNAPSHOTS from a past boundary, not liveness claims. Before stopping one,
+check its subagents/agent-<id>.jsonl mtime; if TaskStop replies 'No task found', the agent is
+ALREADY dead — that is SUCCESS, not an error to retry. Delete handled lines.
+- (none recorded yet this session — four workers were live at the last update: W-T31-stats
+  on T2.2+S1, W-T11-browser on D35, W-T01-capture on S3, plus a finished shipping review.)
