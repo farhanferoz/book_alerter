@@ -156,16 +156,19 @@ async def _capture_amazon(
     page_kinds = (CaptureKind.DP, CaptureKind.AOD) if kind is CaptureKind.BOTH else (kind,)
 
     if postcode:
-        # T0.2 (separate task) is still probing whether/how a delivery
-        # postcode can be pinned for a logged-out session; that mechanism
-        # is UNVERIFIED and out of scope here. --postcode only tags the
-        # output filename so downstream tooling can tell captures apart
-        # once pinning lands -- it does not change what gets rendered.
+        # T0.2 settled this on 2026-09-04: a delivery postcode could NOT be
+        # pinned for a logged-out headless session (the glow endpoint needs a
+        # CSRF token that is not served, and the glow widget was absent from
+        # the page), and pinning made no difference to the delivery promises
+        # anyway -- the promise varies with whether Amazon thinks you are a
+        # first-time buyer, not with location. Plan task T1.2 was dropped as a
+        # result. --postcode is kept only as a filename tag for captures taken
+        # under some externally-pinned location; it does not pin anything.
         print(
             f"WARNING: --postcode {postcode!r} only affects the output filename; "
-            "live delivery-location pinning is not implemented by this script "
-            "(see plan task T0.2). This capture reflects Amazon's default, "
-            "unpinned delivery location.",
+            "live delivery-location pinning does not work for a logged-out "
+            "session (settled by plan task T0.2; T1.2 dropped). This capture "
+            "reflects Amazon's default, unpinned delivery location.",
             file=sys.stderr,
         )
 
