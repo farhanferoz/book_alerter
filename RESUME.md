@@ -23,16 +23,12 @@
 - Gates at the merge: pytest **656 passed / 3 skipped**, ruff clean, `tsc -b` / eslint /
   `npm run build` clean from an isolated worktree, backend untouched by the branch.
 
-### Run contract (binding for this autonomous run)
-- **In scope:** the 2026-09-04 plan (T0.1–T6.6 + T6.7), and the fix passes for all four reviews.
-- **DONE means:** plan checkboxes ticked; `uv run pytest -q` green; `ruff check src tests scripts`
-  clean; web `tsc -b --noEmit` / `eslint .` / `npm run build` clean; `smoke_check.py` green against
-  a production copy; `bench_stats.py` ≤ **0.35 s** for 13 books (D23); `git status --short` clean;
-  every wave's review tier run.
-- **`git push` IS authorized** (branch, then merge to `master` so the GHCR image builds).
-  **Running the NAS deploy is NOT** — the bar is *ready for* deployment.
-- **Out of scope:** plan §7 (Telegram/Pushover, Sentry, Go CLIs, proxies, basket-level delivery,
-  Amazon PA API). T6.3 ships default-off.
+### Run contract (2026-09-04 autonomous run — SATISFIED)
+- **Scope:** execute the UI-polish plan, validate in a browser, merge, build, and **replace the
+  running NAS container** so the new application is live. All of it is done; see `### Now`.
+- The earlier line "running the NAS deploy is NOT authorized" was lifted by the user in the same
+  breath as the handover ("final result has to be deployment… you should replace it"). Recorded
+  because it reverses a constraint an earlier session was operating under.
 
 ### Validation commands (all fast — measured 2026-09-04)
 Run from `/home/ff235/dev/book_alerter`.
@@ -109,8 +105,10 @@ fixes".
   main tree even when the command runs in an isolated worktree.
 
 ### Plan
+- `/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-ui-polish-plan.md` — **complete,
+  0 open boxes** (7 tasks / 32 steps), including the two deploy tasks added mid-run.
 - `/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`
-  — checkboxes are the authoritative progress record. The single open box is T1.2, dropped by D21.
+  — complete; its one open box is T1.2, dropped on evidence by D21.
 
 ### Decisions
 - See `DECISIONS.md` (auto-loaded) — **D1–D45**. New 2026-09-04 in this session: D40 (F7 closed by
@@ -128,21 +126,29 @@ fixes".
 ### Live jobs & tasks
 <!-- /clear does NOT necessarily kill agents — verified 2026-09-04, several survived a clear and
      were still writing files. Check subagents/agent-<id>.jsonl mtime before assuming one is dead. -->
-- none. All six workers stopped cleanly at end of run; no background jobs armed; no worktrees left
-  (`git worktree list` shows only the main checkout).
+- none. All ten subagents of this run stopped; the deploy watcher was disarmed after it fired;
+  no worktrees left; `git status --short` clean; `master` == `origin/master` at `7bff714`.
 
 ## Session 2026-09-04
-Resumed after a `/clear` that had **not** killed the running agents — three were still live and
-writing files, so the plan became "query and coordinate" rather than "re-dispatch", which avoided
-colliding in the shared working tree. The blocking set was larger than the checkpoint recorded: the
-backend review's verdict had in fact returned after the checkpoint was taken, carrying 3 HIGH +
-4 MEDIUM + 3 LOW. Dispatched three fix workers onto disjoint write sets and coordinated the three
-survivors; 37 findings across four reviews were resolved, with zero index collisions under the
-explicit-pathspec rule. Verified the two highest-risk fixes myself against the real pre-migration
-production snapshot rather than trusting reports, and refuted the one claim that would have blocked
-the merge (D44) by measurement, confirmed independently by a second agent. Shipped: `master` at
-`917996b`, GHCR build success, image published and verified by digest. Remaining work is operator
-work only — the NAS deploy, the post-0021 `VACUUM`, and D39's post-deploy re-measurement.
+Two phases. First a fresh-eyes final review of the shipped release: three reviewers over the
+unreviewed fix commits, the frontend delta and plan adherence, all gates re-run from a clean
+worktree. Zero code defects; migration 0021's round trip was re-proven on real production data.
+The review's own findings were operator-facing — the deploy runbook's backup step was a `cp` of a
+WAL-mode database and its reclaim step called a `sqlite3` binary that exists nowhere on the NAS.
+
+Then a UI pass, planned and executed end to end: an execution-level plan, five contained frontend
+changes, browser validation against a production copy, a four-angle simplify review, merge, GHCR
+build, and the NAS container replaced. Two review findings on my own code were real and fixed (the
+alert prefix leaked when an item is retitled after its alert fired; the scrape chip lost its error
+text for assistive tech — `sr-only` text, because a `role=generic` span cannot carry an
+`aria-label`). A full-suite run at 22:30 went red and turned out to be a pre-existing clock
+dependence, not a regression: a test asserted a non-bypassing notifier fired while leaving quiet
+hours at their 22:00–08:00 default. Proven by freezing the clock and fixed, because the suite has
+to be green before a production deploy.
+
+The runbook fix paid for itself immediately: the pre-deploy backup captured 90,402 observation rows
+against 90,172 in a file-copied snapshot taken hours earlier — the difference being exactly the
+un-checkpointed WAL data the old step dropped.
 
 ### Final review 2026-09-04 (session 6e5ea529, after the release)
 Fresh-eyes review of the whole delta from a clean worktree: gates re-run green (656/3 skipped, ruff,
