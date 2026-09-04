@@ -33,6 +33,8 @@ from pydantic import BaseModel
 from book_alerter.api.alerts import AlertOut
 from book_alerter.api.deps import NotifiersDep
 from book_alerter.db import models
+from book_alerter.enums import AlertKind
+from book_alerter.notifications.dispatcher import BOOK_MODELS
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -79,7 +81,7 @@ async def test_notification(
     )
     alert = models.Alert(
         book_id=0,
-        kind="target_hit",
+        kind=AlertKind.TARGET_HIT,
         price_minor=1099,
         currency="GBP",
         source="test",
@@ -92,5 +94,7 @@ async def test_notification(
         channel=channel,
         status=result["status"],
         error_message=result.get("error_message"),
-        alert=AlertOut.from_alert(alert),
+        # The synthetic alert is never persisted, so it has no real item to
+        # resolve a title from — pass the stand-in book's own title.
+        alert=AlertOut.from_alert(alert, BOOK_MODELS, book.title),
     )
