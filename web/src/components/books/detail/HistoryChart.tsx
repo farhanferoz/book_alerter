@@ -148,6 +148,51 @@ function buildSeries(observations: ItemObservation[], range: Range): {
   };
 }
 
+// A marker only where the envelope actually moves. With one dot per
+// breakpoint the 90-day view drew ~60 identical markers per source and a
+// flat price read as a bead string; the change points ARE the information.
+function changeIndices(rows: ChartRow[], key: string): Set<number> {
+  const out = new Set<number>();
+  let last: number | null = null;
+  rows.forEach((row, i) => {
+    const v = row[key];
+    if (v == null) return;
+    if (last === null || v !== last) out.add(i);
+    last = v;
+  });
+  return out;
+}
+
+type DotRenderProps = {
+  cx?: number;
+  cy?: number;
+  index?: number;
+  key?: string | number | bigint | null;
+};
+
+// Recharts 3 calls a function `dot` with `{cx, cy, index, key, …}` for every
+// point and expects an element back; an empty <g> is the "no marker" answer.
+// r=4 (8 px) with a 2 px ring in the card colour so overlapping series stay
+// separable (dataviz mark spec).
+function renderChangeDot(changes: Set<number>, color: string) {
+  return function ChangeDot({ cx, cy, index, key }: DotRenderProps) {
+    if (index === undefined || !changes.has(index) || cx === undefined || cy === undefined) {
+      return <g key={key} />;
+    }
+    return (
+      <circle
+        key={key}
+        cx={cx}
+        cy={cy}
+        r={4}
+        fill={color}
+        stroke="var(--card)"
+        strokeWidth={2}
+      />
+    );
+  };
+}
+
 function TooltipContent({
   active,
   payload,
@@ -199,6 +244,11 @@ export function HistoryChart({
     [observations, range],
   );
 
+  const changeSets = useMemo(
+    () => new Map(series.map((key) => [key, changeIndices(rows, key)])),
+    [rows, series],
+  );
+
   const toggleSeries = (key: string) => {
     setHidden((prev) => {
       const next = new Set(prev);
@@ -242,7 +292,9 @@ export function HistoryChart({
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={rows} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
+              {/* Solid hairline, horizontal only: recessive, and a dashed
+                  grid is the noisiest thing on a chart (dataviz anti-pattern). */}
+              <CartesianGrid stroke="currentColor" opacity={0.08} vertical={false} />
               <XAxis
                 dataKey="ts"
                 type="number"
@@ -280,12 +332,18 @@ export function HistoryChart({
               {series.map((key, i) => (
                 <Line
                   key={key}
-                  type="monotone"
+                  // A price is a step function: it holds until the next
+                  // observation changes it. `monotone` drew a diagonal
+                  // between two scrapes, a transition that never happened.
+                  type="stepAfter"
                   dataKey={key}
                   stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
                   strokeWidth={2}
-                  dot={{ r: 2 }}
-                  activeDot={{ r: 4 }}
+                  dot={renderChangeDot(
+                    changeSets.get(key) ?? new Set<number>(),
+                    SERIES_COLORS[i % SERIES_COLORS.length],
+                  )}
+                  activeDot={{ r: 5 }}
                   connectNulls
                   hide={hidden.has(key)}
                   isAnimationActive={false}
