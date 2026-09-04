@@ -114,44 +114,24 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   post-migration `VACUUM`). Deploying is **out of scope** for this run — "ready for
   deployment" is the bar the user set.
 
-### Pushing — **BRANCH IS PUSHED** (2026-09-04, 122 commits at `8fbe828`)
-`wave-execution` is on `github.com/farhanferoz/book_alerter`. Deliberately the branch only:
-a branch push does NOT trigger `.github/workflows/build.yml`, which fires on **`master`**
-and publishes the GHCR image. **The merge to `master` is the remaining step and is the one
-that makes a release**, so it waits until the review verdicts are in — a review finding
-could still change what ships. Re-push with the same recipe as more commits land.
+### Pushing — **BRANCH IS PUSHED**; the merge to `master` is what ships
+`wave-execution` is on `github.com/farhanferoz/book_alerter`. Branch only, deliberately: the
+GHCR build fires on **`master`**, not on a branch, so this backs the work up without making a
+release. **The merge is blocked — see `### Next`.**
 
-### Post-deploy obligation (D39) — do NOT skip
-Deploying does not correct the prices already stored. Measured: all 13 books carry an
-observed `shipping_minor = 0` written by the pre-fix parser, so the app shows free delivery
-for every one. Values correct themselves per source as scrapes run. **Then re-measure the
-cascade** — the estimate for newly-unknown rows is a median over data still dominated by
-those old zeros, so it can land near £0.00 and reintroduce the same harm by another route.
-Query and full reasoning: README → "After the first deploy carrying the shipping fixes".
-
-### Pushing recipe (verified 2026-09-04)
-The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
-`reviewsenseai`, so a plain `git push` fails with `Permission ... denied to reviewsenseai`.
-`farhanferoz` is also authenticated in `gh`. Scope the credential to the one command rather than
-running `gh auth switch` (which would change the user's global active account):
-
+`gh`'s ACTIVE account is `reviewsenseai`, so a plain `git push` is denied. Scope the
+credential to the one command rather than `gh auth switch` (which changes the global account):
 ```bash
 GH_TOKEN=$(gh auth token --user farhanferoz) git push origin wave-execution
 ```
 
-Verified with `--dry-run`: `* [new branch] wave-execution -> wave-execution`. Note that a push to
-**`master`** triggers `.github/workflows/build.yml` and publishes a GHCR image — that is the step
-that makes the work deployable, and it is the last thing to do, after review.
-
-### Review-tier tracker (plan §5; a DONE criterion nothing else tracks)
-- **Wave 0** n/a · **Wave 3** Tier 4: property-tests-first ✅, fresh-session review **DONE →
-  FAIL** (see `### Next` item 1) · **Waves 1/2/4/5/6** Tier 2 **NOT RUN as specified**.
-- **DEVIATION, stated not silent:** §5's Tier 2 is `simplify` → `find-bugs` →
-  `/second-opinion` → `fp-check` **per wave**. Run instead: two branch-wide adversarial
-  reviews (backend, frontend) plus a `simplify` pass. Reason: the waves interleave in the
-  same files, so a per-wave slice re-reviews the same code while missing the cross-wave
-  interactions where every real bug has lived. **This is a substitution, not the tier** — it
-  does not discharge `/second-opinion` or `fp-check`. Judge it from the reports.
+### Post-deploy obligation (D39) — do NOT skip
+Deploying does not correct stored prices. Measured: all 13 books carry an observed
+`shipping_minor = 0` written by the pre-fix parser, so the app shows free delivery for every
+one. Values correct per source as scrapes run. **Then re-measure the cascade** — the estimate
+for newly-unknown rows is a median over data still dominated by those old zeros, so it can
+land near £0.00 and reintroduce the same harm by another route. Query and reasoning:
+README → "After the first deploy carrying the shipping fixes".
 
 ### Pending gates before the endgame
 - ~~Re-run the Docker e2e from committed HEAD~~ — **DONE and GREEN 2026-09-04**: built from an
