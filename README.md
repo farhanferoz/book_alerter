@@ -115,6 +115,16 @@ ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
   sqlite3 book_alerter.db 'VACUUM'"
 ```
 
+Step 4 is not optional for the release carrying migration `0021_heartbeat_compaction`.
+That migration folds every repeat sighting of an unchanged offer into a `last_seen_at`
+column on the canonical row and deletes the duplicate rows: measured on a copy of the
+production database, `priceobservation` goes from **90,172 rows to 12,337** (86% of the
+table was heartbeat duplicates), with the canonical row count unchanged. SQLite does not
+return freed pages to the filesystem on its own, so without the `VACUUM` the database file
+stays at its pre-migration size and only the *internal* free list grows. Run it once, after
+the deploy, during a quiet period — `VACUUM` rewrites the whole file and takes an exclusive
+lock for the duration.
+
 Then check `/api/health` (it reports `janitor_last_run_at`) and re-run
 `scripts/smoke_check.py` against a fresh copy of the deployed database.
 
