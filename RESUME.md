@@ -141,7 +141,22 @@ fresh-session review).
   post-migration `VACUUM`). Deploying is **out of scope** for this run — "ready for
   deployment" is the bar the user set.
 
-### Pushing (verified 2026-09-04, dry-run only — nothing pushed yet)
+### Pushing — **BRANCH IS PUSHED** (2026-09-04, 122 commits at `8fbe828`)
+`wave-execution` is on `github.com/farhanferoz/book_alerter`. Deliberately the branch only:
+a branch push does NOT trigger `.github/workflows/build.yml`, which fires on **`master`**
+and publishes the GHCR image. **The merge to `master` is the remaining step and is the one
+that makes a release**, so it waits until the review verdicts are in — a review finding
+could still change what ships. Re-push with the same recipe as more commits land.
+
+### Post-deploy obligation (D39) — do NOT skip
+Deploying does not correct the prices already stored. Measured: all 13 books carry an
+observed `shipping_minor = 0` written by the pre-fix parser, so the app shows free delivery
+for every one. Values correct themselves per source as scrapes run. **Then re-measure the
+cascade** — the estimate for newly-unknown rows is a median over data still dominated by
+those old zeros, so it can land near £0.00 and reintroduce the same harm by another route.
+Query and full reasoning: README → "After the first deploy carrying the shipping fixes".
+
+### Pushing recipe (verified 2026-09-04)
 The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
 `reviewsenseai`, so a plain `git push` fails with `Permission ... denied to reviewsenseai`.
 `farhanferoz` is also authenticated in `gh`. Scope the credential to the one command rather than
@@ -263,3 +278,4 @@ ALREADY dead — that is SUCCESS, not an error to retry. Delete handled lines.
 - 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T31-stats' — T3.1 stats restructure + T3.3 + T6.2 was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T31-stats-f0ee3524496958e9
 - 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T61-web' — T6.1 dashboard banner was NOT stopped (quiet 48min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T61-web-eadf5f3fe523352d
 - 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-ship-review' — Adversarial shipping-chain review was NOT stopped (quiet 41min). If still live (mtime!), stop by bare id: TaskStop agent-aW-ship-review-3e344fb4ad84c2e9
+- 2026-09-04T17:42:27.365624+00:00 watch: teammate W-T11-browser stuck at 81min (stale 10min, 0 open tasks)
