@@ -31,7 +31,7 @@ from tests.integration.sources.helpers import make_fake_playwright_factory
 FIXTURE_DIR = (
     Path(__file__).resolve().parents[2] / "fixtures" / "amazon"
 )
-FIXTURE_DP = FIXTURE_DIR / "9780747532699-uk-dp.html"
+FIXTURE_DP = FIXTURE_DIR / "9780747532699-uk-dp-2026-05-14.html"
 FIXTURE_DP_NO_PRICE = FIXTURE_DIR / "9780747532699-uk-dp-no-price.html"
 FIXTURE_OFFER_LISTING = FIXTURE_DIR / "9780747532699-uk-offer-listing.html"
 

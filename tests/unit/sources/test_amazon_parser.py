@@ -26,7 +26,7 @@ def _load(name: str) -> str:
 
 
 def test_parse_dp_returns_buybox_offer() -> None:
-    html = _load("9780747532699-uk-dp.html")
+    html = _load("9780747532699-uk-dp-2026-05-14.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
     assert len(offers) == 1
     o = offers[0]
@@ -40,7 +40,7 @@ def test_parse_dp_returns_buybox_offer() -> None:
 def test_parse_dp_no_delivery_block_yields_shipping_none() -> None:
     """The base synthetic fixture has no delivery markup — the parser must
     return shipping_minor=None rather than fabricating a value."""
-    html = _load("9780747532699-uk-dp.html")
+    html = _load("9780747532699-uk-dp-2026-05-14.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
     assert len(offers) == 1
     assert offers[0].shipping_minor is None
@@ -281,7 +281,7 @@ def test_parse_offer_listing_real_capture_shipping_extracted_for_all_rows() -> N
     NULL-shipping bug across the fleet.
     """
     for fname in (
-        "9780241638194-uk-offer-listing-real.html",
+        "9780241638194-uk-offer-listing-2026-05-16.html",
         "9780241638194-uk-offer-listing-live-2026-05-23.html",
     ):
         html = _load(fname)
@@ -304,7 +304,7 @@ def test_parse_offer_listing_clickout_not_shipping_help() -> None:
     it up. No offer URL should contain `/gp/help/customer/`.
     """
     for fname in (
-        "9780241638194-uk-offer-listing-real.html",
+        "9780241638194-uk-offer-listing-2026-05-16.html",
         "9780241638194-uk-offer-listing-live-2026-05-23.html",
     ):
         html = _load(fname)
@@ -329,7 +329,7 @@ def test_parse_offer_listing_clickout_is_offer_listing_page() -> None:
     page, which shows this offer in context alongside the others.
     """
     listing_url = "https://www.amazon.co.uk/gp/offer-listing/0241638194?condition=all"
-    html = _load("9780241638194-uk-offer-listing-real.html")
+    html = _load("9780241638194-uk-offer-listing-2026-05-16.html")
     offers = parse_offer_listing(html, fallback_url=listing_url)
     assert offers
     for o in offers:
@@ -391,7 +391,7 @@ def test_all_observations_use_valid_condition_enum() -> None:
     """Defends against drift: any condition string we don't recognise should
     map to 'unknown' rather than emitting an out-of-enum literal."""
     valid = {"new", "used_vg", "used_g", "used_acceptable", "unknown"}
-    dp_html = _load("9780747532699-uk-dp.html")
+    dp_html = _load("9780747532699-uk-dp-2026-05-14.html")
     for o in parse_dp(dp_html, fallback_url="https://x.example/"):
         assert o.condition in valid
     ol_html = _load("9780747532699-uk-offer-listing.html")
@@ -490,7 +490,7 @@ def test_merge_empty_input_returns_empty() -> None:
 # RRP in `.a-price.apex-basisprice-value`, seller on `aria-label="X. Opens a
 # new page"`, heading in a `<span>` (not `<h5>`).
 
-REAL_OL = "9780241638194-uk-offer-listing-real.html"
+REAL_OL = "9780241638194-uk-offer-listing-2026-05-16.html"
 
 
 def test_real_offer_listing_parses_offer_price_not_rrp() -> None:
@@ -592,7 +592,7 @@ def test_parse_dp_seller_still_amazon_when_merchant_info_present() -> None:
     """Positive-control regression guard: the ordinary Harry Potter dp
     fixture DOES render #merchant-info as "Amazon" — the T2.7 fix must
     only change the absent/textless case, not this one."""
-    html = _load("9780747532699-uk-dp.html")
+    html = _load("9780747532699-uk-dp-2026-05-14.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/9780747532699")
     assert len(offers) == 1
     assert offers[0].seller == "Amazon"
@@ -629,7 +629,7 @@ def test_parse_dp_delivery_text_populated_on_free_and_paid_fixtures() -> None:
 
 
 def test_parse_dp_delivery_text_none_when_no_delivery_block() -> None:
-    html = _load("9780747532699-uk-dp.html")
+    html = _load("9780747532699-uk-dp-2026-05-14.html")
     offers = parse_dp(html, fallback_url="https://www.amazon.co.uk/dp/x")
     assert offers[0].delivery_text is None
 
@@ -676,10 +676,10 @@ def test_parse_offer_listing_raises_and_writes_debug_capture_on_unrecognized_pag
     assert dumps[0].read_text(encoding="utf-8") == html
 
 
-# --- T2.5: conditional "first order" delivery promise -----------------------
+# --- T2.5/D33: conditional delivery promises (first-order + spend-threshold)
 
 
-def test_conditional_free_shipping_to_unknown_matches_the_evidenced_marker() -> None:
+def test_conditional_free_shipping_to_unknown_matches_the_first_order_marker() -> None:
     from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
 
     # The exact verbatim wording confirmed live (wave0 probe + the
@@ -696,21 +696,49 @@ def test_conditional_free_shipping_to_unknown_matches_the_evidenced_marker() -> 
     ) is None
 
 
+def test_conditional_free_shipping_to_unknown_matches_the_spend_threshold_marker() -> None:
+    """D33: a second conditional-promo pattern, found incidentally while
+    covering a fixture for T4.2 and confirmed as the same defect class as
+    F1/T2.5, not folded in silently. The rule keys on conditionality
+    ("over £<anything>"), not on the £35 value itself — Q2 (whether the
+    real threshold is £35 general or £10 of books) stays open and is
+    deliberately not load-bearing here."""
+    from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
+
+    # Verbatim wording confirmed live (B0CYT8WL1G-uk-dp-2026-09-04.html).
+    assert _conditional_free_shipping_to_unknown(
+        0, "FREE delivery Tuesday, 8 September on orders dispatched by Amazon over £35"
+    ) is None
+    # A different threshold value must match just as well — the rule is
+    # "conditional on a spend threshold", not "conditional on £35".
+    assert _conditional_free_shipping_to_unknown(
+        0, "FREE delivery on orders over £10"
+    ) is None
+    # Case-insensitive, tolerant of spacing around the £ sign.
+    assert _conditional_free_shipping_to_unknown(
+        0, "Free delivery ON ORDERS OVER  £ 25.00"
+    ) is None
+
+
 def test_conditional_free_shipping_to_unknown_leaves_genuine_cases_alone() -> None:
     """The other half of the fix: conflating "free" with "unknown" would
     be a different bug of the same size. A genuinely unconditional free
     offer must stay 0, and a paid charge must never be touched regardless
-    of what the text says (the function only ever acts on shipping==0)."""
+    of what the text says (the function only ever acts on shipping==0).
+    Covers both evidenced markers, not just the first one."""
     from book_alerter.sources.amazon import _conditional_free_shipping_to_unknown
 
     assert _conditional_free_shipping_to_unknown(0, "FREE delivery Monday, 18 May.") == 0
     assert _conditional_free_shipping_to_unknown(0, None) == 0
     assert _conditional_free_shipping_to_unknown(None, None) is None
-    # Paid charge is untouched even if the text happened to mention the
-    # marker (can't happen on real Amazon markup, but the guard is
-    # "shipping_minor == 0", not "text contains the marker", on purpose).
+    # A paid charge mentioning "over £X" (e.g. "£2.80 delivery, free over
+    # £25") must stay untouched — the guard is "shipping_minor == 0", not
+    # "text contains a marker", on purpose.
     assert _conditional_free_shipping_to_unknown(
         280, "£2.80 delivery on your first order to UK or Ireland."
+    ) == 280
+    assert _conditional_free_shipping_to_unknown(
+        280, "£2.80 delivery. Free delivery on orders over £25."
     ) == 280
 
 
