@@ -606,7 +606,7 @@ def _extract_dp_delivery_text(tree: HTMLParser) -> str | None:
     node = _find_dp_delivery_block(tree)
     if node is None:
         return None
-    text = " ".join((node.text() or "").split())
+    text = _node_text_collapsed(node)
     return text or None
 
 
@@ -1220,7 +1220,7 @@ def _extract_offer_delivery_text(row: Node) -> str | None:
     for sel in ("#aod-offer-shipping", ".aod-delivery-promise"):
         node = row.css_first(sel)
         if node is not None:
-            text = " ".join((node.text() or "").split())
+            text = _node_text_collapsed(node)
             if text:
                 return text
     sp = row.css_first("[data-csa-c-delivery-price]")
@@ -1278,7 +1278,7 @@ def _extract_offer_seller(row: Node) -> str:
     div = row.css_first("#aod-offer-soldBy")
     if div is None:
         return "?"
-    text = " ".join((div.text() or "").split()).strip()
+    text = _node_text_collapsed(div)
     for prefix in ("Sold by:", "Sold by"):
         cleaned = text.removeprefix(prefix).strip(" : ")
         if cleaned != text:
@@ -1355,6 +1355,16 @@ def _extract_dp_condition(
             if grade in _USED_GRADES:
                 return grade
     return Condition.USED_VG
+
+
+def _node_text_collapsed(node: Node | None) -> str:
+    """Node text with internal whitespace collapsed to single spaces -- not
+    truncated or summarised, every word kept. Amazon line-wraps some blocks
+    (the dp delivery block, AOD row shipping/delivery text) across several
+    indented lines, so a plain `.strip()` (see `_node_text`) leaves embedded
+    newlines a substring match like the conditional-promo phrases can miss.
+    """
+    return " ".join((node.text() or "").split()) if node is not None else ""
 
 
 def _node_text(node: Node | None) -> str:

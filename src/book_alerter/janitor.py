@@ -217,15 +217,26 @@ def sweep_keepa_cache(
     return result
 
 
+def _sweep_by_membership(
+    data_dir: Path, subdir: str, category: JanitorCategory, known_ids: set[str]
+) -> SweepResult:
+    """Drop every file in `data_dir/subdir` whose name is not in `known_ids`.
+
+    Shared by `sweep_covers` and `sweep_product_images`, which both apply
+    this same no-age "still tracked?" rule to a differently-keyed directory.
+    """
+    result = SweepResult(category)
+    for f in _files(data_dir / subdir):
+        if f.name not in known_ids:
+            _remove_file(f, result)
+    return result
+
+
 def sweep_covers(data_dir: Path, known_ids: set[str]) -> SweepResult:
     """Drop cover images whose book no longer exists. Covers are named by
     ISBN-13 with no extension (`covers.cover_path`), and have no age rule --
     a cover for a tracked book stays useful indefinitely."""
-    result = SweepResult(JanitorCategory.COVERS)
-    for f in _files(data_dir / "covers"):
-        if f.name not in known_ids:
-            _remove_file(f, result)
-    return result
+    return _sweep_by_membership(data_dir, "covers", JanitorCategory.COVERS, known_ids)
 
 
 def sweep_product_images(data_dir: Path, known_asins: set[str]) -> SweepResult:
@@ -243,11 +254,9 @@ def sweep_product_images(data_dir: Path, known_asins: set[str]) -> SweepResult:
     retain an orphaned image whose product was deleted but whose ASIN happens
     to match a tracked book's.
     """
-    result = SweepResult(JanitorCategory.PRODUCT_IMAGES)
-    for f in _files(data_dir / "product-images"):
-        if f.name not in known_asins:
-            _remove_file(f, result)
-    return result
+    return _sweep_by_membership(
+        data_dir, "product-images", JanitorCategory.PRODUCT_IMAGES, known_asins
+    )
 
 
 def sweep_backups(backup_dir: Path, cfg: JanitorConfig) -> SweepResult:

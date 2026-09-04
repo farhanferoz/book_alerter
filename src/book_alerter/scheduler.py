@@ -28,7 +28,7 @@ from book_alerter.enums import ItemKind, ItemStatus, MetadataStatus
 from book_alerter.janitor import janitor_tick
 from book_alerter.keepa_backfill import keepa_refresh_tick
 from book_alerter.logging_setup import get_logger
-from book_alerter.metadata import fetch_amazon_uk_product_metadata
+from book_alerter.metadata import apply_product_metadata, fetch_amazon_uk_product_metadata
 from book_alerter.sources.base import ObservationCandidate, Source, SourceError
 from book_alerter.sources.browser import BrowserSessionBusy
 
@@ -453,12 +453,7 @@ class Scheduler:
             ):
                 return
             if result is not None:
-                product.title = result.title
-                if result.image_url is not None:
-                    product.image_url = result.image_url
-                if result.brand is not None:
-                    product.brand = result.brand
-                product.metadata_status = MetadataStatus.OK
+                apply_product_metadata(product, result)
             else:
                 product.metadata_last_attempt_at = now
                 if product.metadata_status == MetadataStatus.FAILED:
