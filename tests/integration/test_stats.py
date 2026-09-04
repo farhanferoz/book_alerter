@@ -386,6 +386,58 @@ def test_cascade_step2_uses_book_source_median(engine_with_view, make_book):
     assert 950 in stats.sorted_totals
 
 
+def test_cascade_step2_splits_seller_class_like_step3_does(
+    engine_with_view, make_book,
+):
+    """S2 (2026-09-04 shipping-chain review): tier 1 used to key on `source`
+    alone, so a book with ANY observed Amazon-fulfilled shipping shadowed
+    tier 2's (source, seller_class) split for every seller on that source
+    -- including third-party ones, which is exactly the situation tier 2's
+    split exists to protect. Reproduces the review's probe7.py."""
+    with Session(engine_with_view) as s:
+        # A donor book supplies the tier-2 global median for
+        # ("amazon", "third_party") -- clear the 5-observation floor with
+        # cheap, deterministic values (all 280) so the median is unambiguous.
+        donor = make_book(s, isbn13="9780000000034")
+        for i in range(5):
+            _add_obs_with_shipping(
+                s, book_id=donor.id, price=1000 + i, shipping=280,
+                source="amazon", seller="SomeThirdParty",
+                observed_at=datetime.now(UTC) - timedelta(days=i + 1),
+            )
+
+        book = make_book(s, isbn13="9780000000035")
+        # This book's own Amazon-fulfilled history is entirely free -- a
+        # real, Prime-dominant pattern, not a data error. Before the fix,
+        # this alone made tier 1 impute £0.00 onto ANY Amazon row on this
+        # book, third-party included.
+        for i in range(3):
+            _add_obs_with_shipping(
+                s, book_id=book.id, price=2000 + i, shipping=0,
+                source="amazon", seller="Amazon",
+                observed_at=datetime.now(UTC) - timedelta(days=i + 1),
+            )
+        # The row under test: a THIRD-PARTY Amazon offer with unknown
+        # shipping. Its own (book, amazon, third_party) bucket is empty --
+        # it must fall through to tier 2's global third-party median (280),
+        # not inherit tier 1's Amazon-fulfilled-only median (0).
+        _add_obs_with_shipping(
+            s, book_id=book.id, price=1500, shipping=None,
+            source="amazon", seller="SomeThirdParty",
+        )
+        # 5 donor rows clears the sparse-bucket threshold this repo's
+        # RecommendationConfig actually defaults to (5, migration 0021);
+        # compute_book_stats's own wrapper default (10) is a separate,
+        # higher value that would otherwise exclude the bucket and mask
+        # this test behind the terminal default instead of tier 2.
+        stats = compute_book_stats(book.id, s, min_global_median_observations=5)
+
+    assert stats.shipping_estimate_minor == 280, (
+        "a third-party offer's unknown shipping must not inherit this "
+        "book's Amazon-FULFILLED median just because they share a source"
+    )
+
+
 def test_cascade_step3_uses_source_global_median(engine_with_view, make_book):
     """When the book has no per-(book, source) history for a given source,
     fall back to the per-source-global median across all books."""

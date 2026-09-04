@@ -10,11 +10,16 @@ are thin single-item wrappers over it, kept for callers (the per-item detail
 endpoints, the alert dispatcher) that only ever want one item's stats.
 
 Shipping cascade (applied in `_imputed_shipping`):
-  1. Row's own observed `shipping_minor`           → use as-is.
-  2. Per-(book, source) median of observed shipping → `price + median`.
-  3. Per-source global median across all books     → `price + median`.
-  4. Per-book median across all sources            → `price + median`.
-  5. None of the above                             → drop the row.
+  1. Row's own observed `shipping_minor`                        → use as-is.
+  2. Per-(book, source, seller_class) median of observed shipping → `price + median`.
+  3. Per-(source, seller_class) global median across all books  → `price + median`.
+  4. Per-book median across all sources                         → `price + median`.
+  5. None of the above                                          → drop the row.
+
+Tiers 2 and 3 both split Amazon-fulfilled from third-party sellers (S2,
+plan 2026-09-04 review) -- a book with a mix of free Amazon-fulfilled
+offers and paid third-party ones must not let the fulfilled-heavy
+aggregate impute zero shipping onto the third-party offer.
 
 Keepa rows always fall through to step 4 because Keepa never carries
 shipping; non-Keepa rows with one-off NULL shipping prefer the source-
@@ -237,7 +242,7 @@ def _imputed_shipping(
     source: str | None,
     seller: str | None,
     *,
-    book_source_medians: dict[str, int],
+    book_source_medians: dict[tuple[str, SellerClass], int],
     source_seller_global_medians: dict[tuple[str, SellerClass], int],
     book_median: int | None,
     default_shipping: int,
@@ -245,21 +250,24 @@ def _imputed_shipping(
     """Cascade lookup for a row whose own `shipping_minor` is NULL.
 
     Tiers (most-specific first):
-      1. `book_source_medians[source]`   — this book's typical shipping
-                                            on this source.
+      1. `book_source_medians[(source, seller_class)]` — this book's
+         typical shipping on this source, for this fulfilment class.
       2. `source_seller_global_medians[(source, seller_class)]` — cross-
-         book median for the same (source, fulfilment class). Splits
-         Amazon-fulfilled from third-party so a Prime-dominant aggregate
-         doesn't impute zero shipping onto a third-party offer.
+         book median for the same (source, fulfilment class).
+      Both tiers split Amazon-fulfilled from third-party (S2) so a
+      Prime-dominant aggregate never imputes zero shipping onto a
+      third-party offer -- tier 1 used to key on `source` alone, which
+      let it shadow tier 2's split for every seller on that source
+      whenever the book had ANY observed Amazon shipping.
       3. `book_median`                   — this book's typical shipping
                                             across all sources.
       4. `default_shipping`              — terminal config-driven
                                             estimate; never None.
     """
     if source is not None:
-        if source in book_source_medians:
-            return book_source_medians[source]
         key = (source, seller_class(seller))
+        if key in book_source_medians:
+            return book_source_medians[key]
         if key in source_seller_global_medians:
             return source_seller_global_medians[key]
     if book_median is not None:
@@ -552,11 +560,14 @@ def compute_stats_for_items(
     # widest window in play (any per-item override, or the widest canonical
     # WINDOW_DAYS bucket). Every row is one distinct offer (post-compaction),
     # so it feeds both the imputed percentile totals and the per-(item,
-    # source) shipping medians — no more canonical/duplicate split.
+    # source, seller_class) shipping medians — no more canonical/duplicate
+    # split. `seller` rides along with the shipping figure (S2) so tier 1
+    # of the cascade can split Amazon-fulfilled from third-party the same
+    # way tier 2 already does — see `_imputed_shipping`.
     max_window_days = max(max(WINDOW_DAYS.values()), *(window_days.get(i, 0) for i in ids))
     since = datetime.now(UTC) - timedelta(days=max_window_days)
     imputed_rows_by_id: dict[int, list[tuple]] = defaultdict(list)
-    shipping_rows_by_id: dict[int, list[tuple[str, int]]] = defaultdict(list)
+    shipping_rows_by_id: dict[int, list[tuple[str, str | None, int]]] = defaultdict(list)
     window_obs_stmt = (
         text(
             f"""
@@ -573,7 +584,7 @@ def compute_stats_for_items(
         session.connection().execute(window_obs_stmt).all()
     ):
         if shipping is not None:
-            shipping_rows_by_id[iid].append((source, int(shipping)))
+            shipping_rows_by_id[iid].append((source, seller, int(shipping)))
         imputed_rows_by_id[iid].append(
             (_to_aware(observed_at), source, seller, price, shipping, total)
         )
@@ -618,7 +629,7 @@ def _stats_for_one_item(
     *,
     candidates: list[tuple],
     imputed_rows: list[tuple],
-    shipping_rows: list[tuple[str, int]],
+    shipping_rows: list[tuple[str, str | None, int]],
     history: tuple | None,
     window_days: int,
     prime: bool,
@@ -630,13 +641,20 @@ def _stats_for_one_item(
     computation, given the pre-fetched rows `compute_stats_for_items`
     sliced out of its three batched queries for this one item. Never
     queries the DB itself."""
-    by_book_source: dict[str, list[int]] = {}
+    # S2: keyed on (source, seller_class), the same shape as
+    # `source_seller_global_medians`, so this book's own history splits
+    # Amazon-fulfilled from third-party exactly as the cross-book tier
+    # does. Before this split, a book with ANY observed Amazon shipping
+    # short-circuited tier 2 for every seller on that source — including
+    # third-party ones — which made tier 2's seller-class guard
+    # unreachable in precisely the situation it was built for.
+    by_book_source_class: dict[tuple[str, SellerClass], list[int]] = {}
     all_book_shipping: list[int] = []
-    for source, shipping in shipping_rows:
-        by_book_source.setdefault(source, []).append(shipping)
+    for source, seller, shipping in shipping_rows:
+        by_book_source_class.setdefault((source, seller_class(seller)), []).append(shipping)
         all_book_shipping.append(shipping)
-    book_source_medians: dict[str, int] = {
-        s: int(statistics.median(v)) for s, v in by_book_source.items()
+    book_source_medians: dict[tuple[str, SellerClass], int] = {
+        k: int(statistics.median(v)) for k, v in by_book_source_class.items()
     }
     book_median: int | None = (
         int(statistics.median(all_book_shipping)) if all_book_shipping else None
