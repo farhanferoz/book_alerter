@@ -82,8 +82,12 @@ function useDeleteProduct(productId: number) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => {
+      // `?hard=true` is the actual destructive delete — without it the backend
+      // soft-deletes (status → archived), which the Archive button already
+      // does. Omitting it made this button silently archive while its confirm
+      // dialog promised a cascading delete.
       const path =
-        `/api/products/${productId}` as "/api/products/{product_id}";
+        `/api/products/${productId}?hard=true` as "/api/products/{product_id}";
       return await apiDelete(path);
     },
     onSuccess: () => {
@@ -130,7 +134,12 @@ export function ProductDetail() {
   };
 
   const onArchive = () => {
-    if (confirm(`Archive ${p.title}?`)) {
+    if (
+      confirm(
+        `Archive ${p.title}?\n\nIt stops being tracked but keeps its ` +
+          `price history, and can be restored later.`,
+      )
+    ) {
       patch.mutate({ status: "archived" });
     }
   };
@@ -138,7 +147,9 @@ export function ProductDetail() {
   const onDelete = () => {
     if (
       confirm(
-        `Hard-delete ${p.title}? This cascades through observations + alerts.`,
+        `Permanently delete ${p.title}?\n\nThis removes the product and ` +
+          `cascades through its observations and alerts. It cannot be undone — ` +
+          `use Archive instead to keep the history.`,
       )
     ) {
       remove.mutate(undefined, {
@@ -199,7 +210,7 @@ export function ProductDetail() {
             disabled={remove.isPending}
             className="w-full"
           >
-            Delete
+            Delete permanently
           </Button>
         </div>
       </header>
