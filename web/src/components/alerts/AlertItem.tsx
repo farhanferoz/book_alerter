@@ -35,14 +35,25 @@ function alertItemHref(alert: Alert): string {
  * The stored message is the push-notification text, which opens with
  * `[KIND] Title — ` so it stands alone in ntfy. In the app the kind badge and
  * the linked title already carry both, so showing the prefix again repeats
- * them and leaks the raw enum. Strip exactly that prefix; leave anything
- * that doesn't match untouched.
+ * them and leaks the raw enum.
+ *
+ * Two passes, because the two halves of that prefix are not equally
+ * trustworthy. `message` is frozen at fire time with the title the item had
+ * THEN (`notifications/dispatcher.py`), while `title` is looked up from the
+ * item on every request (`api/alerts.py`) — so they diverge whenever an item
+ * is retitled after an alert fired. The realistic case is a product created
+ * as "Amazon product B0…" whose Amazon metadata resolves later. An exact
+ * match is tried first (it is correct even for a title containing the
+ * separator); failing that, the generic shape is stripped, which keeps the
+ * duplicate prefix off the card even when the titles have drifted.
  */
+const _ALERT_PREFIX_RE = /^\[[A-Z_]+\]\s.*?\s—\s/;
+
 function alertBody(alert: Alert): string {
-  const prefix = `[${alert.kind.toUpperCase()}] ${alert.title} — `;
-  const body = alert.message.startsWith(prefix)
-    ? alert.message.slice(prefix.length)
-    : alert.message;
+  const exact = `[${alert.kind.toUpperCase()}] ${alert.title} — `;
+  const body = alert.message.startsWith(exact)
+    ? alert.message.slice(exact.length)
+    : alert.message.replace(_ALERT_PREFIX_RE, "");
   return body.charAt(0).toUpperCase() + body.slice(1);
 }
 
