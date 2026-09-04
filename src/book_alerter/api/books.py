@@ -66,6 +66,7 @@ def _stats_for(book: models.Book, session: Session, cfg) -> BookStats:
         _effective_window_days(book, cfg),
         default_shipping_minor=cfg.recommendation.default_shipping_minor,
         min_global_median_observations=cfg.recommendation.min_global_median_observations,
+        prime=cfg.recommendation.amazon_prime,
     )
 
 
@@ -143,6 +144,12 @@ class BookStatsOut(BaseModel):
     current_percentile_rank: int | None
     current_effective_total_minor: int | None
     shipping_estimate_minor: int | None
+    # T2.2: whether the current-best offer's shipping figure is a cascade
+    # estimate (vs. observed or forced free by the Prime rule) and whether
+    # the Prime rule is what made it free. FE captions the offer row with
+    # "est." / "Prime" accordingly.
+    shipping_is_estimate: bool
+    prime_applied: bool
     # Authoritative signal computed once on the backend with the live
     # `RecommendationConfig`. The FE renders this directly — no
     # client-side re-derivation, so the dashboard pill can't drift from
@@ -185,6 +192,8 @@ class BookStatsOut(BaseModel):
             current_percentile_rank=s.current_percentile_rank,
             current_effective_total_minor=s.current_effective_total_minor,
             shipping_estimate_minor=s.shipping_estimate_minor,
+            shipping_is_estimate=s.shipping_is_estimate,
+            prime_applied=s.prime_applied,
             signal=signal,
             # Emit all canonical keys (filling missing with empties) so the
             # FE layout stays stable across books with sparse history.

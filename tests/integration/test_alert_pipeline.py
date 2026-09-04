@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from freezegun import freeze_time
 from sqlmodel import Session, select
@@ -21,9 +22,14 @@ from book_alerter.config import (
 )
 from book_alerter.db import models
 from book_alerter.db.models import Alert, Book
+from book_alerter.enums import ItemKind
 from book_alerter.notifications.base import Notifier
 from book_alerter.notifications.dispatcher import AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
+from book_alerter.scheduler import Scheduler
+from book_alerter.sources.amazon import parse_dp
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "amazon"
 
 
 class _RecordingNotifier(Notifier):
@@ -373,3 +379,91 @@ def test_pipeline_persists_book_signal_state_on_first_run(
     assert state.last_signal != "INSUFFICIENT_DATA"
     assert state.last_all_time_min_total_minor == 100
     assert state.last_evaluated_at is not None
+
+
+def test_conditional_delivery_promo_does_not_false_positive_target_hit(
+    engine_with_view, make_book,
+):
+    """D34/S1, end to end from the real capture rather than a synthetic
+    BookStats: `9780747532699-uk-dp-conditional-delivery.html` is the T2.5
+    fixture where Amazon serves a "FREE delivery ... on your first order"
+    promo (D20) — `parse_dp` correctly maps that to shipping=None (unknown),
+    not free.
+
+    Before D34, `detect_alert_kinds`/`compute_signal` compared the TARGET
+    price against `current_best_total_minor`, which `_persist` stores as
+    `price + (shipping or 0)` -- so this row's raw total (799) sat at/below
+    a target of £8.00 even though its cascade-estimated delivered cost
+    (799 + a book_source_median of 280, built from 40 days of prior Amazon
+    history all at an observed £2.80 shipping) is £10.79. That made
+    TARGET_HIT fire on a price the item never actually reached -- the exact
+    defect class T2.5 closed for ranking/percentiles, one hop further on.
+
+    Goes through the real parser (`parse_dp`), the real persist path
+    (`Scheduler._persist`), and the real pipeline (`AlertPipeline.run`),
+    not just the pure `compute_signal`/`detect_alert_kinds` functions --
+    unlike `tests/unit/test_signal.py::test_target_hit_reads_effective_not_raw_total`
+    and `tests/unit/test_alerts.py::test_target_hit_compares_effective_not_raw`,
+    which pin the same defect with a synthetic BookStats and are cheaper to
+    run on every commit; this one additionally proves the parser + persist
+    path actually produces the shape those unit tests assume.
+    """
+    cfg = _make_cfg()
+    with Session(engine_with_view) as s:
+        book = make_book(s, isbn13="9780747532699")
+        book.target_price_minor = 800
+        s.add(book)
+        s.commit()
+        s.refresh(book)
+        book_id = book.id
+        now = datetime.now(UTC)
+        # 40 days of prior Amazon history, all with an OBSERVED £2.80
+        # shipping -- this is what makes the cascade's book_source_median
+        # for (book, "amazon") resolve to 280 rather than falling through
+        # to the terminal default.
+        for i in range(1, 41):
+            ts = now - timedelta(days=i)
+            s.add(models.PriceObservation(
+                book_id=book_id, source="amazon", seller="Amazon", condition="new",
+                price_minor=1000 + i, currency="GBP", shipping_minor=280,
+                total_minor=1000 + i + 280, url="https://amazon.example/hist",
+                observed_at=ts, last_seen_at=ts, raw={},
+            ))
+        s.commit()
+
+    html = (FIXTURES / "9780747532699-uk-dp-conditional-delivery.html").read_text(
+        encoding="utf-8"
+    )
+    candidates = parse_dp(html, "https://amazon.co.uk/dp/X", source_name="amazon")
+    assert candidates, "fixture must parse to at least one candidate"
+    assert candidates[0].price_minor == 799
+    assert candidates[0].shipping_minor is None, (
+        "the conditional first-order promo must map to unknown shipping (T2.5), "
+        "not free -- this test is otherwise not exercising the bug it pins"
+    )
+
+    scheduler = Scheduler(cfg, {}, lambda: Session(engine_with_view), {})
+    with Session(engine_with_view) as s:
+        book = s.get(models.Book, book_id)
+        scheduler._persist("amazon", ItemKind.BOOK, book, candidates)
+
+    pipeline = AlertPipeline(
+        cfg=cfg,
+        session_factory=lambda: Session(engine_with_view),
+        notifiers=[InAppNotifier()],
+    )
+    _run(pipeline, [book_id])
+
+    with Session(engine_with_view) as s:
+        alerts = s.exec(select(models.Alert)).all()
+        state = s.exec(
+            select(models.BookSignalState).where(
+                models.BookSignalState.book_id == book_id
+            )
+        ).one()
+
+    assert "target_hit" not in [a.kind for a in alerts], (
+        "the £7.99 raw total is not a real £10.79-delivered price -- "
+        "TARGET_HIT must not fire on it"
+    )
+    assert state.last_signal != "TARGET_HIT"

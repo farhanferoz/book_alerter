@@ -188,6 +188,48 @@ def test_target_then_percentile_fall_through(transient_book, transient_stats):
     assert compute_signal(book, stats, cfg) == "WAIT"
 
 
+def test_target_hit_reads_effective_not_raw_total(transient_book, transient_stats):
+    """D34/S1: a T2.5 "unknown shipping" row stores `current_best_total_minor
+    == current_price_minor` (`_persist` folds unknown shipping to 0), so it
+    can sit at or below the target while the cascade-estimated
+    `current_effective_total_minor` -- what the item actually costs
+    delivered -- does not. Reproduces the numbers from the real capture
+    `tests/fixtures/amazon/9780747532699-uk-dp-conditional-delivery.html`
+    (verified end to end: price 799, 40 days of prior Amazon history all at
+    an observed £2.80 shipping give a book_source_median of 280, so
+    current_effective_total_minor = 799 + 280 = 1079) via a synthetic
+    BookStats rather than parsing the fixture, since compute_signal is
+    pure logic over the dataclass.
+
+    Pre-fix, this state made TARGET_HIT fire (799 <= 800): the same bug
+    the T2.5 shipping fix was written to close, just one hop further on.
+    """
+    cfg = RecommendationConfig()
+    book = transient_book(target_price_minor=800)
+    stats = transient_stats(
+        observation_count=41,
+        current_best_total_minor=799,
+        current_effective_total_minor=1079,
+        days_of_history=40,
+    )
+    # tolerance = 800 * 1.05 = 840; 1079 > 840 too, so this also isn't BUY —
+    # it falls through to the percentile branch, which INSUFFICIENT_DATAs
+    # on the empty sorted_totals. The one thing this test pins is that it
+    # is NOT TARGET_HIT.
+    assert compute_signal(book, stats, cfg) != "TARGET_HIT"
+
+    # Same shape, but the effective total has genuinely dropped below
+    # target (a real price cut, not just an unknown-shipping artifact) —
+    # TARGET_HIT must still fire when it's actually earned.
+    stats_genuinely_hit = transient_stats(
+        observation_count=41,
+        current_best_total_minor=799,
+        current_effective_total_minor=750,
+        days_of_history=40,
+    )
+    assert compute_signal(book, stats_genuinely_hit, cfg) == "TARGET_HIT"
+
+
 def test_insufficient_data_when_sorted_totals_empty_but_count_high(
     transient_book, transient_stats,
 ):

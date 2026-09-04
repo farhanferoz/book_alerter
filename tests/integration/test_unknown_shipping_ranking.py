@@ -90,6 +90,66 @@ def test_effective_shipping_never_treats_unknown_as_free() -> None:
     assert unknown_est is True, "an estimated figure must be reported as an estimate"
 
 
+# --- T2.2: the Prime rule, one test per effective_shipping branch ----------
+
+
+def test_prime_amazon_fulfilled_is_free_even_when_shipping_was_observed() -> None:
+    """D10: Prime overrides even OBSERVED shipping on an Amazon-fulfilled
+    offer -- a real Prime subscriber's delivery is free regardless of what
+    a non-Prime/logged-out scrape happened to see charged."""
+    pence, is_estimate = effective_shipping(
+        "amazon", "Amazon", KNOWN_SHIPPING_MINOR, prime=True,
+        cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (pence, is_estimate) == (0, False)
+
+
+def test_prime_amazon_fulfilled_is_free_when_shipping_was_unknown() -> None:
+    """Prime also short-circuits the cascade entirely -- no estimate needed
+    once the rule has already decided delivery is free."""
+    pence, is_estimate = effective_shipping(
+        "amazon", "Amazon", None, prime=True, cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (pence, is_estimate) == (0, False)
+
+
+def test_prime_does_not_affect_third_party_sellers() -> None:
+    """Prime only ever makes AMAZON's OWN delivery free -- a third-party
+    seller on the same marketplace still charges (or estimates) normally."""
+    known, known_est = effective_shipping(
+        "amazon", "SomeThirdPartySeller", KNOWN_SHIPPING_MINOR, prime=True,
+        cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (known, known_est) == (KNOWN_SHIPPING_MINOR, False)
+
+    unknown, unknown_est = effective_shipping(
+        "amazon", "SomeThirdPartySeller", None, prime=True,
+        cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (unknown, unknown_est) == (STUB_CASCADE_MINOR, True)
+
+
+def test_prime_off_leaves_amazon_fulfilled_unaffected() -> None:
+    """`prime=False` (the default) is unconditionally today's pre-T2.2
+    behaviour, even for an Amazon-fulfilled seller -- toggling the setting
+    off must not leave any residual free-shipping effect."""
+    pence, is_estimate = effective_shipping(
+        "amazon", "Amazon", KNOWN_SHIPPING_MINOR, prime=False,
+        cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (pence, is_estimate) == (KNOWN_SHIPPING_MINOR, False)
+
+
+def test_prime_does_not_apply_to_non_amazon_sources() -> None:
+    """The rule is keyed on `source` too -- an Amazon-named seller string
+    turning up on a non-Amazon source (shouldn't happen in practice, but
+    the rule must not key on seller name alone) gets no special treatment."""
+    pence, is_estimate = effective_shipping(
+        "wob", "Amazon", None, prime=True, cascade=lambda s, x: STUB_CASCADE_MINOR,
+    )
+    assert (pence, is_estimate) == (STUB_CASCADE_MINOR, True)
+
+
 def test_known_shipping_beats_unknown_when_the_estimate_is_worse(
     engine_with_view, make_book
 ):
@@ -122,6 +182,11 @@ def test_unknown_shipping_still_wins_when_its_estimate_is_better(
     Here the unknown-shipping offer is £5 cheaper, so even a pessimistic
     estimate leaves it ahead. If this fails, the fix has over-corrected into
     always preferring rows with observed shipping.
+
+    T2.4's remaining half (deferred until T2.2 added the field): the
+    response must carry `shipping_is_estimate = true` when the NULL-shipping
+    row is the one that won, so the FE can caption it rather than presenting
+    a guessed figure as an observed one.
     """
     with Session(engine_with_view) as s:
         book = make_book(s, isbn13="9780000000022")
@@ -138,6 +203,14 @@ def test_unknown_shipping_still_wins_when_its_estimate_is_better(
         )
 
     assert stats.current_best_seller == "NoShipData"
+    assert stats.shipping_is_estimate is True
+    # Not ESTIMATE_WORSE_THAN_KNOWN_MINOR: both offers share source="amazon"
+    # (the `_offer` default), so "NoShipData"'s unknown shipping resolves at
+    # cascade tier 1 (this book's own per-source median) using "KnownShip"'s
+    # observed 280 -- it never reaches the terminal default_shipping_minor
+    # this test passes in, which only matters when no tier ahead of it has
+    # anything to go on.
+    assert stats.shipping_estimate_minor == KNOWN_SHIPPING_MINOR
 
 
 def test_a_free_offer_is_still_recognised_as_free(engine_with_view, make_book):

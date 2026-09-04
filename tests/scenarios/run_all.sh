@@ -13,6 +13,7 @@ SCRIPTS=(
   scenario_05_alert_kind_toggle.py
   scenario_06_ui_surface.py
   scenario_07_product_lifecycle.py
+  scenario_08_prime_toggle.py
 )
 
 FAILURES=()

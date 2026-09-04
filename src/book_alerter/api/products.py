@@ -68,6 +68,7 @@ def _stats_for(product: models.Product, session: Session, cfg) -> BookStats:
         _effective_window_days(product, cfg),
         default_shipping_minor=cfg.recommendation.default_shipping_minor,
         min_global_median_observations=cfg.recommendation.min_global_median_observations,
+        prime=cfg.recommendation.amazon_prime,
     )
 
 

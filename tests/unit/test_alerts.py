@@ -36,6 +36,40 @@ def test_target_hit_does_not_double_fire(transient_book, transient_stats):
     assert "target_hit" not in out
 
 
+def test_target_hit_compares_effective_not_raw(transient_book, transient_stats):
+    """D34/S1, reproducing the real capture
+    `tests/fixtures/amazon/9780747532699-uk-dp-conditional-delivery.html`:
+    an unknown-shipping row's raw total (799) sits below target (800), but
+    the cascade-estimated effective total (1079, from 40 days of Amazon
+    history all at an observed £2.80 shipping) does not. Pre-fix this made
+    `target_hit` fire on a total-cost-of-799 read that was never real."""
+    cfg = RecommendationConfig()
+    book = transient_book(target_price_minor=800)
+    stats = transient_stats(
+        observation_count=41,
+        current_best_total_minor=799,
+        current_effective_total_minor=1079,
+        days_of_history=40,
+    )
+    out, _ = detect_alert_kinds(
+        book, stats, prev_signal="WAIT", prev_all_time_min=None, cfg=cfg
+    )
+    assert "target_hit" not in out
+
+    # Same shape, but the effective total has genuinely dropped below
+    # target — target_hit must still fire when it's actually earned.
+    stats_genuinely_hit = transient_stats(
+        observation_count=41,
+        current_best_total_minor=799,
+        current_effective_total_minor=750,
+        days_of_history=40,
+    )
+    out2, _ = detect_alert_kinds(
+        book, stats_genuinely_hit, prev_signal="WAIT", prev_all_time_min=None, cfg=cfg
+    )
+    assert "target_hit" in out2
+
+
 def test_percentile_cross_fires_on_buy_transition(transient_book, transient_stats):
     cfg = RecommendationConfig(buy_percentile=25)
     book = transient_book()  # no target
