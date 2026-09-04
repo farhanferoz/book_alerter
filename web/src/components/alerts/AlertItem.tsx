@@ -31,6 +31,21 @@ function alertItemHref(alert: Alert): string {
   return `/${segment}/${alert.item_id}`;
 }
 
+/**
+ * The stored message is the push-notification text, which opens with
+ * `[KIND] Title — ` so it stands alone in ntfy. In the app the kind badge and
+ * the linked title already carry both, so showing the prefix again repeats
+ * them and leaks the raw enum. Strip exactly that prefix; leave anything
+ * that doesn't match untouched.
+ */
+function alertBody(alert: Alert): string {
+  const prefix = `[${alert.kind.toUpperCase()}] ${alert.title} — `;
+  const body = alert.message.startsWith(prefix)
+    ? alert.message.slice(prefix.length)
+    : alert.message;
+  return body.charAt(0).toUpperCase() + body.slice(1);
+}
+
 export function AlertItem({
   alert,
   onDismiss,
@@ -58,8 +73,11 @@ export function AlertItem({
             {title}
           </Link>
         </div>
-        <p className={cn("text-muted-foreground", compact && "line-clamp-2")}>
-          {alert.message}
+        <p
+          className={cn("text-muted-foreground", compact && "line-clamp-2")}
+          title={compact ? alert.message : undefined}
+        >
+          {alertBody(alert)}
         </p>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span>{formatMoneyMinor(alert.price_minor, alert.currency)}</span>

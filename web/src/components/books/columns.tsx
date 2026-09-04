@@ -1,7 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
 // Column definitions for the dashboard table.
-//   cover · title+subtitle · best price · shipping · signal · percentile
+//   cover · title+subtitle · signal · best price · shipping · percentile
 //   mini-bars (1m/3m/12m, sort key = 3m rank) · days · last seen · actions
+// Signal sits right after the title on purpose: it is the one column the
+// dashboard exists to show, and with the alerts rail open a laptop-width
+// viewport only fits the first three or four columns before the table
+// scrolls horizontally. The title cell is width-capped for the same reason.
 // Per-row actions (refetch/archive/delete) are wired via ItemRowMenu;
 // mute remains detail-page-only.
 //
@@ -99,11 +103,12 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
       cell: ({ row }) => {
         const item = toItem(row.original);
         return (
-          <div className="min-w-[12rem]">
+          <div className="min-w-[12rem] max-w-[24rem]">
             <div className="flex items-center gap-1.5">
               <Link
                 to={itemHref(item)}
-                className="font-medium text-foreground hover:underline"
+                className="line-clamp-2 font-medium text-foreground hover:underline"
+                title={item.title}
               >
                 {item.title}
               </Link>
@@ -131,11 +136,11 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
               )}
               {item.last_scrape_error && (
                 <span
-                  role="img"
-                  aria-label={`Scrape error: ${item.last_scrape_error}`}
+                  className="inline-flex shrink-0 items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
                   title={`Last scrape error: ${item.last_scrape_error}`}
-                  className="inline-block h-2 w-2 rounded-full bg-red-500"
-                />
+                >
+                  Scrape failed
+                </span>
               )}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -146,6 +151,12 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
           </div>
         );
       },
+    },
+    {
+      id: "signal",
+      accessorFn: (row) => bookSignal(toItem(row)),
+      header: "Signal",
+      cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
     },
     {
       id: "best_price",
@@ -240,12 +251,6 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
           </span>
         );
       },
-    },
-    {
-      id: "signal",
-      accessorFn: (row) => bookSignal(toItem(row)),
-      header: "Signal",
-      cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
     },
     {
       id: "percentile",
