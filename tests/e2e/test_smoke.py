@@ -191,6 +191,7 @@ def test_docker_smoke() -> None:
 from datetime import datetime, UTC
 from book_alerter.db.session import session_scope, get_engine
 from book_alerter.db.models import PriceObservation
+now = datetime.now(UTC)
 with session_scope(get_engine()) as s:
     s.add(PriceObservation(
         book_id={book_id},
@@ -202,7 +203,10 @@ with session_scope(get_engine()) as s:
         shipping_minor=0,
         total_minor={_SYNTHETIC_TOTAL_MINOR},
         url='https://example.invalid/e2e',
-        observed_at=datetime.now(UTC),
+        observed_at=now,
+        # Required since migration 0021 (T3.2). A first sighting is also
+        # its own last sighting, so both timestamps are the same instant.
+        last_seen_at=now,
         raw={{}},
     ))
 print('inserted')
