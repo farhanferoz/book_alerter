@@ -34,6 +34,7 @@ Design notes:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -112,10 +113,29 @@ class SourceRunOut(BaseModel):
         )
 
 
+class SourceHealthOut(BaseModel):
+    """Rolled-up scrape health over the last 24 hours.
+
+    `challenged` is a **proxy**, not a direct count. `SourceRun` records only
+    attempted/succeeded totals, and per-item bot challenges are caught inside
+    the scheduler and written to `Book.last_scrape_error` (last-write-wins, no
+    history) rather than rolled up onto the run. So this counts every item
+    failure, of which bot challenges are the dominant but not the only cause.
+    Plan task T1.3 adds `SourceRun.items_challenged`; when it lands this
+    becomes an exact figure and `_last_24h_health_per_source` changes by one
+    line.
+    """
+
+    attempted: int = 0
+    succeeded: int = 0
+    challenged: int = 0
+
+
 class SourceStatusOut(BaseModel):
     name: str
     config: SourceConfigOut
     last_run: SourceRunOut | None
+    last_24h: SourceHealthOut = SourceHealthOut()
 
 
 class TriggerRunResult(BaseModel):
@@ -181,13 +201,49 @@ def _runs_for(
     return list(session.exec(stmt).all())
 
 
+_HEALTH_WINDOW = timedelta(hours=24)
+
+
+def _last_24h_health_per_source(session) -> dict[str, SourceHealthOut]:
+    """Attempted/succeeded totals per source over the health window, in ONE
+    grouped query — deliberately not a per-source loop, which is the shape
+    this module just lost in T3.3."""
+    since = datetime.now(UTC) - _HEALTH_WINDOW
+    stmt = (
+        select(
+            models.SourceRun.source,
+            func.coalesce(func.sum(models.SourceRun.books_attempted), 0),
+            func.coalesce(func.sum(models.SourceRun.books_succeeded), 0),
+        )
+        .where(models.SourceRun.started_at >= since)
+        .group_by(models.SourceRun.source)  # type: ignore[arg-type]
+    )
+    out: dict[str, SourceHealthOut] = {}
+    for source, attempted, succeeded in session.exec(stmt).all():
+        out[source] = SourceHealthOut(
+            attempted=int(attempted),
+            succeeded=int(succeeded),
+            challenged=max(int(attempted) - int(succeeded), 0),
+        )
+    return out
+
+
+def _last_24h_health_for(session, source_name: str) -> SourceHealthOut:
+    """Single-source variant, for the endpoints that return one source."""
+    return _last_24h_health_per_source(session).get(source_name, SourceHealthOut())
+
+
 def _status_for(
-    name: str, sc: SourceConfig, last: models.SourceRun | None
+    name: str,
+    sc: SourceConfig,
+    last: models.SourceRun | None,
+    health: SourceHealthOut | None = None,
 ) -> SourceStatusOut:
     return SourceStatusOut(
         name=name,
         config=SourceConfigOut.from_config(sc),
         last_run=SourceRunOut.from_run(last) if last is not None else None,
+        last_24h=health or SourceHealthOut(),
     )
 
 
@@ -198,8 +254,9 @@ def _status_for(
 def list_sources(session: SessionDep, cfg: ConfigDep) -> list[SourceStatusOut]:
     """Per-source status, sorted alphabetically by source name."""
     latest_runs = _latest_run_per_source(session)
+    health = _last_24h_health_per_source(session)
     return [
-        _status_for(name, cfg.sources[name], latest_runs.get(name))
+        _status_for(name, cfg.sources[name], latest_runs.get(name), health.get(name))
         for name in sorted(cfg.sources.keys())
     ]
 
@@ -302,4 +359,4 @@ async def patch_source(
     else:
         sc = current
 
-    return _status_for(name, sc, _last_run_for(session, name))
+    return _status_for(name, sc, _last_run_for(session, name), _last_24h_health_for(session, name))

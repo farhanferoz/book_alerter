@@ -112,7 +112,31 @@ def test_get_sources_last_run_is_one_query_regardless_of_source_count(
     body = resp.json()
     assert len(body) == len(sources)
     assert all(s["last_run"]["status"] == "error" for s in body)  # latest wins
-    assert select_count == 1, f"expected 1 sourcerun SELECT, got {select_count}"
+    # The property that matters is that the query count does not scale with the
+    # number of sources, not that it is literally one: the endpoint issues a
+    # fixed pair (newest run per source, plus the 24h health roll-up), and a
+    # reintroduced per-source loop would show up as growth. Asserting a
+    # constant AND a hard ceiling catches both regressions.
+    four_source_count = select_count
+
+    select_count = 0
+    _install_sources(api_client, **{f"extra_{i}": SourceConfig() for i in range(8)},
+                     **sources)
+    event.listen(engine, "before_cursor_execute", _on_cursor_execute)
+    try:
+        resp2 = api_client.get("/api/sources")
+    finally:
+        event.remove(engine, "before_cursor_execute", _on_cursor_execute)
+    assert resp2.status_code == 200
+    assert len(resp2.json()) == len(sources) + 8
+
+    assert select_count == four_source_count, (
+        f"sourcerun SELECTs grew with source count: {four_source_count} for 4 "
+        f"sources, {select_count} for 12 — a per-source loop has crept back in"
+    )
+    assert four_source_count <= 2, (
+        f"expected at most 2 sourcerun SELECTs, got {four_source_count}"
+    )
 
 
 # --- POST /api/sources/{name}/run -------------------------------------------
@@ -315,3 +339,74 @@ def test_patch_source_empty_body_is_idempotent_noop(api_client):
     assert cfg["enabled"] is True
     # Empty body → no save → file is not touched.
     assert not cfg_path.exists()
+
+
+# --- GET /api/sources: last_24h health roll-up (T6.1) ------------------------
+
+
+def _health(api_client, name: str) -> dict:
+    body = api_client.get("/api/sources").json()
+    return next(s["last_24h"] for s in body if s["name"] == name)
+
+
+def test_last_24h_sums_only_runs_inside_the_window(
+    api_client, engine_with_view, make_source_run
+):
+    """The window boundary is the part that rots silently, so pin both sides."""
+    _install_sources(api_client, amazon=SourceConfig())
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        # inside the window
+        make_source_run(
+            s, source="amazon", started_at=now - timedelta(hours=1),
+            status="partial", books_attempted=10, books_succeeded=4,
+        )
+        # comfortably outside it — must not be counted
+        make_source_run(
+            s, source="amazon", started_at=now - timedelta(hours=30),
+            status="error", books_attempted=99, books_succeeded=0,
+        )
+
+    h = _health(api_client, "amazon")
+    assert h["attempted"] == 10, "a run older than 24h must not be summed"
+    assert h["succeeded"] == 4
+    assert h["challenged"] == 6, "challenged is attempted - succeeded"
+
+
+def test_last_24h_accumulates_across_several_runs(
+    api_client, engine_with_view, make_source_run
+):
+    _install_sources(api_client, amazon=SourceConfig())
+    now = datetime.now(UTC)
+    with Session(engine_with_view) as s:
+        for hours, attempted, succeeded in ((1, 5, 5), (3, 7, 2), (6, 1, 0)):
+            make_source_run(
+                s, source="amazon", started_at=now - timedelta(hours=hours),
+                status="partial", books_attempted=attempted, books_succeeded=succeeded,
+            )
+
+    h = _health(api_client, "amazon")
+    assert (h["attempted"], h["succeeded"], h["challenged"]) == (13, 7, 6)
+
+
+def test_last_24h_is_zeroed_for_a_source_that_never_ran(api_client, engine_with_view):
+    _install_sources(api_client, amazon=SourceConfig())
+    assert _health(api_client, "amazon") == {
+        "attempted": 0,
+        "succeeded": 0,
+        "challenged": 0,
+    }
+
+
+def test_last_24h_never_reports_negative_challenged(
+    api_client, engine_with_view, make_source_run
+):
+    """Defensive: succeeded should never exceed attempted, but a clamped zero
+    is a better answer than a negative count leaking to the dashboard."""
+    _install_sources(api_client, amazon=SourceConfig())
+    with Session(engine_with_view) as s:
+        make_source_run(
+            s, source="amazon", started_at=datetime.now(UTC) - timedelta(minutes=5),
+            status="success", books_attempted=2, books_succeeded=5,
+        )
+    assert _health(api_client, "amazon")["challenged"] == 0
