@@ -105,6 +105,17 @@ that makes the work deployable, and it is the last thing to do, after review.
   → assertion fails → removed → passes). The assertion itself reads correctly.
 - **T4.2 is a hard gate**: 7 committed product fixtures have no test loading them.
 
+### Expected in-flight churn (do NOT mistake for regressions)
+- As of 2026-09-04 ~16:10 the working tree holds the **uncommitted** heartbeat-compaction change
+  (`db/models.py`, `db/views.py`, `stats.py`, `config.py`, migration 0020/0021). While it is
+  uncommitted, a scoped run shows ~12 failures, all traceable to
+  `NOT NULL constraint failed: priceobservation.last_seen_at` — the new required model field.
+  **Judge the branch from a clean checkout, never from this tree.**
+- Raised with the stats worker: `last_seen_at` should default to `observed_at` on the model
+  (39 construction sites otherwise need updating, and a forgetful future caller gets a runtime
+  IntegrityError instead of correct behaviour). Their call, but it must be deliberate.
+- `tests/integration/test_unknown_shipping_ranking.py` is affected either way.
+
 ### Integration status (root-verified on a clean checkout of the branch tip)
 - **2026-09-04, commit `31b0b03`: `uv run pytest -q` → 520 passed, 3 skipped, 0 failed** (22 s).
   Baseline before this run was 426 passed. The earlier red state (11 `test_book_stats_view.py`
