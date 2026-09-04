@@ -111,15 +111,30 @@ def _copy_db(src: Path, dest_dir: Path) -> Path:
 
 
 def _write_harness_config(config_cls, cfg_path: Path) -> None:
-    """Write a `Config` with every source and the weekly backup disabled.
+    """Write a `Config` with every source, the weekly backup and the janitor disabled.
 
     `Scheduler.start()` only registers a cron job for a source when
-    `SourceConfig.enabled` is True (`src/book_alerter/scheduler.py`), and
-    only registers the backup job when `BackupConfig.enabled` is True. With
-    every source disabled, `build_sources()` also returns an empty dict, so
-    no Playwright/httpx source objects are constructed. This is the actual
-    switch that keeps the real app boot free of background jobs — there is
-    no separate "test mode" flag.
+    `SourceConfig.enabled` is True (`src/book_alerter/scheduler.py`), only
+    registers the backup job when `BackupConfig.enabled` is True, and only
+    registers the janitor when `JanitorConfig.enabled` is True. With every
+    source disabled, `build_sources()` also returns an empty dict, so no
+    Playwright/httpx source objects are constructed. There is no separate
+    "test mode" flag; those three `enabled` fields are the switch.
+
+    The janitor is disabled here for a concrete reason, not for symmetry:
+    its sweeps derive every path from `db_path.parent`, and this harness
+    points the app at a COPY of the production database inside a temporary
+    directory, so an enabled janitor would sweep that temp directory.
+
+    NOT disabled, because it cannot be: `metadata_refresh` is registered
+    unconditionally (`scheduler.py`, T4.1 — "gating it behind config would
+    mean a user could disable the only thing that ever resolves a PENDING
+    row"). It is an `IntervalTrigger(minutes=30)`, so its first fire is
+    start+30 minutes and no smoke run comes close — the whole check runs in
+    ~8 seconds. That is a timing argument, not a guarantee: a smoke run held
+    open past 30 minutes WOULD drive a real Playwright session against live
+    Amazon for any product row whose metadata lookup is due. Do not hold
+    this harness open.
     """
     cfg = config_cls()
     disabled_sources = {
@@ -129,6 +144,7 @@ def _write_harness_config(config_cls, cfg_path: Path) -> None:
         update={
             "sources": disabled_sources,
             "backup": cfg.backup.model_copy(update={"enabled": False}),
+            "janitor": cfg.janitor.model_copy(update={"enabled": False}),
         }
     )
     cfg.save(cfg_path)
