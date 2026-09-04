@@ -216,7 +216,25 @@ async def _capture_amazon(
 async def _capture_bookfinder(identifier: str, *, out_dir: Path, captured_on: date) -> None:
     src = BookfinderInlineSource(region="UK", timeout_s=_TIMEOUT_S)
     url = src.search_url(identifier)
-    html = await src._render(async_playwright, url)
+    # BookfinderInlineSource._render() takes a pre-opened BrowserContext
+    # (Wave 1's BrowserSessionMixin), not a playwright_factory -- this
+    # script is a one-shot manual capture, not a scheduled fetch, so it
+    # launches its own throwaway browser/context here rather than pulling
+    # in the persistent-profile BrowserSession machinery meant for the
+    # scheduler. Mirrors _capture_amazon's throwaway launch below.
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        try:
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                locale="en-GB" if src.region.upper() == "UK" else "en-US",
+            )
+            html = await src._render(context, url)
+        finally:
+            await browser.close()
     _save_capture(
         identifier=identifier,
         source=CaptureSource.BOOKFINDER,

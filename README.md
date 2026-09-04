@@ -219,7 +219,27 @@ The e2e Docker test requires the `book_alerter:dev` image to exist locally — b
 
 - Weekly `VACUUM INTO` cron job runs at Sunday 03:00 UTC by default. Schedule, target directory, and retention are configurable under `backup:` in `config.yaml`.
 - The last 7 snapshots are kept under `data/backups/`; older ones are pruned.
-- To restore: stop the container, copy a snapshot over `data/book_alerter.db`, start again. `alembic upgrade head` runs on every boot via the entrypoint so older schema versions are migrated forward automatically.
+- Snapshots are stored gzip-compressed (`book_alerter_<timestamp>.db.gz`) by the janitor; uncompressed snapshots left by earlier versions are compressed in place on its first run. Compression is lossless — the gzip is written first and the original removed only on success, so an interrupted run leaves the original rather than a truncated archive.
+- To restore: stop the container, `gunzip -c data/backups/book_alerter_<timestamp>.db.gz > data/book_alerter.db` (or copy the file directly if it is not compressed), start again. `alembic upgrade head` runs on every boot via the entrypoint so older schema versions are migrated forward automatically.
+
+## Data directory and retention
+
+Everything the application writes at runtime lives under `data/`, and every directory in it has a cap enforced by a daily janitor job (04:00 UTC, an hour after the backup job so it never tidies a backup mid-write). Limits live under `janitor:` in `config.yaml` — they are configuration, not constants in code.
+
+| Directory | What it holds | Retention |
+|---|---|---|
+| `book_alerter.db` | The database | Backed up weekly, see above |
+| `backups/` | Weekly snapshots | `backup.retain` files, gzip-compressed |
+| `browser-profiles/<source>/` | Persistent Chromium profiles (cookies, local storage) | Capped per profile; caches dropped first, whole profile only if still over |
+| `debug/<source>/` | HTML dumps written **only** on a failed or unrecognised scrape | Newest N files **and** nothing older than the age limit |
+| `keepa-cache/` | Keepa chart PNGs | Dropped when the item no longer exists, or past the age limit |
+| `covers/` | Book cover images, named by ISBN-13 | Dropped when the book no longer exists |
+
+Notes:
+
+- Browser profiles are the only persistent state the scraper keeps. They contain no credentials — there is no login flow — and are disposable: losing one costs a single cold visit. They are deliberately *not* discarded eagerly, because a cookieless visitor is served Amazon's promotional "free delivery on your first order" promise, which is not a price a returning customer would actually pay.
+- `/api/health` reports `janitor_last_run_at`, so a cleanup job that has quietly stopped is visible before the disk fills rather than after.
+- Set `janitor.enabled: false` to turn the whole sweep off.
 
 ## Tailscale / access control
 
