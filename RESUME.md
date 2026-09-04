@@ -144,6 +144,14 @@ that makes the work deployable, and it is the last thing to do, after review.
   you DID name that already holds someone else's edits — run `git diff <path>` first.**
 
 ### Integration status (root-verified on a clean checkout of the branch tip)
+- **2026-09-04, HEAD `fc433ba`, from an isolated worktree (never this dirty tree):**
+  `uv run pytest -q` → **605 passed, 3 skipped**; `import book_alerter.app` OK.
+- **Against a real production copy, same clean HEAD:** migration 0019→head clean
+  (**90,172 → 12,337** `priceobservation` rows), `PRAGMA foreign_key_check` clean,
+  **`smoke_check.py` 12/12 PASS in 1.76 s**, `GET /api/books` **96 ms** (was 2101 ms),
+  **`bench_stats.py` 0.163 s** for 13 books — inside D23's ≤0.35 s gate with room to spare.
+  smoke_check's invariants include the T6.2 one ("signal is a member of Signal").
+  **These are the run-contract DONE criteria, met at this commit.** Re-run after T2.2/T4.1 land.
 - **2026-09-04, commit `31b0b03`: `uv run pytest -q` → 520 passed, 3 skipped, 0 failed** (22 s).
   Baseline before this run was 426 passed. The earlier red state (11 `test_book_stats_view.py`
   failures after migration 0020 dropped the view) is resolved.
@@ -213,3 +221,8 @@ ALREADY dead — that is SUCCESS, not an error to retry. Delete handled lines.
 ### Stuck-subagent alerts
 - 2026-09-04T17:10:38.918631+00:00 watch: teammate W-T61-web stuck at 45min (stale 40min, 0 open tasks)
 - 2026-09-04T17:10:50.924655+00:00 watch: teammate W-ship-review stuck at 45min (stale 33min, 0 open tasks)
+- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T01-capture' — T0.1 capture script consolidation was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T01-capture-29b3b63ceaa5d381
+- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T11-browser' — T1.1 BrowserSession lifecycle was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T11-browser-04bd4b03f0c03fc6
+- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T31-stats' — T3.1 stats restructure + T3.3 + T6.2 was NOT stopped (quiet 0min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T31-stats-f0ee3524496958e9
+- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-T61-web' — T6.1 dashboard banner was NOT stopped (quiet 48min). If still live (mtime!), stop by bare id: TaskStop agent-aW-T61-web-eadf5f3fe523352d
+- 2026-09-04T17:18:59.839375+00:00 PreCompact/auto: agent 'W-ship-review' — Adversarial shipping-chain review was NOT stopped (quiet 41min). If still live (mtime!), stop by bare id: TaskStop agent-aW-ship-review-3e344fb4ad84c2e9
