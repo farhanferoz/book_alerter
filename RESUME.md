@@ -55,14 +55,21 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   1.455 s for 13 per-book stats queries vs 0.124 s for one all-books query.
 
 ### Next
-- **Progress: 14 of 39 ticked**, plus T1.2 dropped and T2.4/T6.5 part-done.
-- Done: T0.1–T0.5, T1.1, T2.1, T3.1, T3.3, T4.3, T4.5, T4.6, T5.1, T6.7.
-- In flight: **T3.2 + T3.4 + T6.2** (W-T31-stats) · **D24 profile lock + T1.5 + T2.7 + F26 guard**
-  (W-T11-browser) · **T2.6** (W-T01-capture) · **T5.2** (W-T67-smoke).
-- Not yet started: T1.3, T1.4, T2.2, T2.3, T2.5, T4.1, T4.2, T4.4, T5.3–T5.5, T6.1, T6.3, T6.4,
-  T6.6 (fixture renames), T6.5 scheduler registration, T2.4 estimate-flag assertion.
-- **Endgame required by the user:** full review, everything pushed, ready for deployment (the NAS
-  deploy itself stays out of scope), a plan-adherence audit for gaps, then `/checkpoint --final`.
+- **Progress: 18 of 40 ticked** (T6.8 was added mid-run), plus T1.2 dropped and T2.4/T6.4/T6.5
+  part-done. The plan checkboxes are authoritative.
+- Done: T0.1–T0.5, T1.1, T1.5, T2.1, T2.6, T2.7, T3.1, T3.3, T4.3, T4.5, T4.6, T5.1, T5.2, T6.7.
+- In flight: **T3.2 (heartbeat compaction, Tier 4) + T3.4 + T6.2** (W-T31-stats) ·
+  **F26 canonical guard + bounded lock wait + T2.5 conditional-delivery fix** (W-T11-browser) ·
+  **T6.1 backend + T6.8 write containment** (W-T01-capture) · **T5.3 + T5.4** (W-T67-smoke).
+- Not started: T1.3, T1.4, T2.2, T2.3, T4.1, T4.2, T4.4, T5.5, T6.3, plus the remainders
+  (T2.4 estimate flag, T6.4 docs for Prime/schedules/VACUUM, T6.5 scheduler registration,
+  T6.6 fixture renames).
+- **Then the endgame the user set:** run the review tiers (Tier 2 per wave; Tier 4 for the
+  migrations), a full plan-adherence audit for gaps, push, and `/checkpoint --final`. Deploying
+  to the NAS is explicitly NOT in scope — "ready for deployment" is the bar.
+- **Migration ordering is the one hard serialisation left:** T3.2 holds the next number; T1.3
+  (`SourceRun.items_challenged`) and T4.1 (`product.metadata_status`) each need one after it.
+  Do not let two workers author migrations concurrently.
 
 ### Pushing (verified 2026-09-04, dry-run only — nothing pushed yet)
 The remote is `github.com/farhanferoz/book_alerter`, but `gh`'s **active** account is
