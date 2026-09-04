@@ -35,11 +35,11 @@ def detect_alert_kinds(
     if (
         item.target_price_minor is not None
         and stats.current_best_total_minor <= item.target_price_minor
-        and prev_signal != "TARGET_HIT"
+        and prev_signal != Signal.TARGET_HIT
     ):
         out.append(AlertKindEnum.TARGET_HIT)
 
-    if cur_signal == "BUY" and prev_signal != "BUY":
+    if cur_signal == Signal.BUY and prev_signal != Signal.BUY:
         out.append(AlertKindEnum.PERCENTILE_CROSS)
 
     # `prev_all_time_min` is the cascade-imputed bound persisted by the

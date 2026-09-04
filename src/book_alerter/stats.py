@@ -42,8 +42,7 @@ from sqlmodel import Session
 
 from book_alerter.config import RecommendationConfig
 from book_alerter.db import models
-
-Signal = Literal["BUY", "WATCH", "WAIT", "TARGET_HIT", "INSUFFICIENT_DATA"]
+from book_alerter.enums import Signal
 
 # Valid range for a percentile lookup — 0 and 100 are meaningless as a rank
 # cut (there's no value strictly below the minimum or above the maximum).
@@ -789,20 +788,20 @@ def compute_signal(
     reads only `percentile_threshold` and `target_price_minor` from the
     item, both shared between Book and Product."""
     if stats.days_of_history < cfg.min_days_of_history:
-        return "INSUFFICIENT_DATA"
+        return Signal.INSUFFICIENT_DATA
     if stats.observation_count < cfg.min_observations_for_signal:
-        return "INSUFFICIENT_DATA"
+        return Signal.INSUFFICIENT_DATA
     if stats.current_best_total_minor is None:
-        return "INSUFFICIENT_DATA"
+        return Signal.INSUFFICIENT_DATA
 
     threshold_pct = item.percentile_threshold or cfg.buy_percentile
 
     if item.target_price_minor is not None:
         tolerance = int(item.target_price_minor * (1 + cfg.target_tolerance_pct / 100))
         if stats.current_best_total_minor <= item.target_price_minor:
-            return "TARGET_HIT"
+            return Signal.TARGET_HIT
         if stats.current_best_total_minor <= tolerance:
-            return "BUY"
+            return Signal.BUY
 
     # Compare the shipping-adjusted current total against the percentile cut
     # of the (windowed, shipping-merged) distribution. `current_effective_
@@ -811,10 +810,10 @@ def compute_signal(
     effective = stats.current_effective_total_minor
     p_field = stats.percentile_at(threshold_pct)
     if effective is None or p_field is None:
-        return "INSUFFICIENT_DATA"
+        return Signal.INSUFFICIENT_DATA
     if effective <= p_field:
-        return "BUY"
+        return Signal.BUY
     watch_cut = stats.percentile_at(cfg.watch_percentile)
     if watch_cut is not None and effective <= watch_cut:
-        return "WATCH"
-    return "WAIT"
+        return Signal.WATCH
+    return Signal.WAIT
