@@ -64,6 +64,16 @@ def _seed_product_observations(
 
 
 def _make_cfg(**notif_overrides) -> Config:
+    # Quiet hours OFF unless a test asks for them. `NotificationsConfig`
+    # defaults to 22:00-08:00 Europe/London, and the dispatcher skips every
+    # notifier that does not set `bypasses_quiet_hours` inside that window --
+    # so a test asserting `_RecordingNotifier` was called passed by day and
+    # failed by night. Reproduced: the FK-routing test fails at 22:30 and
+    # passes with the clock frozen at 12:00, same code. The scenarios already
+    # disable quiet hours for this reason (scenario_01, _04, _06, _07); this
+    # file was the one that did not. A test that wants the window can still
+    # pass `quiet_hours=QuietHours(...)` through the overrides.
+    notif_overrides.setdefault("quiet_hours", None)
     return Config(
         recommendation=RecommendationConfig(
             min_days_of_history=0,
