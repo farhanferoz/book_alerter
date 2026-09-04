@@ -21,8 +21,9 @@ shipping; non-Keepa rows with one-off NULL shipping prefer the source-
 aware estimates first.
 
 `effective_shipping` is the single seam every consumer of a shipping figure
-goes through (current-best ranking here; window/percentile totals here;
-the alert message once T2.2 lands). See its docstring for the Prime seam.
+goes through: current-best ranking and window/percentile totals here, the
+alert message via `compute_book_stats`/`compute_product_stats`'s `prime`
+parameter. See its docstring for the Prime rule (T2.2).
 """
 
 from __future__ import annotations
@@ -128,6 +129,17 @@ class BookStats:
     # was observed or no estimate was available. Used by the UI to caption
     # the imputation.
     shipping_estimate_minor: int | None = None
+    # T2.2: True when the CURRENT best offer's effective shipping figure
+    # came from the cascade rather than being observed or forced free by
+    # the Prime rule. Equivalent to `shipping_estimate_minor is not None`
+    # but kept as its own field because the API DTO (`shipping_is_estimate`)
+    # is the wire name the plan/FE settled on.
+    shipping_is_estimate: bool = False
+    # T2.2: True when the Prime rule (D10) is what set the current best
+    # offer's shipping to free — i.e. `prime` is on and this offer is
+    # Amazon-fulfilled on an Amazon source. Distinct from "shipping was
+    # observed as 0": that case has `prime_applied = False`.
+    prime_applied: bool = False
     # Sorted, shipping-adjusted totals over the configured window — drives
     # `percentile_at()` for signal threshold comparisons.
     sorted_totals: list[int] = field(default_factory=list)
@@ -172,6 +184,22 @@ def seller_class(seller: str | None) -> SellerClass:
     if seller and seller.startswith("Amazon"):
         return "amazon_fulfilled"
     return "third_party"
+
+
+# Sources whose Amazon-fulfilled offers the T2.2 Prime rule applies to.
+# Third-party sellers on these same sources are unaffected — the rule only
+# ever forces AMAZON's OWN delivery to free, matching what a real Prime
+# subscription actually does.
+_AMAZON_SOURCES = frozenset({"amazon", "amazon_uk_product"})
+
+
+def _prime_free_delivery(source: str | None, seller: str | None, *, prime: bool) -> bool:
+    """True when the T2.2 Prime rule treats this (source, seller)'s delivery
+    as free, overriding whatever was observed or would otherwise be
+    estimated. Shared by `effective_shipping` (to decide the figure) and
+    `_stats_for_one_item` (to report `prime_applied` for the winning
+    candidate) so the rule is defined in exactly one place."""
+    return bool(prime) and seller_class(seller) == "amazon_fulfilled" and source in _AMAZON_SOURCES
 
 
 def _percentile_at_sorted(sorted_totals: list[int], pct: int | float) -> int:
@@ -406,20 +434,24 @@ def effective_shipping(
 ) -> tuple[int, bool]:
     """Single seam for the shipping figure used everywhere a total is
     computed: current-best ranking and window/percentile totals here, the
-    alert message once T2.2's notifier change lands. `cascade(source,
-    seller) -> int` runs the `_imputed_shipping` tier chain for a row whose
-    own shipping is unknown (see module docstring).
+    alert message via `compute_book_stats`/`compute_product_stats`'s `prime`
+    parameter. `cascade(source, seller) -> int` runs the `_imputed_shipping`
+    tier chain for a row whose own shipping is unknown (see module
+    docstring).
 
     Returns `(pence, is_estimate)`.
 
-    T2.2 (plan task, not yet implemented — read it before adding branches
-    here) adds the Prime rule as the FIRST check: if `prime` and
-    `seller_class(seller) == "amazon_fulfilled"` and `source` is an Amazon
-    source, treat delivery as free — `(0, False)`. Until then `prime` is
-    accepted (so the seam's signature is already what T2.2 needs) but has
-    no effect: behaviour is unconditionally "observed shipping when known,
-    else the cascade estimate", which is today's semantics.
+    T2.2 (D10): the Prime rule is the FIRST check, ahead of even observed
+    shipping — a real Prime subscription makes Amazon-fulfilled delivery
+    free regardless of what a logged-out/non-Prime scrape happened to see
+    charged. `prime` and `seller_class(seller) == "amazon_fulfilled"` and
+    `source` an Amazon source (`_prime_free_delivery`) → `(0, False)` (not
+    an estimate — it's a hard rule, not a guess). Otherwise: observed
+    shipping wins if known → `(observed, False)`; else the cascade
+    estimate → `(cascade(...), True)`.
     """
+    if _prime_free_delivery(source, seller, prime=prime):
+        return 0, False
     if shipping_minor is not None:
         return int(shipping_minor), False
     return cascade(source, seller), True
@@ -432,7 +464,7 @@ def compute_stats_for_items(
     schema: _ItemSchema,
     cfg: RecommendationConfig,
     window_days: Mapping[int, int],
-    prime: bool = False,
+    prime: bool | None = None,
     medians: dict[tuple[str, SellerClass], int] | None = None,
 ) -> dict[int, BookStats]:
     """Stats bundle for every id in `item_ids`, loaded in three queries
@@ -466,10 +498,19 @@ def compute_stats_for_items(
     per-book/product override) — the canonical 1m/3m/12m windows are
     always computed regardless; this only affects the `sorted_totals` /
     `current_percentile_rank` fields for a non-canonical window.
+
+    `prime` (T2.2) defaults to `cfg.amazon_prime` when left `None`, so
+    `list_books`/`list_products` (which already pass the live `cfg`) pick up
+    a Prime toggle automatically; pass an explicit `True`/`False` to
+    override the config value for one call (used by tests and by the
+    single-item wrappers below, which build an isolated `cfg`).
     """
     ids = list(item_ids)
     if not ids:
         return {}
+
+    if prime is None:
+        prime = cfg.amazon_prime
 
     if medians is None:
         medians = source_seller_global_shipping_medians(
@@ -608,14 +649,18 @@ def _stats_for_one_item(
     # tied at that minimum, the alphabetically-smallest tie_key.
     best: tuple | None = None
     best_key: tuple[int, tuple[str, str, str]] | None = None
+    best_eff_shipping: int | None = None
+    best_is_estimate = False
     for source, total, price, shipping, condition, seller, url in candidates:
-        eff_shipping, _is_estimate = effective_shipping(
+        eff_shipping, is_estimate = effective_shipping(
             source, seller, shipping, prime=prime, cascade=cascade
         )
         key = (price + eff_shipping, (source, condition, seller or ""))
         if best_key is None or key < best_key:
             best_key = key
             best = (source, total, price, shipping, condition, seller, url)
+            best_eff_shipping = eff_shipping
+            best_is_estimate = is_estimate
 
     if best is None:
         current_source = current_total = current_price = current_shipping = None
@@ -628,17 +673,25 @@ def _stats_for_one_item(
 
     effective: int | None
     shipping_estimate: int | None = None
+    prime_applied = False
     if current_total is None:
         effective = None
-    elif current_shipping is not None:
-        effective = int(current_total)
+        shipping_is_estimate = False
     else:
         # `price_minor` is non-nullable in the model, so when a candidate
-        # won (current_total is not None), current_price is guaranteed set.
+        # won (current_total is not None), current_price is guaranteed set,
+        # and the candidate loop above always ran `effective_shipping` on it
+        # (so `best_eff_shipping` is set too). Recomputing `effective` from
+        # that seam's result — rather than from `current_total`/
+        # `current_shipping` directly — is what makes the Prime rule apply
+        # here even when the offer's own observed shipping was non-null.
         assert current_price is not None
-        imp = cascade(current_source, current_seller)
-        effective = int(current_price) + imp
-        shipping_estimate = imp
+        assert best_eff_shipping is not None
+        effective = int(current_price) + best_eff_shipping
+        shipping_is_estimate = best_is_estimate
+        if best_is_estimate:
+            shipping_estimate = best_eff_shipping
+        prime_applied = _prime_free_delivery(current_source, current_seller, prime=prime)
 
     imputed: list[tuple[datetime, int]] = []
     for observed_at, source, seller, price, shipping, total in imputed_rows:
@@ -712,6 +765,8 @@ def _stats_for_one_item(
         current_percentile_rank=cfg_rank,
         current_effective_total_minor=effective,
         shipping_estimate_minor=shipping_estimate,
+        shipping_is_estimate=shipping_is_estimate,
+        prime_applied=prime_applied,
         sorted_totals=cfg_totals,
         windows=windows,
     )
@@ -725,14 +780,18 @@ def compute_book_stats(
     source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
     default_shipping_minor: int = 280,
     min_global_median_observations: int = 10,
+    prime: bool = False,
 ) -> BookStats:
     """Compute the stats bundle for a single book — a thin wrapper over
     `compute_stats_for_items([book_id], ...)`. Kept for callers (the
     per-book detail endpoint, the alert dispatcher) that only ever want one
-    book's stats; signature unchanged from before the T3.1 restructure."""
+    book's stats; signature unchanged from before the T3.1 restructure
+    (`prime` added by T2.2 -- default `False` keeps every existing caller's
+    behaviour until it opts in)."""
     cfg = RecommendationConfig(
         default_shipping_minor=default_shipping_minor,
         min_global_median_observations=min_global_median_observations,
+        amazon_prime=prime,
     )
     return compute_stats_for_items(
         [book_id],
@@ -740,6 +799,7 @@ def compute_book_stats(
         schema=_BOOK_SCHEMA,
         cfg=cfg,
         window_days={book_id: window_days},
+        prime=prime,
         medians=source_seller_global_medians,
     )[book_id]
 
@@ -752,6 +812,7 @@ def compute_product_stats(
     source_seller_global_medians: dict[tuple[str, SellerClass], int] | None = None,
     default_shipping_minor: int = 280,
     min_global_median_observations: int = 10,
+    prime: bool = False,
 ) -> BookStats:
     """Compute the stats bundle for a single product. Returns `BookStats`
     (the dataclass shape is item-kind-agnostic — the field `book_id` is
@@ -760,6 +821,7 @@ def compute_product_stats(
     cfg = RecommendationConfig(
         default_shipping_minor=default_shipping_minor,
         min_global_median_observations=min_global_median_observations,
+        amazon_prime=prime,
     )
     return compute_stats_for_items(
         [product_id],
@@ -767,6 +829,7 @@ def compute_product_stats(
         schema=_PRODUCT_SCHEMA,
         cfg=cfg,
         window_days={product_id: window_days},
+        prime=prime,
         medians=source_seller_global_medians,
     )[product_id]
 
@@ -796,20 +859,29 @@ def compute_signal(
 
     threshold_pct = item.percentile_threshold or cfg.buy_percentile
 
+    # D34: every user-facing price comparison reads `current_effective_
+    # total_minor`, never `current_best_total_minor` — `_persist` stores
+    # `total = price + (shipping or 0)`, so an unknown-shipping row's raw
+    # total silently folds to the bare price instead of the cascade
+    # estimate. `effective` is None only when both the current row and the
+    # item's history lack any shipping signal to estimate from (see
+    # `_stats_for_one_item`) — in that case NO price comparison, target or
+    # percentile, has a trustworthy figure to compare against.
+    effective = stats.current_effective_total_minor
+    if effective is None:
+        return Signal.INSUFFICIENT_DATA
+
     if item.target_price_minor is not None:
         tolerance = int(item.target_price_minor * (1 + cfg.target_tolerance_pct / 100))
-        if stats.current_best_total_minor <= item.target_price_minor:
+        if effective <= item.target_price_minor:
             return Signal.TARGET_HIT
-        if stats.current_best_total_minor <= tolerance:
+        if effective <= tolerance:
             return Signal.BUY
 
     # Compare the shipping-adjusted current total against the percentile cut
-    # of the (windowed, shipping-merged) distribution. `current_effective_
-    # total_minor` is None only when both the current row and the book's
-    # history lack any shipping signal we could estimate from.
-    effective = stats.current_effective_total_minor
+    # of the (windowed, shipping-merged) distribution.
     p_field = stats.percentile_at(threshold_pct)
-    if effective is None or p_field is None:
+    if p_field is None:
         return Signal.INSUFFICIENT_DATA
     if effective <= p_field:
         return Signal.BUY

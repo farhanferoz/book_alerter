@@ -32,9 +32,21 @@ def detect_alert_kinds(
     if stats.current_best_total_minor is None:
         return out, cur_signal
 
+    # D34: compare the same metric `compute_signal` uses for TARGET_HIT —
+    # `current_effective_total_minor`, never `current_best_total_minor`.
+    # `_persist` stores the raw total as `price + (shipping or 0)`, so an
+    # unknown-shipping row's raw total silently folds to the bare price and
+    # can sit below the target even though the cascade-estimated delivered
+    # cost does not. In practice `effective` is None only when
+    # `current_best_total_minor` also is (see `_stats_for_one_item`), which
+    # the early return above already rules out — the explicit `is not None`
+    # check here is defence in depth for any other `BookStats` construction,
+    # mirroring the same guard `NEW_LOW` already uses below.
+    effective = stats.current_effective_total_minor
     if (
         item.target_price_minor is not None
-        and stats.current_best_total_minor <= item.target_price_minor
+        and effective is not None
+        and effective <= item.target_price_minor
         and prev_signal != Signal.TARGET_HIT
     ):
         out.append(AlertKindEnum.TARGET_HIT)
