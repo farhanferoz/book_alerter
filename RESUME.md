@@ -79,8 +79,25 @@ Run from `/home/ff235/dev/book_alerter` unless stated.
   that is exactly the behaviour S8 changes, not a regression.
 - **Orchestrator is single writer for `enums.py`, `api/sources.py`, `scheduler.py`** (write-set
   guard). Its remedy is that the orchestrator writes them — never have a worker override it.
-- **Endgame still owed:** review tiers, full plan-adherence audit, push (recipe below),
-  `/checkpoint --final`. NAS deploy stays out of scope.
+- **Endgame still owed:** review tiers (tracker below), full plan-adherence audit, push
+  (recipe below), `/checkpoint --final`. NAS deploy stays out of scope.
+
+### Review-tier tracker (plan §5; a DONE criterion, and nothing else tracks it)
+Tiers per §5: Wave 0 none · Waves 1, 2, 4, 5, 6 **Tier 2** (`simplify` → `find-bugs` →
+`/second-opinion` → `fp-check`) · Wave 3 **Tier 4** (property tests before the migration +
+fresh-session review).
+- **Wave 0** — n/a (artefacts only). ✅
+- **Wave 1** (T1.1–T1.4) — Tier 2 **NOT RUN**.
+- **Wave 2** (T2.1–T2.6) — Tier 2 **NOT RUN**, but the shipping chain it owns had a full
+  adversarial review (S1–S8, report in the session scratchpad), which is stronger than
+  Tier 2 on the part that mattered. Findings all fixed except S2 (queued) and S8→D38.
+- **Wave 3** (T3.1–T3.4) — Tier 4: property-tests-first ✅ (0021 and 0022 both had theirs
+  written and watched fail first); **fresh-session review DISPATCHED 2026-09-04** —
+  report lands at `<scratchpad>/tier4-wave3-review.md`. **This is the sign-off gate for the
+  migration that deleted 77,835 of 90,172 production rows.**
+- **Wave 4** (T4.1–T4.5) — Tier 2 **NOT RUN**; T4.1 still in flight.
+- **Wave 5** (T5.1–T5.5) — Tier 2 **NOT RUN**.
+- **Wave 6** (T6.1–T6.8) — Tier 2 **NOT RUN**.
 - **Unpinned ruff is a live reproducibility hole**: `pyproject` says `ruff>=0.8` and there is no
   `uv.lock`, so "ruff clean" depends on when your venv was made (0.15.7 here, 0.16.6 fresh).
   Two real errors were invisible on this machine. Pinning is the user's call — flag it.
