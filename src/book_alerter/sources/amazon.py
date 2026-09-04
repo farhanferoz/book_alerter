@@ -24,6 +24,7 @@ from book_alerter.sources.normalizers import (
     amazon_uk_dp_url,
     amazon_uk_product_dp_url,
     asin_for_amazon_uk,
+    to_asin,
 )
 
 # Amazon UK is fronted by aggressive bot-protection that defeats any client
@@ -119,6 +120,76 @@ def _matches_any_selector(tree: HTMLParser, selectors: tuple[str, ...]) -> bool:
     return any(tree.css_first(sel) is not None for sel in selectors)
 
 
+# F26 (2026-09-04): Amazon occasionally serves a normal, fully-formed page
+# for the WRONG product — reproduced twice against real captures, e.g.
+# `/gp/offer-listing/B0CYT8WL1G?condition=all` returning a page whose own
+# `<link rel="canonical">` pointed at `B0DLSB1WWK`, an entirely different
+# ASIN. `BOT_MARKERS` is structurally unable to catch this: the returned
+# HTML has no error markup at all, it's just about the wrong item — so a
+# scrape can silently attribute another product's prices to the one being
+# tracked.
+#
+# The check below works for BOTH dp and offer-listing requests uniformly:
+# every real capture on file canonicalises to `/dp/<ASIN>` regardless of
+# which URL was requested (verified across all four `tests/fixtures/
+# amazon/products/*.html` captures AND the live offer-listing capture
+# `9780241638194-uk-offer-listing-live-2026-05-23.html`) — including a
+# GENUINELY correct, empty offer-listing response (the Echo Dot AOD page,
+# 0 third-party rows, canonicalises to its own correct ASIN same as any dp
+# response would). So "canonical says /dp/" is not itself a failure signal
+# — only a canonical ASIN that disagrees with the one requested is.
+#
+# `rel` is assumed to precede `href` in the tag, matching every real
+# capture on file; not verified against a reversed-attribute-order variant
+# because none has been observed.
+_CANONICAL_LINK_RE = re.compile(
+    r'<link\b[^>]*\brel=["\']canonical["\'][^>]*\bhref=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+# Extracts the ASIN this module itself embedded when building `url` — either
+# `dp_url()`'s `/dp/<asin>` or `_offer_listing_url_for_asin()`'s
+# `/gp/offer-listing/<asin>?condition=all`. Deliberately NOT
+# `normalizers.to_asin`: that helper's path allowlist (dp / gp/product /
+# gp/aw/d / exec/obidos/asin / product / d) doesn't include
+# `gp/offer-listing` — it's scoped to Amazon's own canonical-ish URL forms
+# a user might paste in, not the request URLs this scraper constructs — so
+# reusing it here would silently skip the check for every offer-listing
+# request, exactly the case F26 needs covered. Widening `to_asin` itself
+# was ruled out: it's shared by other callers with no reason to accept
+# offer-listing paths.
+_REQUESTED_URL_ASIN_RE = re.compile(
+    r"/(?:dp|gp/offer-listing)/([A-Z0-9]{10})(?:[/?]|$)",
+    re.IGNORECASE,
+)
+
+
+def _canonical_asin_mismatch(html: str, requested_url: str) -> tuple[str, str, str] | None:
+    """`(requested_asin, canonical_href, canonical_asin)` when the page's
+    own canonical link disagrees with the ASIN that was requested — a
+    silent wrong-product response (F26). `None` when there's nothing to
+    compare (no canonical tag at all — every synthetic unit-test fixture
+    has none — or either side doesn't parse to a 10-char ASIN, e.g. a
+    979-prefix ISBN-13 book identifier has no ASIN form at all) or when
+    they agree. Never raises.
+    """
+    m = _CANONICAL_LINK_RE.search(html)
+    if m is None:
+        return None
+    canonical_href = m.group(1)
+    requested_match = _REQUESTED_URL_ASIN_RE.search(requested_url)
+    if requested_match is None:
+        return None
+    requested_asin = requested_match.group(1).upper()
+    try:
+        canonical_asin = to_asin(canonical_href)
+    except ValueError:
+        return None
+    if requested_asin == canonical_asin:
+        return None
+    return requested_asin, canonical_href, canonical_asin
+
+
 class AmazonUKInlineSource(BrowserSessionMixin, InlineSource):
     """Amazon UK scraper backed by headless Chromium (Playwright).
 
@@ -210,9 +281,11 @@ async def _render_amazon_page(
     """Open `url` in a Playwright `context`, wait for `wait_selector`, return
     rendered HTML. Selector-timeout is fine — capture content and let the
     parser decide whether to fall back or report empty. Raises SourceError
-    on navigation timeout or persistent bot-challenge marker; a bot-challenge
-    also dumps the HTML via `write_debug_capture` (T1.5) so the actual
-    challenge page is inspectable, not just the SourceError message.
+    on navigation timeout, a persistent bot-challenge marker, or a canonical
+    ASIN mismatch (F26 — Amazon silently serving a different product's
+    page); both of the latter also dump the HTML via `write_debug_capture`
+    (T1.5) so the actual page is inspectable, not just the SourceError
+    message.
     """
     page = await context.new_page()
     try:
@@ -234,6 +307,17 @@ async def _render_amazon_page(
                 "Amazon bot-protection challenge persisted; "
                 "Playwright was unable to clear it",
             )
+
+    mismatch = _canonical_asin_mismatch(html, url)
+    if mismatch is not None:
+        requested_asin, canonical_href, canonical_asin = mismatch
+        write_debug_capture(source_name, html)
+        raise SourceError(
+            source_name,
+            f"canonical URL mismatch: requested {url!r} (ASIN {requested_asin}) "
+            f"but the page's own canonical link is {canonical_href!r} "
+            f"(ASIN {canonical_asin}) — Amazon served a different product's page",
+        )
     return html
 
 

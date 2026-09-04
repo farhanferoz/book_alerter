@@ -21,7 +21,11 @@ from pathlib import Path
 import pytest
 
 from book_alerter.db.models import Book
-from book_alerter.sources.amazon import AmazonUKInlineSource
+from book_alerter.sources.amazon import (
+    AmazonUKInlineSource,
+    _render_amazon_page,
+    parse_offer_listing,
+)
 from tests.integration.sources.helpers import make_fake_playwright_factory
 
 FIXTURE_DIR = (
@@ -236,6 +240,69 @@ def test_bot_check_raises_source_error(
     dumps = list((tmp_path / "amazon").glob("*.html"))
     assert len(dumps) == 1
     assert dumps[0].read_text(encoding="utf-8") == bot_html
+
+
+async def _render_via_fake(html: str, url: str, *, source_name: str) -> str:
+    """Drive the real `_render_amazon_page` against `html` returned by a
+    fake Playwright context — the F26 canonical-ASIN check lives inside
+    `_render_amazon_page`, so exercising it means driving that function
+    directly, not just the parser."""
+    fake_factory = make_fake_playwright_factory(html)
+    async with fake_factory() as pw:
+        browser = await pw.chromium.launch()
+        context = await browser.new_context()
+        return await _render_amazon_page(
+            context,
+            url,
+            wait_selector="x",
+            wait_ms=1000,
+            navigation_timeout_s=30.0,
+            source_name=source_name,
+        )
+
+
+def test_render_amazon_page_echo_dot_aod_genuinely_empty_does_not_raise() -> None:
+    """F26 regression, the "don't break the genuine-empty case" side: the
+    Echo Dot's real offer-listing page is a correctly-attributed empty
+    listing (0 third-party rows, 1 pinned Amazon offer; canonicalises to
+    its own requested ASIN). The canonical-ASIN guard must not mistake an
+    empty result for a wrong-product response."""
+    html = (FIXTURE_DIR / "products" / "B09B96TG33-uk-aod-2026-09-04.html").read_text(
+        encoding="utf-8"
+    )
+    url = "https://www.amazon.co.uk/gp/offer-listing/B09B96TG33?condition=all"
+
+    result = asyncio.run(_render_via_fake(html, url, source_name="amazon_uk_product"))
+
+    assert result == html
+    offers = parse_offer_listing(result, fallback_url=url, source_name="amazon_uk_product")
+    assert offers == []
+
+
+def test_render_amazon_page_raises_and_writes_debug_capture_on_canonical_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """F26 regression, the "catch the actual bug" side: this real capture's
+    own `<link rel="canonical">` points at a different ASIN (B0DLSB1WWK)
+    than the one requested (B0CYT8WL1G) — Amazon silently served the wrong
+    product's page. Must raise, and must dump the HTML like any other
+    unrecognised-response case."""
+    import book_alerter.sources.browser as browser_mod
+    from book_alerter.sources.base import SourceError
+
+    monkeypatch.setattr(browser_mod, "_DEBUG_ROOT", tmp_path)
+
+    html = (FIXTURE_DIR / "products" / "B0CYT8WL1G-uk-aod-2026-09-04.html").read_text(
+        encoding="utf-8"
+    )
+    url = "https://www.amazon.co.uk/gp/offer-listing/B0CYT8WL1G?condition=all"
+
+    with pytest.raises(SourceError, match="canonical URL mismatch"):
+        asyncio.run(_render_via_fake(html, url, source_name="amazon_uk_product"))
+
+    dumps = list((tmp_path / "amazon_uk_product").glob("*.html"))
+    assert len(dumps) == 1
+    assert dumps[0].read_text(encoding="utf-8") == html
 
 
 @pytest.mark.skipif(
