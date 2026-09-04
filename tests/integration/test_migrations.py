@@ -184,3 +184,62 @@ def test_heartbeat_compaction_row_counts_and_last_seen_at(tmp_path: Path) -> Non
         1: "2026-08-03 10:00:00",  # MAX over its group (id 1, 2, 3)
         4: "2026-08-01 09:00:00",  # no duplicates -> its own observed_at
     }
+
+
+def _seed_source_runs(db_path: Path) -> None:
+    """Two finished `sourcerun` rows written before 0022 existed — the case
+    that matters, since every row already in production predates the column."""
+    with sqlite3.connect(db_path) as con:
+        for id_, source, status, attempted, succeeded in [
+            (1, "amazon", "ok", 12, 12),
+            (2, "amazon", "partial", 12, 4),
+        ]:
+            con.execute(
+                "INSERT INTO sourcerun (id, source, started_at, finished_at, "
+                "status, books_attempted, books_succeeded) "
+                "VALUES (?, ?, '2026-09-04 12:00:00', '2026-09-04 12:01:00', ?, ?, ?)",
+                (id_, source, status, attempted, succeeded),
+            )
+        con.commit()
+
+
+def test_items_challenged_backfills_to_zero_and_is_not_nullable(tmp_path: Path) -> None:
+    """T1.3 (migration 0022). Two properties, both about rows that already
+    exist when the column arrives:
+
+    1. Every pre-existing run gets `items_challenged = 0` — NOT NULL. A NULL
+       here would silently poison `_apply_backoff`'s >=50%-challenged rule and
+       the T6.1 dashboard banner, both of which do arithmetic on this column.
+    2. The column is genuinely NOT NULL, so a future INSERT that forgets it
+       fails loudly at write time rather than storing a NULL that reads as
+       "zero challenges" everywhere downstream.
+
+    Zero is the honest backfill precisely because it is not a measurement:
+    runs that predate the counter never counted challenges, and 0 is what
+    "we have no evidence of a challenge" already means for this column.
+    """
+    db_path = tmp_path / "items_challenged.db"
+    with _alembic_pointing_at(db_path) as cfg:
+        alembic_command.upgrade(cfg, "0021_heartbeat_compaction")
+        _seed_source_runs(db_path)
+        alembic_command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db_path) as con:
+        cur = con.cursor()
+        cols = {r[1]: r for r in cur.execute("PRAGMA table_info(sourcerun)")}
+        assert "items_challenged" in cols, "0022 did not add the column"
+        # PRAGMA table_info: index 3 is `notnull`.
+        assert cols["items_challenged"][3] == 1, "items_challenged must be NOT NULL"
+
+        rows = cur.execute(
+            "SELECT id, items_challenged FROM sourcerun ORDER BY id"
+        ).fetchall()
+        assert rows == [(1, 0), (2, 0)], rows
+
+        # The pre-existing columns must be untouched by the table rebuild
+        # SQLite performs for an ALTER on a table with constraints.
+        assert cur.execute(
+            "SELECT books_attempted, books_succeeded FROM sourcerun WHERE id = 2"
+        ).fetchone() == (12, 4)
+
+    assert _fk_violations(db_path) == []

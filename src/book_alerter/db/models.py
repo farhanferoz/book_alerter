@@ -148,6 +148,13 @@ class SourceRun(SQLModel, table=True):
     status: SourceRunStatus = Field(sa_column=Column(String, nullable=False))
     books_attempted: int = 0
     books_succeeded: int = 0
+    # Items turned away by a bot challenge (T1.3, migration 0022). Distinct
+    # from `books_attempted - books_succeeded`, which also covers items that
+    # legitimately had no offers -- only this column says "we were blocked".
+    # `_apply_backoff` treats a run with >=50% of attempted items challenged
+    # as a consecutive error, and the dashboard's scrape-health banner reports
+    # it directly instead of the over-broad failed-attempt proxy.
+    items_challenged: int = 0
     error_message: str | None = None
     error_traceback: str | None = None
 
