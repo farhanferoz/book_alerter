@@ -60,3 +60,46 @@ def test_max_concurrent_browsers_defaults_to_two_and_rejects_zero() -> None:
     assert Config().scheduler.max_concurrent_browsers == 2
     with pytest.raises(ValidationError):
         SchedulerConfig(max_concurrent_browsers=0)
+
+
+def test_new_config_sections_survive_a_save_load_round_trip(tmp_path):
+    """A section that round-trips wrong is invisible: the user sets a value,
+    the next `save()` writes the default back, and nothing reports it. The
+    pre-existing round-trip test only covered `recommendation`, so the two
+    sections added by T1.4 and T6.3 had no coverage at all.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "config_version": 1,
+        "scheduler": {"max_concurrent_browsers": 4},
+        "keepa": {"refresh_enabled": True, "refresh_schedule": "0 6 * * 1"},
+    }))
+
+    cfg = Config.load(path)
+    assert cfg.scheduler.max_concurrent_browsers == 4
+    assert cfg.keepa.refresh_enabled is True
+    assert cfg.keepa.refresh_schedule == "0 6 * * 1"
+
+    cfg.save(path)
+    reloaded = Config.load(path)
+    assert reloaded.scheduler.max_concurrent_browsers == 4, "scheduler section dropped"
+    assert reloaded.keepa.refresh_enabled is True, "keepa section dropped"
+    assert reloaded.keepa.refresh_schedule == "0 6 * * 1"
+
+
+def test_new_config_sections_validate_through_the_api_path(tmp_path):
+    """`PUT /api/config` goes through `Config.model_validate` on a raw dict
+    (api/config.py), not through `Config.load`. A section that validates from
+    YAML but not from that path would fail only when a user saves from the
+    Settings UI."""
+    validated = Config.model_validate({
+        "config_version": 1,
+        "scheduler": {"max_concurrent_browsers": 3},
+        "keepa": {"refresh_enabled": True},
+    })
+    assert validated.scheduler.max_concurrent_browsers == 3
+    assert validated.keepa.refresh_enabled is True
+
+    # And the floor is enforced on this path too, not only on the model.
+    with pytest.raises(ValidationError):
+        Config.model_validate({"scheduler": {"max_concurrent_browsers": 0}})
