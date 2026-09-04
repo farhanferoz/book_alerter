@@ -253,9 +253,25 @@ entity_latest AS (
     GROUP BY {id}
 ),
 -- One row per offer present in its source's most recent scrape, from a source
--- fresh relative to the entity. The ROW_NUMBER tiebreaker keeps the cheapest
--- when a (source, condition, seller) partition carries two live prices in one
--- scrape (e.g. WOB "Very Good £21" + "Like New £22", both used_vg).
+-- fresh relative to the entity. The ROW_NUMBER tiebreaker picks a survivor
+-- when a (source, condition, seller) partition carries two live prices in
+-- one scrape (e.g. WOB "Very Good £21" + "Like New £22", both used_vg).
+-- Migration 0024 (S4, 2026-09-04 shipping-chain review) changed how it
+-- picks: raw `total_minor` (`price + (shipping or 0)`) folds unknown
+-- shipping to zero, so ranking on it duplicated
+-- `stats.compute_stats_for_items`'s current-best selection on the WRONG
+-- metric and could survive a genuinely cheaper KNOWN-shipping offer's row
+-- before Python's effective-total selection ever saw it (D14 says that
+-- ranking lives in Python, in one place). `total_minor` is only wrong when
+-- shipping is unknown -- when it's known, `total_minor` IS the true
+-- effective total, so ranking on it is correct and this view should not
+-- throw that signal away (`test_current_best_selection_matches_effective_
+-- total_reference`'s independent reference model requires it, and a
+-- property test caught the regression when this tiebreak was changed to
+-- plain `id ASC`). So: prefer a row with OBSERVED shipping over one with
+-- unknown shipping outright (`shipping_minor IS NULL` sorts known-first);
+-- among rows tied on that, `total_minor ASC` is trustworthy; `id ASC` is
+-- the final, purely arbitrary tiebreak for genuine remaining ties.
 latest_per_offer AS (
     -- Partition seller via COALESCE(seller,'') so a NULL-seller and an
     -- ''-seller offer (same source+condition) land in the SAME partition —
@@ -265,7 +281,8 @@ latest_per_offer AS (
            lo.condition, lo.seller, lo.url,
            ROW_NUMBER() OVER (
                PARTITION BY lo.{id}, lo.source, lo.condition, COALESCE(lo.seller, '')
-               ORDER BY lo.last_seen DESC, lo.total_minor ASC, lo.id ASC
+               ORDER BY lo.last_seen DESC, (lo.shipping_minor IS NULL) ASC,
+                        lo.total_minor ASC, lo.id ASC
            ) AS rn
     FROM live_offers lo
     JOIN latest_scrape_per_source l

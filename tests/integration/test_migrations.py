@@ -107,6 +107,7 @@ def test_full_downgrade_then_upgrade_round_trip(tmp_path: Path) -> None:
         "0015_notif_delivery_polymorphic",
         "0016_product_stats_view",
         "0021_heartbeat_compaction",
+        "0024_live_offers_deterministic_tiebreak",
     ],
 )
 def test_each_revision_individually(tmp_path: Path, revision: str) -> None:

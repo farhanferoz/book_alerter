@@ -122,10 +122,14 @@ def test_book_stats_view_excludes_stale_source_partition(tmp_path):
 
         stats = compute_book_stats(book.id, s)
 
-    # The fresh £24.62 used_vg row must win, not the stale £28.60 new row
-    # AND not the colliding £28.60 used_vg row at the same observed_at —
-    # the ROW_NUMBER tiebreaker must prefer the cheaper total within a
-    # partition.
+    # The fresh £24.62 used_vg row must win, not the stale £28.60 new row —
+    # excluded by the freshness gate, which is what this test is really
+    # about. It also collides in partition with the £28.60 used_vg row at
+    # the same observed_at; migration 0024 (S4) made that tiebreak `id ASC`
+    # rather than cheapest-total, and £24.62 is inserted first here, so it
+    # wins either way -- this assertion is not proof of which tiebreak rule
+    # is active (see test_book_live_offers_partition_tiebreak_does_not_rank_by_raw_total
+    # for that).
     assert stats.current_best_total_minor == 2462
     assert stats.current_best_condition == "used_vg"
     assert stats.current_best_seller == "Amazon Resale"
@@ -430,3 +434,71 @@ def test_book_stats_view_null_and_empty_seller_do_not_duplicate(tmp_path):
         stats = compute_book_stats(book.id, s)
 
     assert stats.current_best_total_minor == 1500
+
+
+def test_book_live_offers_partition_tiebreak_does_not_rank_by_raw_total(tmp_path):
+    """S4 (2026-09-04 shipping-chain review): when a single scrape produces
+    two live rows sharing (book_id, source, condition, seller) --
+    `latest_per_offer`'s ROW_NUMBER partition -- the survivor must not be
+    chosen by raw `total_minor`. That column folds unknown shipping to zero
+    (`price + (shipping or 0)`), so ranking on it inside the view duplicated
+    `stats.compute_stats_for_items`'s current-best selection on the WRONG
+    metric and could silently drop a genuinely cheaper KNOWN-shipping row in
+    favour of a fake-cheap UNKNOWN-shipping one, before Python's
+    effective-total selection ever saw the alternative (contradicts D14).
+
+    Reproduces the reviewer's probe5.py numbers: a £30.00 + observed £2.99
+    shipping offer (raw total 3299, true cost 3299) against a £31.00 +
+    unknown-shipping offer (raw total 3100 -- LOOKS cheaper only because its
+    shipping was never counted). Migration 0024 switched the tiebreak to
+    `id ASC`, so inserting the genuinely-cheaper row FIRST (giving it the
+    lower id) must make IT survive -- proving the survivor is no longer
+    picked by which one understates its own cost.
+    """
+    db_path = tmp_path / "t.db"
+    url = f"sqlite:///{db_path}"
+    subprocess.run(
+        ["uv", "run", "alembic", "upgrade", "head"],
+        env={**os.environ, "BOOK_ALERTER_DATABASE_URL": url},
+        check=True, capture_output=True,
+    )
+    engine = create_engine(url)
+    now = datetime.now(UTC)
+    with Session(engine) as s:
+        book = models.Book(
+            isbn13="9780000000009", title="TiebreakPartition", author="x",
+            created_at=now, updated_at=now,
+        )
+        s.add(book); s.commit(); s.refresh(book)
+
+        # Inserted FIRST (lower id): the genuinely cheaper, known-shipping
+        # offer. Raw total 3299 -- HIGHER than the other row's raw total, so
+        # the pre-0024 `total_minor ASC` tiebreak would have discarded this
+        # one despite it being the true bargain.
+        s.add(models.PriceObservation(
+            book_id=book.id, source="amazon", condition="new", seller="SellerX",
+            price_minor=3000, currency="GBP", shipping_minor=299, total_minor=3299,
+            url="https://amazon/known-ship", observed_at=now, last_seen_at=now, raw={},
+        ))
+        s.commit()
+        # Inserted SECOND (higher id): unknown shipping, raw total 3100 --
+        # LOWER than the row above only because its shipping was never
+        # counted. Once the cascade estimates its shipping the true
+        # effective total exceeds 3299 (probe5.py measured 3399 against a
+        # 299 estimate) -- it is not actually the cheaper offer.
+        s.add(models.PriceObservation(
+            book_id=book.id, source="amazon", condition="new", seller="SellerX",
+            price_minor=3100, currency="GBP", shipping_minor=None, total_minor=3100,
+            url="https://amazon/unknown-ship", observed_at=now, last_seen_at=now, raw={},
+        ))
+        s.commit()
+
+        stats = compute_book_stats(book.id, s)
+
+    # The lower-id (genuinely cheaper) row must be the one Python ever sees.
+    assert stats.current_best_shipping_minor == 299, (
+        "the view's partition tiebreak must not have discarded the "
+        "known-shipping row in favour of the raw-total-cheaper one"
+    )
+    assert stats.current_best_price_minor == 3000
+    assert stats.current_effective_total_minor == 3299
