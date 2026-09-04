@@ -171,9 +171,51 @@ Caveat, stated honestly: the pinning attempt was time-boxed to two mechanisms. A
 flow (full modal fetch to harvest the token) was not attempted, because the location hypothesis
 had already been falsified by the promise text and so the task's motivation was gone.
 
-## T0.4 — Product-page fixtures
+## T0.4 — Product-page fixtures (partial: fixture (e) captured, **Q3 answered**)
 
-_Pending._
+Fixture (e), the Echo Dot `B09B96TG33`, was captured by T0.1's new script on 2026-09-04 15:02 UTC
+— both `dp` and `aod`, neither bot-challenged.
+
+### Q3 — is the Echo Dot's empty offer listing genuine, or a parser gap? → **GENUINE**
+
+Counting DOM nodes rather than string occurrences (the raw HTML contains the substring
+`aod-offer` 22 times, but those are element ids, CSS rules and script templates, not rows):
+
+| Selector | Nodes |
+|---|---|
+| `#aod-offer` | **0** |
+| `.aod-offer` | 0 |
+| `#aod-offer-list` | 1 — present but contains only inputs and one empty div |
+| `#aod-pinned-offer` | **1** |
+| `.olpOffer` | 0 |
+
+So the offer-listing page genuinely carries **no third-party offer rows** — only the pinned
+(Amazon's own) offer. `parse_offer_listing` returning 0 offers is correct behaviour, not a miss.
+
+Crucially, no data is lost: the dp path captures that same offer correctly.
+
+```
+parse_dp(<Echo Dot dp fixture>) -> 1 candidate
+  price_minor=7999  shipping_minor=0  seller='Amazon'  condition=Condition.NEW
+```
+
+⇒ **T4.2's "single-seller pages" case is confirmed already tolerated** — `parse_offer_listing`
+returns `[]` without raising. The task reduces to adding the fixture test.
+
+### Incidental: F6 confirmed on live markup
+
+The Echo Dot dp has **`#merchant-info` = 0 nodes**, yet `parse_dp` still returned
+`seller = 'Amazon'`. That is exactly the F6 defect — an unattributed buy box credited to Amazon.
+Here the attribution happens to be true (it is an Amazon device), which is precisely why the bug
+is easy to miss. **T2.7 should use this fixture as its regression test**; after T2.7 the expected
+seller for this fixture becomes `None`, so T2.7 must update the assertion in the same commit.
+
+### Still to capture
+
+The Echo Dot turns out **not** to be a variant page (`#twister` = 0 nodes; the 260 raw
+occurrences of "twister" are all script/JSON), and it is in stock. So (a) multi-seller
+non-Amazon-brand, (b) variant/twister, (c) currently-unavailable and (d) used-offers fixtures are
+still outstanding.
 
 ## T0.5 — Bookfinder condition strings
 
