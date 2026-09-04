@@ -141,3 +141,62 @@ async def test_get_chrome_version_is_concurrency_safe(
 
     assert results == ["147.0.7727.0"] * 5
     assert fake_pw.chromium.probe_launch_calls == 1
+
+
+async def test_browser_session_serialises_same_profile_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """D24: a second BrowserSession.start() on the SAME profile directory
+    must wait for the first session's close() — not race Chromium's
+    ProcessSingleton lock — and both must eventually succeed."""
+    fake_pw = _FakePlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+
+    session1 = BrowserSession("amazon", profile_root=tmp_path)
+    await session1.start()
+
+    resolved = (tmp_path / "amazon").resolve()
+    lock = browser_mod._profile_dir_lock(resolved)
+    assert lock.locked()
+
+    session2 = BrowserSession("amazon", profile_root=tmp_path)
+    second_start = asyncio.create_task(session2.start())
+    await asyncio.sleep(0)  # let second_start run up to its blocked acquire()
+    assert not second_start.done(), "second start() must block while first holds the lock"
+
+    await session1.close()
+    assert not lock.locked() or second_start.done(), (
+        "closing the first session must free the lock for the second"
+    )
+
+    await second_start  # now unblocks
+    assert second_start.done()
+    await session2.close()
+
+    assert fake_pw.chromium.persistent_launch_calls == 2
+    assert not lock.locked()
+
+
+async def test_browser_session_different_profiles_do_not_block_each_other(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """D24 also requires the converse: two DIFFERENT profile directories
+    must never serialise against each other."""
+    fake_pw = _FakePlaywright()
+    monkeypatch.setattr(browser_mod, "async_playwright", _fake_async_playwright(fake_pw))
+    monkeypatch.setattr(browser_mod, "_chrome_version_cache", "147.0.7727.0")
+
+    session_a = BrowserSession("amazon", profile_root=tmp_path)
+    session_b = BrowserSession("bookfinder", profile_root=tmp_path)
+
+    await session_a.start()
+    second_start = asyncio.create_task(session_b.start())
+    await asyncio.sleep(0)
+    assert second_start.done(), "a different profile directory must never block on session_a's lock"
+
+    await second_start
+    await session_a.close()
+    await session_b.close()
+
+    assert fake_pw.chromium.persistent_launch_calls == 2

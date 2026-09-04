@@ -127,6 +127,37 @@ async def _get_chrome_version(playwright: Playwright) -> str:
         return _chrome_version_cache
 
 
+# D24: two BrowserSessions launched concurrently on the SAME profile
+# directory must serialise rather than crash — Chromium's own
+# ProcessSingleton lock makes the second `launch_persistent_context()` fail
+# outright ("Failed to create a ProcessSingleton for your profile
+# directory"), measured against the real installed browser. The shared
+# `amazon_uk_product` profile between the scheduled product source and the
+# metadata fallbacks is deliberate (see module docstring / D24) — splitting
+# it to dodge the collision would re-expose the metadata path to the
+# first-order-promo shipping bug it exists to avoid. So: wait, don't crash.
+#
+# One `asyncio.Lock` per resolved profile-directory path, created lazily and
+# never removed — locks are cheap, and removing one while another coroutine
+# might be about to look it up is a use-after-free-shaped race not worth the
+# memory savings. Keyed by the RESOLVED path (not the profile name string)
+# so two different `profile_root`s that happen to reuse a profile name never
+# share a lock, and two names that happen to resolve to the same real
+# directory always do.
+_profile_dir_locks: dict[Path, asyncio.Lock] = {}
+
+
+def _profile_dir_lock(path: Path) -> asyncio.Lock:
+    # No `await` anywhere in this function, so the whole get-or-create is
+    # atomic with respect to other coroutines — two concurrent callers for
+    # the same path can never both create a Lock and race on which "wins".
+    lock = _profile_dir_locks.get(path)
+    if lock is None:
+        lock = asyncio.Lock()
+        _profile_dir_locks[path] = lock
+    return lock
+
+
 class BrowserSession:
     """Async context manager owning one persistent Chromium `BrowserContext`.
 
@@ -147,6 +178,14 @@ class BrowserSession:
     `self.name`, or a `book_alerter.enums.BrowserProfile` member (a str
     subtype) where no Source instance is available. The directory persists
     between runs by design; see the module docstring for why.
+
+    Two `BrowserSession`s on the SAME profile directory serialise rather
+    than racing Chromium's ProcessSingleton lock (D24): `start()` holds a
+    per-directory `asyncio.Lock` for the session's whole open lifetime and
+    `close()` releases it, so a second concurrent `start()` on the same
+    directory simply waits for the first session to close instead of
+    crashing with "Failed to create a ProcessSingleton". Different profile
+    directories never block each other.
     """
 
     def __init__(
@@ -163,46 +202,63 @@ class BrowserSession:
         self._profile_root = profile_root or _PROFILE_ROOT
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
+        self._held_lock: asyncio.Lock | None = None
 
     async def start(self) -> BrowserContext:
         if self._context is not None:
             raise RuntimeError(f"BrowserSession({self._profile!r}) already started")
 
-        user_data_dir = self._profile_root / self._profile
+        user_data_dir = (self._profile_root / self._profile).resolve()
         user_data_dir.mkdir(parents=True, exist_ok=True)
         # mkdir's `mode=` argument is masked by the process umask, so set
         # the permission explicitly — the profile directory holds cookies
         # and local storage and must never be group/world readable.
         user_data_dir.chmod(0o700)
 
-        playwright = await async_playwright().start()
+        # Held until close() releases it (see class docstring / D24) — NOT
+        # a plain `async with`, because the lock has to span two separate
+        # method calls (start() acquires, close() releases), not one block.
+        lock = _profile_dir_lock(user_data_dir)
+        await lock.acquire()
         try:
-            chrome_version = await _get_chrome_version(playwright)
-            user_agent = derive_user_agent(chrome_version)
-            context = await playwright.chromium.launch_persistent_context(
-                user_data_dir,
-                channel="chromium",
-                headless=True,
-                args=list(_LAUNCH_ARGS),
-                locale=self._locale,
-                timezone_id=self._timezone_id,
-                viewport=_VIEWPORT,
-                user_agent=user_agent,
-            )
+            playwright = await async_playwright().start()
+            try:
+                chrome_version = await _get_chrome_version(playwright)
+                user_agent = derive_user_agent(chrome_version)
+                context = await playwright.chromium.launch_persistent_context(
+                    user_data_dir,
+                    channel="chromium",
+                    headless=True,
+                    args=list(_LAUNCH_ARGS),
+                    locale=self._locale,
+                    timezone_id=self._timezone_id,
+                    viewport=_VIEWPORT,
+                    user_agent=user_agent,
+                )
+            except Exception:
+                await playwright.stop()
+                raise
         except Exception:
-            await playwright.stop()
+            # start() itself failed, so there will be no corresponding
+            # close() call to release the lock (BrowserSessionMixin.prepare()
+            # never assigns `_browser_session` when `start()` raises, so its
+            # cleanup() has nothing to call close() on) — release it here or
+            # every later start() on this profile directory deadlocks.
+            lock.release()
             raise
         self._playwright = playwright
         self._context = context
+        self._held_lock = lock
         return context
 
     async def close(self) -> None:
-        """Close the context then stop the Playwright driver. Safe to call
-        on a session that was never started (no-op) — callers that
-        default-noop `Source.cleanup()` don't need to track whether
-        `prepare()` ran."""
+        """Close the context then stop the Playwright driver, then release
+        the profile-directory lock `start()` acquired. Safe to call on a
+        session that was never started (no-op) — callers that default-noop
+        `Source.cleanup()` don't need to track whether `prepare()` ran."""
         context, self._context = self._context, None
         playwright, self._playwright = self._playwright, None
+        lock, self._held_lock = self._held_lock, None
         if context is not None:
             try:
                 await context.close()
@@ -221,6 +277,8 @@ class BrowserSession:
                     profile=self._profile,
                     error=str(e),
                 )
+        if lock is not None:
+            lock.release()
 
     async def __aenter__(self) -> BrowserContext:
         return await self.start()
