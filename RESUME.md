@@ -106,6 +106,14 @@ that makes the work deployable, and it is the last thing to do, after review.
 - **T4.2 is a hard gate**: 7 committed product fixtures have no test loading them.
 
 ### Expected in-flight churn (do NOT mistake for regressions)
+- **`src/book_alerter/scheduler.py`'s `_persist` is edited but deliberately UNCOMMITTED.** The
+  orchestrator applied it (the write-set guard held the file); it must be committed *atomically*
+  with migration 0021 + `models.py` + `views.py`, because on its own it references a
+  `last_seen_at` column the committed model lacks. The stats worker owns that commit.
+  `_persist` now refreshes an unchanged offer in place (`last_seen_at` **and** `url`) instead of
+  inserting a heartbeat row. The `url` refresh is deliberate: migration 0019 exists because
+  current-best must show the latest sighting's URL, and `url` is not part of the dedup key — drop
+  it and that bug returns.
 - As of 2026-09-04 ~16:10 the working tree holds the **uncommitted** heartbeat-compaction change
   (`db/models.py`, `db/views.py`, `stats.py`, `config.py`, migration 0020/0021). While it is
   uncommitted, a scoped run shows ~12 failures, all traceable to
