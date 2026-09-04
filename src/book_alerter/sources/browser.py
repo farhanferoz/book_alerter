@@ -27,6 +27,7 @@ docs/superpowers/plans/2026-09-04-wave0-probe-results.md T0.2/T0.3):
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import TracebackType
 
@@ -74,7 +75,10 @@ async def _probe_chrome_version(playwright: Playwright) -> str:
     Kept separate from the persistent-context launch below so the profile
     directory is never touched with the default (HeadlessChrome-bearing)
     user agent before the derived override is known — the throwaway
-    browser holds no profile dir at all.
+    browser holds no profile dir at all. Callers should go through
+    `_get_chrome_version` below rather than call this directly — the build
+    can't change within a process lifetime, so probing on every
+    `BrowserSession.start()` is a redundant Chromium launch.
     """
     browser: Browser = await playwright.chromium.launch(
         channel="chromium", headless=True
@@ -83,6 +87,44 @@ async def _probe_chrome_version(playwright: Playwright) -> str:
         return browser.version
     finally:
         await browser.close()
+
+
+# Process-wide memo of the probed Chrome version — the installed build is
+# fixed for the life of the process, so every BrowserSession.start() after
+# the first reuses this instead of launching another throwaway browser.
+# `None` means "not probed yet"; a failed probe leaves it `None` too (see
+# `_get_chrome_version`) rather than caching a bad/partial result.
+#
+# Tests inject a known version, or force a re-probe, by monkeypatching this
+# module attribute directly (`monkeypatch.setattr(browser,
+# "_chrome_version_cache", "999.0.0.0")` / `..., None)`) — `monkeypatch`
+# reverts it at teardown, so one test's value can't leak into another.
+_chrome_version_cache: str | None = None
+# Guards the probe-and-cache step so concurrent first callers (multiple
+# sources' prepare() can run at once) don't each launch their own throwaway
+# browser racing to populate the cache.
+_chrome_version_lock = asyncio.Lock()
+
+
+async def _get_chrome_version(playwright: Playwright) -> str:
+    """Return the real Chrome build version, probing at most once per
+    process.
+
+    Double-checked locking: the lock-free check handles the common case
+    (already cached) without any contention; the lock + recheck inside it
+    means only one concurrent caller ever actually launches the probe
+    browser, and the rest just read its result. A failed probe is never
+    cached — it propagates to the caller (a `BrowserSession.start()`
+    failure) so a transient failure can't wedge every future session with
+    no version, and never silently falls back to a hardcoded one.
+    """
+    global _chrome_version_cache
+    if _chrome_version_cache is not None:
+        return _chrome_version_cache
+    async with _chrome_version_lock:
+        if _chrome_version_cache is None:
+            _chrome_version_cache = await _probe_chrome_version(playwright)
+        return _chrome_version_cache
 
 
 class BrowserSession:
@@ -135,7 +177,7 @@ class BrowserSession:
 
         playwright = await async_playwright().start()
         try:
-            chrome_version = await _probe_chrome_version(playwright)
+            chrome_version = await _get_chrome_version(playwright)
             user_agent = derive_user_agent(chrome_version)
             context = await playwright.chromium.launch_persistent_context(
                 user_data_dir,
