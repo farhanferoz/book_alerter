@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from book_alerter.db.models import Condition
+from book_alerter.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 # Sources expose their condition data in two shapes:
 #
@@ -24,8 +27,26 @@ _TOKEN_MAP: dict[str, Condition] = {
     "ACCEPTABLE": "used_acceptable",
 }
 
+# T2.6: the standard antiquarian-bookseller grades, conventional descending
+# order As New / Fine > Near Fine > Very Good > Good > Fair > Poor. "Fair"
+# was already mapped below. These specific strings are NOT evidenced by a
+# live capture — T0.5 (docs/superpowers/plans/2026-09-04-wave0-probe-results.md)
+# captured two real Bookfinder pages and found only "New" and "Used - Like
+# New", both already handled; the production `unknown` rows' grade text was
+# never persisted (only seller/condition/price/shipping/currency/url), so
+# there is no way to recover what they actually said. This is a best-effort
+# default matching the plan's own list, not a measured mapping. A single
+# "fine" entry covers "Near Fine" too (substring match), so no separate
+# "near fine" entry is needed. "Ex-library" is deliberately NOT in this
+# table: it is a provenance marker, not a grade, so a string like
+# "Ex-Library - Very Good" must resolve on "very good" (already covered by
+# a plain substring scan) rather than being force-mapped to a condition of
+# its own; "Ex-Library" alone (no grade) correctly falls through to
+# 'unknown' below, same as it did before this change.
 _GRADE_HAYSTACK: list[tuple[str, Condition]] = [
     ("like new", "used_vg"),
+    ("as new", "used_vg"),
+    ("fine", "used_vg"),
     ("very good", "used_vg"),
     ("good", "used_g"),
     ("acceptable", "used_acceptable"),
@@ -39,12 +60,24 @@ def condition_from_token(token: str) -> Condition:
     return _TOKEN_MAP.get(token.strip().upper(), "unknown")
 
 
-def condition_from_grade_text(grade_text: str) -> Condition:
+def condition_from_grade_text(grade_text: str, *, source: str = "unspecified") -> Condition:
     """Map free-form grade text (bookfinder/amazon-style) to a Condition.
 
     Lowercases + substring-matches against `_GRADE_HAYSTACK` in priority
     order ('like new' wins over 'new'). Returns 'new' when the text reads
     as new without any used qualifier. Falls back to 'unknown'.
+
+    `source` is optional and defaults to `'unspecified'` so every existing
+    call site keeps working unchanged; pass the caller's own name (e.g.
+    `"bookfinder"`, `"amazon"`) for a diagnosable log line. A non-empty
+    grade that reaches neither the haystack nor the bare-new fallback logs
+    a warning with the raw text — see the T2.6 note above: the production
+    `unknown` rows' grade text was thrown away and unrecoverable, so the
+    next occurrence of an unmapped grade should show up in the logs instead
+    of silently vanishing again. An empty `grade_text` is not logged: it
+    means no grade text was found at all, which is an expected shape (e.g.
+    a plain "New" listing with no separate qualifier), not an unrecognised
+    grade.
     """
     text = grade_text.strip().lower()
     if not text:
@@ -54,4 +87,5 @@ def condition_from_grade_text(grade_text: str) -> Condition:
             return mapped
     if "new" in text and "used" not in text:
         return "new"
+    log.warning("condition_normalizers.grade_unmapped", grade_text=grade_text, source=source)
     return "unknown"
