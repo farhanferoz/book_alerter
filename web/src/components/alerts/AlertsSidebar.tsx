@@ -9,7 +9,6 @@
 // each row carries its own title and item identity from the backend, so no
 // client-side title lookup is needed.
 
-import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,22 +26,25 @@ export function AlertsSidebar() {
   const alertsQuery = useAlerts({ dismissed: false, limit: 20 });
   const dismiss = useDismissAlert();
 
-  const page = alertsQuery.data;
-  const items = page?.items ?? [];
+  const items = alertsQuery.data?.items ?? [];
 
-  // Newest-first from the API, so the first alert seen for an item is the
-  // one to show; the rest just count. Keyed on `page` (stable per fetch)
-  // rather than the `?? []` fallback, which would be a new array each render.
-  const groups = useMemo(() => {
-    const byItem = new Map<string, { newest: Alert; older: number }>();
-    for (const alert of page?.items ?? []) {
-      const key = `${alert.item_kind}-${alert.item_id}`;
-      const group = byItem.get(key);
-      if (group) group.older += 1;
-      else byItem.set(key, { newest: alert, older: 0 });
-    }
-    return [...byItem.values()];
-  }, [page]);
+  // `next_before` is null only when the page holds every matching row, so it
+  // is exactly the "this count is a lower bound" flag. `older` is counted
+  // within the fetched page, so on a truncated feed an item can have older
+  // alerts this page never saw — say "or more" rather than assert a total.
+  const truncated = alertsQuery.data?.next_before != null;
+
+  // Newest-first from the API, so the first alert seen for an item is the one
+  // to show; the rest just count. Not memoised: the page is capped at 20 rows,
+  // so this is cheaper than the dependency-array bookkeeping would be.
+  const byItem = new Map<string, { newest: Alert; older: number }>();
+  for (const alert of items) {
+    const key = `${alert.item_kind}-${alert.item_id}`;
+    const group = byItem.get(key);
+    if (group) group.older += 1;
+    else byItem.set(key, { newest: alert, older: 0 });
+  }
+  const groups = [...byItem.values()];
 
   return (
     <div className="flex h-full flex-col gap-3">
@@ -90,7 +92,9 @@ export function AlertsSidebar() {
                 to="/alerts"
                 className="block px-2 text-[11px] text-muted-foreground hover:underline"
               >
-                +{older} older alert{older === 1 ? "" : "s"} for this item
+                +{older}
+                {truncated ? " or more" : ""} older alert
+                {older === 1 && !truncated ? "" : "s"} for this item
               </Link>
             )}
           </div>

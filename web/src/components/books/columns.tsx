@@ -24,6 +24,7 @@
 
 import type { ColumnDef } from "@tanstack/react-table";
 import { BookIcon, PackageIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -40,11 +41,45 @@ import {
   sortableTotalMinor,
   type Item,
 } from "@/lib/item";
+import { cn } from "@/lib/utils";
 import { rank3mOrInf } from "@/lib/windows";
 import { ItemRowMenu } from "./ItemRowMenu";
 import { CoverImage } from "./CoverImage";
 import { MiniBars } from "./MiniBars";
 import { SignalPill, bookSignal, type Signal } from "./signal";
+
+// One shape for all three status chips in this column (pending metadata,
+// failed metadata, failed scrape), which were three copies of the same class
+// string differing only in tone. Follows the local-component convention
+// `ConditionPill`/`SourceBadge` already set below. `shrink-0` applies to all
+// of them: they are short fixed labels, so when a long title competes for
+// width the title should wrap, not the chip.
+function StatusChip({
+  tone,
+  title,
+  children,
+  srOnly,
+}: {
+  tone: "muted" | "destructive";
+  title: string;
+  children: ReactNode;
+  srOnly?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-sm px-1 py-px text-[9px] font-medium uppercase",
+        tone === "muted"
+          ? "bg-muted text-muted-foreground"
+          : "bg-destructive/10 text-destructive",
+      )}
+      title={title}
+    >
+      {children}
+      {srOnly && <span className="sr-only">{srOnly}</span>}
+    </span>
+  );
+}
 
 function ConditionPill({ condition }: { condition: string | null }) {
   if (!condition) return null;
@@ -113,12 +148,12 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                 {item.title}
               </Link>
               {item.kind === "product" && item.metadata_status === "pending" && (
-                <span
-                  className="inline-flex items-center rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase text-muted-foreground"
+                <StatusChip
+                  tone="muted"
                   title="Title/image not confirmed yet — filled in by the next successful scrape or metadata retry"
                 >
                   Pending
-                </span>
+                </StatusChip>
               )}
               {/* F4: "failed" is the state that never self-heals (the
                   retry job and the scraper backfill both filter on
@@ -127,12 +162,12 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                   needs a visible, distinct-from-"pending" indicator. The
                   placeholder title stays forever once this fires. */}
               {item.kind === "product" && item.metadata_status === "failed" && (
-                <span
-                  className="inline-flex items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
+                <StatusChip
+                  tone="destructive"
                   title="Amazon title/image lookup gave up after repeated failures — this product keeps its placeholder title/image until it's re-added or fixed by hand"
                 >
                   Failed
-                </span>
+                </StatusChip>
               )}
               {/* The chip replaced a bare red dot, whose meaning was visible
                   only on hover and whose `aria-label` carried the error text.
@@ -141,13 +176,13 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                   `generic`, where ARIA prohibits naming and the label may be
                   dropped. `title` stays for the sighted hover case. */}
               {item.last_scrape_error && (
-                <span
-                  className="inline-flex shrink-0 items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
+                <StatusChip
+                  tone="destructive"
                   title={`Last scrape error: ${item.last_scrape_error}`}
+                  srOnly={`: ${item.last_scrape_error}`}
                 >
                   Scrape failed
-                  <span className="sr-only">: {item.last_scrape_error}</span>
-                </span>
+                </StatusChip>
               )}
             </div>
             <div className="text-xs text-muted-foreground">

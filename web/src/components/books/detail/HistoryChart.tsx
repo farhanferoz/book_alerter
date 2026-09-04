@@ -244,8 +244,12 @@ export function HistoryChart({
     [observations, range],
   );
 
+  // Index-aligned with `series`, not keyed by name: the two are built from the
+  // same array, so `changeSets[i]` always corresponds to `series[i]` and no
+  // missing-key fallback is needed. Memoised because this is up to 8 series ×
+  // a few hundred rows, recomputed on every legend toggle otherwise.
   const changeSets = useMemo(
-    () => new Map(series.map((key) => [key, changeIndices(rows, key)])),
+    () => series.map((key) => changeIndices(rows, key)),
     [rows, series],
   );
 
@@ -340,7 +344,7 @@ export function HistoryChart({
                   stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
                   strokeWidth={2}
                   dot={renderChangeDot(
-                    changeSets.get(key) ?? new Set<number>(),
+                    changeSets[i],
                     SERIES_COLORS[i % SERIES_COLORS.length],
                   )}
                   activeDot={{ r: 5 }}
