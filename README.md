@@ -231,6 +231,31 @@ Sessions beyond the cap wait rather than failing. **Changing an existing
 first boot, so an install created before this change keeps whatever schedules it
 already has.
 
+### Amazon Prime
+
+If you have Prime, Amazon-fulfilled delivery is free for you, and the prices the
+app ranks on should say so:
+
+```yaml
+recommendation:
+  amazon_prime: false   # default; also a switch in Settings -> Recommendation
+```
+
+When on, offers sold by Amazon itself (including Amazon Resale and Amazon
+Warehouse) are treated as having free delivery. Two things it deliberately does
+**not** do. It is applied **when statistics are read, never when observations
+are written** — the stored `shipping_minor` on every observation stays exactly
+as it was scraped, so turning this on or off re-reads history rather than
+rewriting it, and switching back loses nothing. And it applies only to
+Amazon-fulfilled offers: a third-party seller's delivery charge is unaffected,
+because Prime does not cover it.
+
+Leave it off if you are not sure. With it off, delivery is whatever the page
+advertised, and where the page's promise was conditional — "free on your first
+order", "free on orders over £35" — the app records the delivery cost as
+*unknown* and estimates it, rather than recording it as free. That behaviour is
+the whole point of the shipping work and is independent of this setting.
+
 There is also an **off-by-default** weekly job that re-fetches Keepa price
 history for every tracked item:
 
