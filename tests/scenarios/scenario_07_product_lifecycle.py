@@ -27,6 +27,8 @@ from pathlib import Path
 # Allow `uv run python tests/scenarios/scenario_07_product_lifecycle.py`.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from freezegun import freeze_time
 from helpers import (
     add_product_observation,
@@ -39,9 +41,10 @@ from helpers import (
 )
 from sqlmodel import select
 
+from book_alerter.api import alerts as alerts_routes
 from book_alerter.config import Config, NotificationsConfig, RecommendationConfig
 from book_alerter.db import models
-from book_alerter.enums import AlertKind
+from book_alerter.enums import AlertKind, ItemKind
 from book_alerter.notifications.dispatcher import PRODUCT_MODELS, AlertPipeline
 from book_alerter.notifications.inapp import InAppNotifier
 
@@ -207,6 +210,38 @@ def _run_scenario() -> int:
                 len(new_lows_after_mute) == 1,
                 "muted product fires NO additional new_low",
             )
+
+    # --- the alert must actually SURFACE, not just exist in the table.
+    # This is the whole point of finding F8: product alerts were being written
+    # to `productalert` and then shown nowhere, so a row in the table proves
+    # nothing on its own. Assert it comes back from the same endpoint the UI
+    # reads, tagged with the item kind and carrying a usable title.
+    app = FastAPI()
+    app.state.engine = engine
+    app.state.config = Config()
+    app.include_router(alerts_routes.router)
+    client = TestClient(app)
+
+    resp = client.get("/api/alerts")
+    r.expect(resp.status_code == 200, f"GET /api/alerts == 200 (got {resp.status_code})")
+    items = resp.json()["items"]
+    product_rows = [a for a in items if a["item_kind"] == ItemKind.PRODUCT]
+    r.expect(
+        len(product_rows) > 0,
+        f"GET /api/alerts surfaces the product alert (got {len(items)} rows, "
+        f"{len(product_rows)} of them product)",
+    )
+    if product_rows:
+        row = product_rows[0]
+        r.expect(row["item_id"] == pid, f"product alert points at product {pid}")
+        r.expect(bool(row["title"]), "product alert carries a title for the UI")
+        # Dismissal is addressed by (item_kind, id) because ids collide across
+        # the two alert tables.
+        d = client.post(f"/api/alerts/product/{row['id']}/dismiss")
+        r.expect(d.status_code == 200, f"dismiss product alert == 200 (got {d.status_code})")
+        r.expect(
+            d.json()["dismissed_at"] is not None, "dismissed product alert carries a timestamp"
+        )
 
     return r.finish()
 
