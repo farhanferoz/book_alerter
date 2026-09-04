@@ -1,7 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
 // Column definitions for the dashboard table.
-//   cover · title+subtitle · best price · shipping · signal · percentile
+//   cover · title+subtitle · signal · best price · shipping · percentile
 //   mini-bars (1m/3m/12m, sort key = 3m rank) · days · last seen · actions
+// Signal sits right after the title on purpose: it is the one column the
+// dashboard exists to show, and with the alerts rail open a laptop-width
+// viewport only fits the first three or four columns before the table
+// scrolls horizontally. The title cell is width-capped for the same reason.
 // Per-row actions (refetch/archive/delete) are wired via ItemRowMenu;
 // mute remains detail-page-only.
 //
@@ -20,6 +24,7 @@
 
 import type { ColumnDef } from "@tanstack/react-table";
 import { BookIcon, PackageIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -36,11 +41,45 @@ import {
   sortableTotalMinor,
   type Item,
 } from "@/lib/item";
+import { cn } from "@/lib/utils";
 import { rank3mOrInf } from "@/lib/windows";
 import { ItemRowMenu } from "./ItemRowMenu";
 import { CoverImage } from "./CoverImage";
 import { MiniBars } from "./MiniBars";
 import { SignalPill, bookSignal, type Signal } from "./signal";
+
+// One shape for all three status chips in this column (pending metadata,
+// failed metadata, failed scrape), which were three copies of the same class
+// string differing only in tone. Follows the local-component convention
+// `ConditionPill`/`SourceBadge` already set below. `shrink-0` applies to all
+// of them: they are short fixed labels, so when a long title competes for
+// width the title should wrap, not the chip.
+function StatusChip({
+  tone,
+  title,
+  children,
+  srOnly,
+}: {
+  tone: "muted" | "destructive";
+  title: string;
+  children: ReactNode;
+  srOnly?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-sm px-1 py-px text-[9px] font-medium uppercase",
+        tone === "muted"
+          ? "bg-muted text-muted-foreground"
+          : "bg-destructive/10 text-destructive",
+      )}
+      title={title}
+    >
+      {children}
+      {srOnly && <span className="sr-only">{srOnly}</span>}
+    </span>
+  );
+}
 
 function ConditionPill({ condition }: { condition: string | null }) {
   if (!condition) return null;
@@ -99,21 +138,22 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
       cell: ({ row }) => {
         const item = toItem(row.original);
         return (
-          <div className="min-w-[12rem]">
+          <div className="min-w-[12rem] max-w-[24rem]">
             <div className="flex items-center gap-1.5">
               <Link
                 to={itemHref(item)}
-                className="font-medium text-foreground hover:underline"
+                className="line-clamp-2 font-medium text-foreground hover:underline"
+                title={item.title}
               >
                 {item.title}
               </Link>
               {item.kind === "product" && item.metadata_status === "pending" && (
-                <span
-                  className="inline-flex items-center rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase text-muted-foreground"
+                <StatusChip
+                  tone="muted"
                   title="Title/image not confirmed yet — filled in by the next successful scrape or metadata retry"
                 >
                   Pending
-                </span>
+                </StatusChip>
               )}
               {/* F4: "failed" is the state that never self-heals (the
                   retry job and the scraper backfill both filter on
@@ -122,20 +162,27 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
                   needs a visible, distinct-from-"pending" indicator. The
                   placeholder title stays forever once this fires. */}
               {item.kind === "product" && item.metadata_status === "failed" && (
-                <span
-                  className="inline-flex items-center rounded-sm bg-destructive/10 px-1 py-px text-[9px] font-medium uppercase text-destructive"
+                <StatusChip
+                  tone="destructive"
                   title="Amazon title/image lookup gave up after repeated failures — this product keeps its placeholder title/image until it's re-added or fixed by hand"
                 >
                   Failed
-                </span>
+                </StatusChip>
               )}
+              {/* The chip replaced a bare red dot, whose meaning was visible
+                  only on hover and whose `aria-label` carried the error text.
+                  The detail comes back as real `sr-only` text rather than an
+                  `aria-label`: this span has no role, so it maps to
+                  `generic`, where ARIA prohibits naming and the label may be
+                  dropped. `title` stays for the sighted hover case. */}
               {item.last_scrape_error && (
-                <span
-                  role="img"
-                  aria-label={`Scrape error: ${item.last_scrape_error}`}
+                <StatusChip
+                  tone="destructive"
                   title={`Last scrape error: ${item.last_scrape_error}`}
-                  className="inline-block h-2 w-2 rounded-full bg-red-500"
-                />
+                  srOnly={`: ${item.last_scrape_error}`}
+                >
+                  Scrape failed
+                </StatusChip>
               )}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -146,6 +193,12 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
           </div>
         );
       },
+    },
+    {
+      id: "signal",
+      accessorFn: (row) => bookSignal(toItem(row)),
+      header: "Signal",
+      cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
     },
     {
       id: "best_price",
@@ -240,12 +293,6 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
           </span>
         );
       },
-    },
-    {
-      id: "signal",
-      accessorFn: (row) => bookSignal(toItem(row)),
-      header: "Signal",
-      cell: ({ getValue }) => <SignalPill signal={getValue<Signal>()} />,
     },
     {
       id: "percentile",

@@ -31,6 +31,36 @@ function alertItemHref(alert: Alert): string {
   return `/${segment}/${alert.item_id}`;
 }
 
+/**
+ * The stored message is the push-notification text, which opens with
+ * `[KIND] Title — ` so it stands alone in ntfy. In the app the kind badge and
+ * the linked title already carry both, so showing the prefix again repeats
+ * them and leaks the raw enum.
+ *
+ * Two passes, because the two halves of that prefix are not equally
+ * trustworthy. `message` is frozen at fire time with the title the item had
+ * THEN (`notifications/dispatcher.py`), while `title` is looked up from the
+ * item on every request (`api/alerts.py`) — so they diverge whenever an item
+ * is retitled after an alert fired. The realistic case is a product created
+ * as "Amazon product B0…" whose Amazon metadata resolves later. An exact
+ * match is tried first (it is correct even for a title containing the
+ * separator); failing that, only the title is treated as unknown — the KIND
+ * is stored on the alert row alongside the message and cannot drift, so the
+ * fallback stays anchored to it and can never strip a message that isn't
+ * this alert's own prefix.
+ *
+ * Alert kinds are a closed lowercase set (`AlertKind`), so they need no
+ * regex escaping.
+ */
+function alertBody(alert: Alert): string {
+  const kind = alert.kind.toUpperCase();
+  const exact = `[${kind}] ${alert.title} — `;
+  const body = alert.message.startsWith(exact)
+    ? alert.message.slice(exact.length)
+    : alert.message.replace(new RegExp(`^\\[${kind}\\]\\s.*?\\s—\\s`), "");
+  return body.charAt(0).toUpperCase() + body.slice(1);
+}
+
 export function AlertItem({
   alert,
   onDismiss,
@@ -58,8 +88,11 @@ export function AlertItem({
             {title}
           </Link>
         </div>
-        <p className={cn("text-muted-foreground", compact && "line-clamp-2")}>
-          {alert.message}
+        <p
+          className={cn("text-muted-foreground", compact && "line-clamp-2")}
+          title={compact ? alert.message : undefined}
+        >
+          {alertBody(alert)}
         </p>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span>{formatMoneyMinor(alert.price_minor, alert.currency)}</span>

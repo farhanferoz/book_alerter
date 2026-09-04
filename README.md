@@ -97,9 +97,15 @@ deploy commands must use its full path.
 ```bash
 NASDOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
 
-# 1. Back up first if the release carries a migration.
-ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
-  cp book_alerter.db book_alerter.db.pre-$(date +%Y%m%d)"
+# 1. Back up first if the release carries a migration. The database runs in
+#    WAL mode, so a plain `cp` of book_alerter.db misses every write still in
+#    book_alerter.db-wal (hours of scrapes, measured). `VACUUM INTO` writes a
+#    consistent snapshot — the same call the app's weekly backup job makes —
+#    and needs only the container's Python: there is no sqlite3 binary on the
+#    NAS host or in the image.
+ssh nasff235 "$NASDOCKER exec book_alerter python -c \"import sqlite3; \
+  c = sqlite3.connect('/app/data/book_alerter.db', isolation_level=None); \
+  c.execute(\\\"VACUUM INTO '/app/data/backups/pre-deploy-$(date +%Y%m%d).db'\\\"); c.close()\""
 
 # 2. Publish. Pushing to master is what triggers the GHCR image build
 #    (.github/workflows/build.yml); pushing a branch does not.
@@ -117,9 +123,13 @@ gh run watch --repo farhanferoz/book_alerter
 ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter && \
   $NASDOCKER compose pull && $NASDOCKER compose up -d"
 
-# 4. After a row-deleting migration, reclaim the freed space.
-ssh nasff235 "cd /share/CACHEDEV1_DATA/Container/book_alerter/data && \
-  sqlite3 book_alerter.db 'VACUUM'"
+# 4. After a row-deleting migration, reclaim the freed space. Same route as
+#    the backup: through the container's Python, because no sqlite3 binary
+#    exists on the host. `timeout=60` waits out a scrape holding the write lock
+#    rather than failing with "database is locked".
+ssh nasff235 "$NASDOCKER exec book_alerter python -c \"import sqlite3; \
+  c = sqlite3.connect('/app/data/book_alerter.db', isolation_level=None, timeout=60); \
+  c.execute('VACUUM'); c.close()\""
 ```
 
 Step 4 is not optional for the release carrying migration `0021_heartbeat_compaction`.
@@ -131,6 +141,8 @@ return freed pages to the filesystem on its own, so without the `VACUUM` the dat
 stays at its pre-migration size and only the *internal* free list grows. Run it once, after
 the deploy, during a quiet period — `VACUUM` rewrites the whole file and takes an exclusive
 lock for the duration.
+Measured on a copy of production (2026-09-04): the 0019→0024 migration chain
+runs in 1.5 s and the `VACUUM` in 0.12 s, taking the file from 51 MB to 5.7 MB.
 
 Then check `/api/health` (it reports `janitor_last_run_at`) and re-run
 `scripts/smoke_check.py` against a fresh copy of the deployed database.

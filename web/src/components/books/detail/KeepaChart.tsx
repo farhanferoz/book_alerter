@@ -22,13 +22,18 @@ export function KeepaChart({ item }: { item: Pick<Item, "kind" | "id"> }) {
         Amazon UK price history{" "}
         <span className="text-xs font-normal text-muted-foreground">via Keepa</span>
       </h3>
-      <img
-        src={`${itemApiBase(item.kind)}/${item.id}/keepa-chart.png`}
-        alt="Amazon UK price history from Keepa"
-        loading="lazy"
-        onError={() => setErrored(true)}
-        className="w-full rounded"
-      />
+      {/* Keepa renders the PNG on white with its own colours; in dark mode a
+          bare white image glares, so it sits on a white, rounded mat that
+          reads as "an embedded chart" rather than a hole in the page. */}
+      <div className="rounded bg-white dark:p-1">
+        <img
+          src={`${itemApiBase(item.kind)}/${item.id}/keepa-chart.png`}
+          alt="Amazon UK price history from Keepa"
+          loading="lazy"
+          onError={() => setErrored(true)}
+          className="w-full rounded"
+        />
+      </div>
     </div>
   );
 }

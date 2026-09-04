@@ -50,6 +50,13 @@ Run from `/home/ff235/dev/book_alerter`.
   — the **original pre-migration** copy at revision `0019`, 90,172 rows. Copy it; never work in place.
 
 ### Next
+**UI polish — execution plan ready, Task 1 code on disk.** Branch `ui-polish` (from `master` @ `755b822`)
+carries four UNCOMMITTED, gate-clean edits (`columns.tsx`, `AlertItem.tsx`, `AlertsSidebar.tsx`,
+`KeepaChart.tsx`). Plan, with every remaining step's code and the verification harness:
+`/home/ff235/dev/book_alerter/docs/superpowers/plans/2026-09-04-ui-polish-plan.md` (untracked — commit it
+first). Read the plan, not this bullet: Task 1 = commit the skeleton; Task 2 = HistoryChart; Task 3 = README
+runbook I1/I2; Task 4 = screenshots vs baselines; Task 5 = simplify + handoff (no merge, no push).
+
 **Nothing blocks the release — it is shipped.** What remains is operator work, deliberately out of
 scope for the autonomous run (the bar set was *ready for* deployment):
 
@@ -124,6 +131,31 @@ fixes".
 ### Live jobs & tasks
 <!-- /clear does NOT necessarily kill agents — verified 2026-09-04, several survived a clear and
      were still writing files. Check subagents/agent-<id>.jsonl mtime before assuming one is dead. -->
-- `W-T23-prime` — frontend tail, uncommitted at last check.
-- Idle and available: `W-T31-stats`, `W-T01-capture`, `W-fix-browser`, `W-fix-scheduler`,
-  `W-fix-amazon`.
+- none. All six workers stopped cleanly at end of run; no background jobs armed; no worktrees left
+  (`git worktree list` shows only the main checkout).
+
+## Session 2026-09-04
+Resumed after a `/clear` that had **not** killed the running agents — three were still live and
+writing files, so the plan became "query and coordinate" rather than "re-dispatch", which avoided
+colliding in the shared working tree. The blocking set was larger than the checkpoint recorded: the
+backend review's verdict had in fact returned after the checkpoint was taken, carrying 3 HIGH +
+4 MEDIUM + 3 LOW. Dispatched three fix workers onto disjoint write sets and coordinated the three
+survivors; 37 findings across four reviews were resolved, with zero index collisions under the
+explicit-pathspec rule. Verified the two highest-risk fixes myself against the real pre-migration
+production snapshot rather than trusting reports, and refuted the one claim that would have blocked
+the merge (D44) by measurement, confirmed independently by a second agent. Shipped: `master` at
+`917996b`, GHCR build success, image published and verified by digest. Remaining work is operator
+work only — the NAS deploy, the post-0021 `VACUUM`, and D39's post-deploy re-measurement.
+
+### Final review 2026-09-04 (session 6e5ea529, after the release)
+Fresh-eyes review of the whole delta from a clean worktree: gates re-run green (656/3 skipped, ruff,
+tsc -b/eslint/build, smoke 12/12, bench 0.165 s under load, migration 0019→0024 1.5 s, VACUUM 0.12 s
+51→5.7 MB). Three reviewers (backend fix commits, frontend delta, plan adherence): **0 code defects**;
+migration 0021 round trip re-verified on real prod data. New findings, all operator/docs: the README
+runbook's `sqlite3` VACUUM step cannot run on the NAS (no `sqlite3` on host or in the container —
+verified) and its `cp` backup is lossy under WAL (use `VACUUM INTO` via `docker exec … python`);
+Wave 5's `tests/e2e/test_products_ui.py` was never built; three undocumented minor deviations.
+Reports: `/tmp/claude-1000/-home-ff235-dev-book-alerter/6e5ea529-3b4e-438a-a9db-8081f283488c/scratchpad/R-{backend,frontend,adherence}/findings.md`.
+Open questions answered in chat (Q2: £35 / £10-of-books, secondary sources; Q4: recommend not wiring
+Sentry; T6.3 Keepa: weekly refresh ≤ existing on-view load). No agents left running.
+
