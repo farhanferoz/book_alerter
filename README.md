@@ -191,9 +191,49 @@ Reference implementations:
 
 - `src/book_alerter/sources/wob.py` — pure `httpx` + `selectolax`. The simple case.
 - `src/book_alerter/sources/bookfinder.py` — Playwright. Renders the search results page in Chromium.
-- `src/book_alerter/sources/amazon.py` — Playwright with `/dp/` + `offer-listing` fallback. Demonstrates the in-fetch shared-browser pattern (one Chromium instance per `fetch` call, reused across selectors).
+- `src/book_alerter/sources/amazon.py` — Playwright with `/dp/` + `offer-listing` fallback. Browser-backed sources no longer launch Chromium themselves: they mix in `BrowserSessionMixin` and receive a page from the one `BrowserSession` opened for the whole run (see below). `src/book_alerter/sources/browser.py` is the only module that may import `async_playwright`.
 
 > **Note on `printing-press`** — earlier phases scaffolded `printing-press` as the source authoring toolchain. That approach was abandoned in Phase 8 once AWS WAF / anti-bot conditions on Bookfinder and Amazon defeated every static-cookie / subprocess approach. Sources are now first-class inline Python with full access to Playwright's runtime. Don't try to bring it back; see the 2026-05-14 architecture revision note in the plan for the post-mortem.
+
+## Scraping and anti-bot posture
+
+The scraper is a logged-out visitor to a site that actively discourages automation, and the two
+failure modes are different: being *blocked*, and being *quietly told the wrong thing*. The second
+is worse, because it looks like data.
+
+**One browser per source run, with a persistent profile.** `BrowserSession`
+(`src/book_alerter/sources/browser.py`) owns a single Chromium context per source run, backed by a
+persistent profile under `data/browser-profiles/<source>/`. Every source and metadata lookup routes
+through it.
+
+Three settings, each doing a distinct job — all three are needed and none is redundant:
+
+| Setting | What it fixes |
+|---|---|
+| `channel="chromium"` | Uses the full Chrome build instead of the headless shell. Restores `navigator.plugins` (0 → 5) and makes `window.chrome` a real object. |
+| Derived `user_agent` | Removes the `HeadlessChrome` token. **The channel alone does not do this** — measured. |
+| Persistent profile | Makes us a *returning* visitor rather than a first-time one. |
+
+That last one is not only about block rates. A cookieless visitor is served Amazon's promotional
+`FREE delivery … on your first order` promise, and a parser cannot tell that apart from a genuine
+free-shipping offer — on one captured page, **8 of 9 offers** were recorded as free shipping when
+they were not. Keeping the profile is therefore a *data-correctness* measure as much as an
+anti-blocking one, which is why the janitor drops a profile's caches before it drops the profile.
+
+Concurrent runs on the same profile directory are serialised: Chromium refuses a second launch
+against a profile already in use, so `BrowserSession` holds a per-profile lock for the session's
+lifetime.
+
+**Delivery-location pinning is not supported.** It cannot be done for a logged-out headless
+session — the endpoint requires a token that is not served, and the location widget is often absent
+— and it made no difference to the delivery promises when tested. The `--postcode` flag on the
+capture script only tags a filename. See
+`docs/superpowers/plans/2026-09-04-wave0-probe-results.md` for the measurements.
+
+**When a scrape fails**, the HTML is dumped to `data/debug/<source>/` for inspection, bounded by
+the janitor. Bot challenges are not the only failure worth catching: an offer-listing request can
+come back as a perfectly normal product page — occasionally for a *different* item — with nothing
+in the markup that looks like an error.
 
 ## Notifications
 
@@ -214,6 +254,13 @@ Alert kinds: `target_hit`, `percentile_cross`, `new_low`. Each kind can be disab
 The two skipped pytest cases are live Bookfinder / Amazon canaries gated by `BOOKFINDER_LIVE=1` / `AMAZON_LIVE=1`; they're skipped by default so the suite stays network-free.
 
 The e2e Docker test requires the `book_alerter:dev` image to exist locally — build it once with `docker build -t book_alerter:dev .` before running.
+
+## Reading container logs
+
+`docker logs --since <time>` can fail with `invalid character '\x00'` if the container was killed
+uncleanly (observed after a NAS reboot): Docker's `json-file` driver leaves a partially-written
+line that the `--since` filter cannot parse. `docker logs --tail <n>` reads the same file happily
+and is the reliable fallback. Rotating or truncating the log file also clears it.
 
 ## Backups
 
