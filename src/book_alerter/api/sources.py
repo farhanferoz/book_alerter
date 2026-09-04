@@ -116,14 +116,16 @@ class SourceRunOut(BaseModel):
 class SourceHealthOut(BaseModel):
     """Rolled-up scrape health over the last 24 hours.
 
-    `challenged` is a **proxy**, not a direct count. `SourceRun` records only
-    attempted/succeeded totals, and per-item bot challenges are caught inside
-    the scheduler and written to `Book.last_scrape_error` (last-write-wins, no
-    history) rather than rolled up onto the run. So this counts every item
-    failure, of which bot challenges are the dominant but not the only cause.
-    Plan task T1.3 adds `SourceRun.items_challenged`; when it lands this
-    becomes an exact figure and `_last_24h_health_per_source` changes by one
-    line.
+    `challenged` is an EXACT count as of T1.3: the scheduler now records
+    `SourceRun.items_challenged` per run (items whose final outcome was an
+    unsolved bot challenge, after the one retry). It was previously a proxy
+    -- every item failure, of which challenges were the dominant but not the
+    only cause -- because the run row carried no challenge count at all.
+
+    One honest limitation: runs that predate migration 0022 carry 0, since
+    the counter did not exist then. So the figure under-reports for the first
+    window after deploy rather than inventing history, which is the same
+    reason the migration backfills 0 rather than guessing.
     """
 
     attempted: int = 0
@@ -214,16 +216,17 @@ def _last_24h_health_per_source(session) -> dict[str, SourceHealthOut]:
             models.SourceRun.source,
             func.coalesce(func.sum(models.SourceRun.books_attempted), 0),
             func.coalesce(func.sum(models.SourceRun.books_succeeded), 0),
+            func.coalesce(func.sum(models.SourceRun.items_challenged), 0),
         )
         .where(models.SourceRun.started_at >= since)
         .group_by(models.SourceRun.source)  # type: ignore[arg-type]
     )
     out: dict[str, SourceHealthOut] = {}
-    for source, attempted, succeeded in session.exec(stmt).all():
+    for source, attempted, succeeded, challenged in session.exec(stmt).all():
         out[source] = SourceHealthOut(
             attempted=int(attempted),
             succeeded=int(succeeded),
-            challenged=max(int(attempted) - int(succeeded), 0),
+            challenged=int(challenged),
         )
     return out
 

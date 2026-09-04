@@ -360,17 +360,22 @@ def test_last_24h_sums_only_runs_inside_the_window(
         make_source_run(
             s, source="amazon", started_at=now - timedelta(hours=1),
             status="partial", books_attempted=10, books_succeeded=4,
+            items_challenged=3,
         )
         # comfortably outside it — must not be counted
         make_source_run(
             s, source="amazon", started_at=now - timedelta(hours=30),
             status="error", books_attempted=99, books_succeeded=0,
+            items_challenged=99,
         )
 
     h = _health(api_client, "amazon")
     assert h["attempted"] == 10, "a run older than 24h must not be summed"
     assert h["succeeded"] == 4
-    assert h["challenged"] == 6, "challenged is attempted - succeeded"
+    # Exact since T1.3, not `attempted - succeeded`: of the 6 failures only 3
+    # were bot challenges, and the distinction is the whole point of the
+    # column. The out-of-window run's 99 must not leak in either.
+    assert h["challenged"] == 3
 
 
 def test_last_24h_accumulates_across_several_runs(
@@ -379,14 +384,18 @@ def test_last_24h_accumulates_across_several_runs(
     _install_sources(api_client, amazon=SourceConfig())
     now = datetime.now(UTC)
     with Session(engine_with_view) as s:
-        for hours, attempted, succeeded in ((1, 5, 5), (3, 7, 2), (6, 1, 0)):
+        runs = ((1, 5, 5, 0), (3, 7, 2, 4), (6, 1, 0, 1))
+        for hours, attempted, succeeded, challenged in runs:
             make_source_run(
                 s, source="amazon", started_at=now - timedelta(hours=hours),
                 status="partial", books_attempted=attempted, books_succeeded=succeeded,
+                items_challenged=challenged,
             )
 
     h = _health(api_client, "amazon")
-    assert (h["attempted"], h["succeeded"], h["challenged"]) == (13, 7, 6)
+    # challenged sums the column (0+4+1), not attempted-succeeded (which
+    # would be 6) — one of the 7 failures in run two was an ordinary error.
+    assert (h["attempted"], h["succeeded"], h["challenged"]) == (13, 7, 5)
 
 
 def test_last_24h_is_zeroed_for_a_source_that_never_ran(api_client, engine_with_view):

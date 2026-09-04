@@ -201,10 +201,12 @@ def make_source_run():
         status: str = "success",
         books_attempted: int = 0,
         books_succeeded: int = 0,
+        items_challenged: int = 0,
         error_message: str | None = None,
         error_traceback: str | None = None,
     ) -> models.SourceRun:
         run = models.SourceRun(
+            items_challenged=items_challenged,
             source=source,
             started_at=started_at,
             finished_at=finished_at,

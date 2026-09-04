@@ -118,8 +118,8 @@ function ScrapeHealthBanner() {
         </p>
       ))}
       <p className="mt-1 text-xs opacity-80">
-        Counts every failed scrape attempt in the window, not confirmed bot
-        blocks alone.
+        Counts items still blocked after a retry. Runs from before this
+        counter existed report zero, so the first day may under-report.
       </p>
     </div>
   );
