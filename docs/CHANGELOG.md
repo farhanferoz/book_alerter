@@ -12,6 +12,89 @@ Execution of `docs/superpowers/plans/2026-09-04-review-and-optimisation-plan.md`
 Progress and per-task evidence live in that document's checkboxes; this entry records
 what shipped and the findings that changed the plan.
 
+### Second execution phase — shipping correctness beyond the parser, performance, reliability
+
+The morning's fix (T2.5) corrected where shipping is *parsed*. An adversarial read-only
+review of the whole chain — parse, persist, consume, alert — then found that the persist
+and consume layers reintroduce the same defect class downstream, so two user-visible
+surfaces still behaved as they had before the fix. Findings are numbered S1-S8; each was
+verified by executing the real code, not by reading it.
+
+- **S1 (High) — `TARGET_HIT` fired on a total that omits shipping.** `_persist` stores
+  `total = price + (shipping or 0)`, so a T2.5 "unknown" row's raw total is the bare price,
+  and both `alerts.py` and `compute_signal`'s target branches compared that column.
+  Reproduced end to end on a committed fixture: target £8.00, delivered cost £10.79, alert
+  fires. On this path the post-T2.5 behaviour was bit-identical to the original bug — the
+  fix reached ranking, percentiles and `NEW_LOW`, but never `TARGET_HIT`. That it was an
+  omission rather than a judgement is settled by the code itself: `NEW_LOW` eight lines
+  below carries a comment reasoning about exactly this hazard. Both call sites moved to
+  `current_effective_total_minor` together, because they interact through `prev_signal` and
+  a half fix lets the dedup suppress the corrected alert on the following run.
+- **S3 (Med-High)** — the push notification called an item-only figure "total" and computed
+  "% below median" against a cascade-imputed median, comparing two different metrics
+  (`837e46b`). Reuses the web UI's existing wording rather than inventing new copy.
+  `Alert.price_minor` moved too, after confirming it is rendered directly to users.
+- **S4 (Medium)** — a second ranking rule survived in SQL on the raw column, and a third in
+  the frontend sorts. The frontend copy was on the always-taken path: a "£7.99 + unknown
+  delivery" item sorted above an "£8.50, delivered free" one though it costs £10.79
+  (`3b8f250`).
+- **S6/S7/S8** (`0318f9f`) — a documented parser invariant that was false, a delivery
+  *threshold* read as a delivery *charge*, and a merge tie-break that cannot be correct as
+  written. See D36/D37 for the last two: S7 is fixed by teaching the parser that "over £X"
+  is a threshold, never by reordering precedence, which would reopen a different bug; S8 is
+  deferred with a test pinning current behaviour, because `None` now means two different
+  things and distinguishing them needs a signal the candidate does not yet carry.
+
+**Two further shipping bugs of the same family, found and fixed the same day.** D33: Amazon's
+spend-threshold promise ("FREE delivery ... on orders over £35") was recorded as free — for a
+single sub-threshold book it is not (`928c185`). D35: detection now keys on Amazon's own
+`data-csa-c-mir-sub-type="CONDITIONALLY_FREE"` attribute, verified to agree with ground truth
+across every capture (10 conditional vs 47 not), with the English phrases kept as a fallback
+layer and disagreement logged (`7f5bf74`). The project had guessed two marker phrases and was
+heading for a third.
+
+### Shipped in this phase
+
+- **T3.2 heartbeat compaction** (`0cd4a16`, migration `0021`). `priceobservation` 90,172 ->
+  12,337 rows on a production copy with the canonical count unchanged; `last_seen_at` matches
+  the previous `buyable_last_seen` formula for all 4,304 non-keepa canonical rows. Landed as
+  one commit by necessity — `_persist` and the keepa backfill both reference a column the old
+  model lacked. **`GET /api/books` 2101ms -> 453ms -> 63.5ms end to end (~33x)**, closing the
+  <=0.35s gate at 0.059-0.068s. `VACUUM` is a documented manual step, not run by the migration.
+- **T1.3 challenge handling** (`f9b32ba` migration `0022`, `a7078ad`). A challenged item waits
+  20-40s and gets one retry on the same browser context. *Deviation:* the plan says "today only
+  run-level exceptions count" — not so; a zero-success run already counted. The real gap was
+  that one succeeding item RESET the consecutive-error counter, so backoff never engaged while
+  the source was plainly blocking us (10 of 13 books carrying a challenge error, runs still
+  finishing "partial"). A run with >=50% of items challenged now counts as an error regardless
+  of successes. `last_24h.challenged` became an exact count rather than a proxy (`3020ad7`).
+- **T1.4 browser concurrency** (`0cb7d79`). Process-wide cap plus 0/15/30/45 staggered defaults.
+  Two points the plan left open: the slot is taken *after* the per-profile lock, which makes
+  deadlock unreachable; and `close()` releases the semaphore it acquired rather than the current
+  one, so a config reload mid-session cannot give the new semaphore a phantom slot.
+- **T3.4** medians cache (`e2c0aae`), **T6.2** `Signal` StrEnum (`70100bb`), **T6.5** janitor
+  registration (`e13609d`), **T6.6** fixture renames (`3a70353`), **T6.1** dashboard banner
+  (`c78293c`).
+- **T6.3 Keepa refresh** (`82f6303`), off by default. *Deviation:* the plan states "dedup by
+  date already exists". It did not — the only guard was "skip if any keepa row exists", with no
+  per-date check, so a periodic re-run would either do nothing or duplicate the entire history
+  weekly. Building that dedup was the task. It is keyed on the date, not the datetime, because
+  SQLite returns naive and the app returns UTC-aware, so a datetime comparison silently never
+  matches. The plan asked whether Keepa tolerates one request per item per week; that is
+  **deliberately left unanswered** rather than guessed, which is why the job ships off.
+
+### Defects found by auditing rather than by a task
+
+- **`data/product-images` had no janitor sweep** (`786b147`). Plan section 8 requires every
+  runtime directory to have a cap; this one kept an image for every product ever deleted.
+- **The Docker e2e was broken and invisible** (`16b8b57`). It inserts an observation and was
+  never ported to the required `last_seen_at`; the e2e tests are marked and skipped by default,
+  so every green suite hid it. Now green from a clean checkout.
+- **HEAD failed lint on any current ruff** (`2f11937`). `pyproject` asks for `ruff>=0.8` with no
+  lockfile, so the version depends on when a venv was created — 0.15.7 locally, 0.16.6 fresh.
+  Two real errors were invisible on the development machine. **Pinning remains open** and is
+  the maintainer's call; while the version floats, "ruff clean" is not a reproducible claim.
+
 ### Findings that corrected the plan
 
 - **The Amazon shipping flip is not location-dependent (T0.2, Q1 settled, F1c rejected).**
