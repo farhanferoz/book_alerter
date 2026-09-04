@@ -64,6 +64,45 @@ _KIND_ROUTING: dict[ItemKind, _KindRouting] = {
 }
 
 
+# T1.3: bot-challenge handling.
+#
+# Both browser sources raise a `SourceError` whose message ends in
+# "challenge persisted" once their in-source retry is exhausted:
+# `sources/amazon.py` ("Amazon bot-protection challenge persisted; ...") and
+# `sources/bookfinder.py` ("AWS WAF challenge persisted; ..."). Matching on
+# that shared substring is what the plan specifies, and it is the reason the
+# phrase must stay in both messages.
+#
+# A dedicated `BotChallengeError(SourceError)` subclass would be sturdier than
+# substring matching -- it would make the contract explicit instead of implied
+# by wording. It is not done here because it would mean editing both source
+# modules, and the failure mode of getting this wrong is mild and visible: an
+# unmatched message just means the item is counted as an ordinary failure,
+# exactly as it was before this feature.
+_CHALLENGE_MARKER = "challenge persisted"
+
+# Wait before the single retry. A challenge means the source wants us to slow
+# down, so retrying immediately would waste the attempt; the range is jittered
+# so a whole run's worth of items doesn't retry in lockstep. Module-level so
+# tests can shrink it -- 20s per item is not something a test can sit through.
+_CHALLENGE_RETRY_DELAY_SECONDS = (20.0, 40.0)
+
+# Fraction of a run's attempted items that must be challenged before the run
+# counts as a consecutive error even though some items succeeded.
+_CHALLENGE_BACKOFF_RATIO = 0.5
+
+
+def is_bot_challenge(exc: BaseException) -> bool:
+    """True when `exc` is a source failure caused by an unsolved bot challenge
+    rather than an ordinary error (timeout, parse failure, no offers).
+
+    Reads `.message` rather than `str(exc)`: `SourceError.__str__` is
+    `"[<source>] <message>"`, so matching the formatted form would also match
+    a source whose NAME happened to contain the marker.
+    """
+    return isinstance(exc, SourceError) and _CHALLENGE_MARKER in exc.message
+
+
 def run_weekly_backup(
     db_path: str | Path,
     backup_dir: str | Path,
@@ -318,6 +357,7 @@ class Scheduler:
         attempted_total = 0
         succeeded_total = 0
         affected_by_kind: dict[ItemKind, list[int]] = {}
+        challenged_total = 0
         kind_exceptions: list[tuple[ItemKind, Exception]] = []
         try:
             # prepare()/cleanup() bracket the whole iteration below (not the
@@ -332,7 +372,12 @@ class Scheduler:
                 await src.prepare()
                 for kind in kinds_to_run:
                     try:
-                        ids, attempted, succeeded = await self._run_kind_for_source(
+                        (
+                            ids,
+                            attempted,
+                            succeeded,
+                            challenged,
+                        ) = await self._run_kind_for_source(
                             source_name, src, sc, kind,
                         )
                     except Exception as e:
@@ -353,12 +398,14 @@ class Scheduler:
                     affected_by_kind[kind] = ids
                     attempted_total += attempted
                     succeeded_total += succeeded
+                    challenged_total += challenged
 
                 with self._session_factory() as session:
                     run = session.get(SourceRun, run_id)
                     run.finished_at = datetime.now(UTC)
                     run.books_attempted = attempted_total
                     run.books_succeeded = succeeded_total
+                    run.items_challenged = challenged_total
                     if kind_exceptions and succeeded_total == 0:
                         # Every kind that didn't crash also had zero successes
                         # (or no kinds ran clean) — treat as error.
@@ -383,7 +430,27 @@ class Scheduler:
                         run.status = "error"
                     session.commit()
 
-                if succeeded_total > 0 or (attempted_total == 0 and not kind_exceptions):
+                # T1.3: a run where most items were challenged must count as
+                # a consecutive error EVEN IF some items succeeded. Without
+                # this, one lucky item resets the counter and backoff never
+                # engages while the source is plainly blocking us -- which is
+                # the observed production state (10 of 13 books carrying a
+                # challenge error, runs still finishing 'partial').
+                heavily_challenged = (
+                    attempted_total > 0
+                    and (challenged_total / attempted_total) >= _CHALLENGE_BACKOFF_RATIO
+                )
+                if heavily_challenged:
+                    log.warning(
+                        "source.run.heavily_challenged",
+                        source=source_name,
+                        attempted=attempted_total,
+                        challenged=challenged_total,
+                    )
+                if not heavily_challenged and (
+                    succeeded_total > 0
+                    or (attempted_total == 0 and not kind_exceptions)
+                ):
                     self._consecutive_errors[source_name] = 0
                     self._backoff_until.pop(source_name, None)
                 else:
@@ -444,9 +511,16 @@ class Scheduler:
         src: Source,
         sc,
         kind: ItemKind,
-    ) -> tuple[list[int], int, int]:
+    ) -> tuple[list[int], int, int, int]:
         """Per-kind iteration: query the right item table, fetch each item,
-        persist observations, return (affected_ids, attempted, succeeded).
+        persist observations, return
+        (affected_ids, attempted, succeeded, challenged).
+
+        `challenged` counts items whose FINAL outcome was a bot challenge --
+        i.e. the retry was also challenged. An item that recovers on the retry
+        is a success and is deliberately not counted, because the number feeds
+        a backoff rule about how blocked we actually are, not how often the
+        challenge appeared.
         """
         routing = _KIND_ROUTING[kind]
         item_model = routing.item_model
@@ -458,11 +532,12 @@ class Scheduler:
             ).all()
         attempted = len(items)
         succeeded = 0
+        challenged = 0
         affected_ids: list[int] = []
         sem = asyncio.Semaphore(sc.concurrency)
 
         async def _one(item) -> None:
-            nonlocal succeeded
+            nonlocal succeeded, challenged
             async with sem:
                 delay = random.uniform(*sc.per_book_delay_seconds)
                 await asyncio.sleep(delay)
@@ -471,15 +546,51 @@ class Scheduler:
                         src.fetch(item), timeout=sc.timeout_seconds + 5,
                     )
                 except (TimeoutError, SourceError) as e:
+                    if not is_bot_challenge(e):
+                        log.warning(
+                            "source.item.error",
+                            source=source_name,
+                            kind=kind.value,
+                            identifier=getattr(item, identifier_attr, None),
+                            error=str(e),
+                        )
+                        self._record_item_failure(item_model, item.id, str(e))
+                        return
+                    # Challenged: wait, then give this item exactly one more
+                    # go. `src.fetch` opens its own page each call, so the
+                    # retry gets a fresh page on the existing browser context
+                    # -- the cookies/profile that `prepare()` set up are kept,
+                    # which is the point (D20: a fresh identity per fetch is
+                    # what made Amazon treat us as a first-time visitor).
                     log.warning(
-                        "source.item.error",
+                        "source.item.challenged",
                         source=source_name,
                         kind=kind.value,
                         identifier=getattr(item, identifier_attr, None),
                         error=str(e),
                     )
-                    self._record_item_failure(item_model, item.id, str(e))
-                    return
+                    await asyncio.sleep(
+                        random.uniform(*_CHALLENGE_RETRY_DELAY_SECONDS)
+                    )
+                    try:
+                        candidates = await asyncio.wait_for(
+                            src.fetch(item), timeout=sc.timeout_seconds + 5,
+                        )
+                    except (TimeoutError, SourceError) as retry_exc:
+                        if is_bot_challenge(retry_exc):
+                            challenged += 1
+                        log.warning(
+                            "source.item.error",
+                            source=source_name,
+                            kind=kind.value,
+                            identifier=getattr(item, identifier_attr, None),
+                            error=str(retry_exc),
+                            after_challenge_retry=True,
+                        )
+                        self._record_item_failure(
+                            item_model, item.id, str(retry_exc)
+                        )
+                        return
                 except Exception as e:
                     # Anything else (Playwright assertion errors, sqlite
                     # OperationalError mid-fetch, unexpected source bugs) is
@@ -514,7 +625,7 @@ class Scheduler:
                 succeeded += 1
 
         await asyncio.gather(*[_one(i) for i in items], return_exceptions=True)
-        return affected_ids, attempted, succeeded
+        return affected_ids, attempted, succeeded, challenged
 
     def _persist(
         self,

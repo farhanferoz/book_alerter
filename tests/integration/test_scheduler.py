@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlmodel import Session, select
 
+import book_alerter.scheduler as scheduler_mod
 from book_alerter.config import Config, SourceConfig
 from book_alerter.db import models
 from book_alerter.enums import ItemKind
@@ -489,3 +491,157 @@ async def test_run_janitor_passes_the_data_and_backup_directories(tmp_path, monk
     assert captured["backup_dir"] == Path(cfg.backup.directory)
     assert captured["cfg"] is cfg.janitor
     assert captured["app_state"] is state
+
+
+# --- T1.3: bot-challenge retry, counting, and backoff ------------------------
+
+_CHALLENGE_MSG = "Amazon bot-protection challenge persisted; giving up"
+
+
+def _challenged() -> SourceError:
+    return SourceError("amazon", _CHALLENGE_MSG)
+
+
+class _ScriptedSource(Source):
+    """Raises/returns a scripted outcome per `fetch` call, per item.
+
+    `outcomes` maps an item's isbn13 to a list consumed one entry per call:
+    an Exception is raised, anything else is returned. Records every call so
+    a test can assert the retry happened exactly once rather than inferring
+    it from the end state.
+    """
+
+    name = "amazon"
+
+    def __init__(self, outcomes: dict[str, list]) -> None:
+        self._outcomes = {k: list(v) for k, v in outcomes.items()}
+        self.calls: list[str] = []
+
+    async def prepare(self) -> None:
+        return
+
+    async def cleanup(self) -> None:
+        return
+
+    async def fetch(self, item):
+        key = item.isbn13
+        self.calls.append(key)
+        outcome = self._outcomes[key].pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _challenge_cfg(max_consecutive_errors: int = 5) -> Config:
+    return Config(
+        sources={
+            "amazon": SourceConfig(
+                enabled=True, region="UK",
+                per_book_delay_seconds=(0, 0), concurrency=1,
+                max_consecutive_errors=max_consecutive_errors,
+            ),
+        },
+    )
+
+
+def _challenge_scheduler(engine, src, max_consecutive_errors: int = 5) -> Scheduler:
+    async def _noop(ids: list[int]) -> None:
+        return
+
+    return Scheduler(
+        config=_challenge_cfg(max_consecutive_errors),
+        sources={"amazon": src},
+        session_factory=lambda: Session(engine),
+        alert_pipelines={ItemKind.BOOK: _noop},
+    )
+
+
+@pytest.fixture
+def no_challenge_wait(monkeypatch):
+    """The real wait is 20-40s per challenged item — unusable in a test."""
+    monkeypatch.setattr(scheduler_mod, "_CHALLENGE_RETRY_DELAY_SECONDS", (0.0, 0.0))
+
+
+async def test_challenged_item_is_retried_once_and_can_succeed(
+    sqlite_engine, make_book, no_challenge_wait
+):
+    """A challenge buys exactly one more attempt. An item that recovers on the
+    retry is a success and is NOT counted as challenged — the count feeds a
+    backoff rule about how blocked we are, not how often the page appeared."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+
+    src = _ScriptedSource({"9780000000001": [_challenged(), []]})
+    run_id = await _challenge_scheduler(sqlite_engine, src).trigger_now("amazon")
+
+    assert src.calls == ["9780000000001"] * 2, "expected exactly one retry"
+    with Session(sqlite_engine) as s:
+        run = s.get(models.SourceRun, run_id)
+        assert run.books_succeeded == 1
+        assert run.items_challenged == 0
+
+
+async def test_item_challenged_twice_is_counted_and_recorded_as_failed(
+    sqlite_engine, make_book, no_challenge_wait
+):
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+
+    src = _ScriptedSource(
+        {"9780000000001": [_challenged(), _challenged()]}
+    )
+    run_id = await _challenge_scheduler(sqlite_engine, src).trigger_now("amazon")
+
+    assert src.calls == ["9780000000001"] * 2
+    with Session(sqlite_engine) as s:
+        run = s.get(models.SourceRun, run_id)
+        assert run.items_challenged == 1
+        assert run.books_succeeded == 0
+
+
+async def test_ordinary_source_error_is_not_retried(
+    sqlite_engine, make_book, no_challenge_wait
+):
+    """Only a challenge earns a second attempt. A parse failure or a dead
+    listing must still cost exactly one fetch, or every broken item doubles
+    the run's work."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+
+    src = _ScriptedSource({"9780000000001": [SourceError("amazon", "no offers found")]})
+    run_id = await _challenge_scheduler(sqlite_engine, src).trigger_now("amazon")
+
+    assert src.calls == ["9780000000001"], "an ordinary error must not retry"
+    with Session(sqlite_engine) as s:
+        assert s.get(models.SourceRun, run_id).items_challenged == 0
+
+
+async def test_heavily_challenged_run_engages_backoff_despite_a_success(
+    sqlite_engine, make_book, no_challenge_wait
+):
+    """The gap T1.3 closes. Before this, one succeeding item reset the
+    consecutive-error counter, so backoff never engaged while the source was
+    plainly blocking us — the observed production state (10 of 13 books
+    carrying a challenge error, runs still finishing 'partial')."""
+    with Session(sqlite_engine) as s:
+        make_book(s, isbn13="9780000000001")
+        make_book(s, isbn13="9780000000002")
+
+    src = _ScriptedSource({
+        "9780000000001": [_challenged(), _challenged()],
+        "9780000000002": [[]],
+    })
+    # max_consecutive_errors=0 so the very first counted error engages
+    # backoff -- this asserts the whole path, not just the counter.
+    sched = _challenge_scheduler(sqlite_engine, src, max_consecutive_errors=0)
+    run_id = await sched.trigger_now("amazon")
+
+    with Session(sqlite_engine) as s:
+        run = s.get(models.SourceRun, run_id)
+        assert run.items_challenged == 1
+        assert run.books_succeeded == 1, "one item genuinely succeeded"
+
+    # 1 of 2 attempted == 50%, which meets the threshold. Before T1.3 the
+    # succeeding item reset this to 0 and no backoff ever engaged.
+    assert sched._consecutive_errors["amazon"] == 1
+    assert "amazon" in sched._backoff_until, "backoff must engage"
