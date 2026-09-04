@@ -169,7 +169,11 @@ def _allowed_signal_values(signal_type: object) -> set[str]:
 _REQUIRED_BOOK_KEYS = {"id", "isbn13", "title", "author", "status", "stats"}
 _REQUIRED_PRODUCT_KEYS = {"id", "asin", "title", "status", "stats"}
 _REQUIRED_STATS_KEYS = {"signal", "current_best_total_minor", "observation_count", "windows"}
-_REQUIRED_ALERT_KEYS = {"id", "book_id", "kind", "price_minor", "fired_at"}
+# The alerts feed spans books and products, so a row identifies its item by
+# (item_kind, item_id) rather than a book_id, and carries its own title.
+_REQUIRED_ALERT_KEYS = {
+    "id", "item_kind", "item_id", "title", "kind", "price_minor", "fired_at",
+}
 _REQUIRED_SOURCE_KEYS = {"name", "config", "last_run"}
 
 
@@ -228,7 +232,8 @@ def check_list_alerts(client: TestClient) -> str:
         missing = _REQUIRED_ALERT_KEYS - a.keys()
         if missing:
             raise CheckFailed(f"alert {a.get('id')} missing key(s): {sorted(missing)}")
-    return f"{len(data['items'])} alert(s)"
+    kinds = sorted({a["item_kind"] for a in data["items"]})
+    return f"{len(data['items'])} alert(s) across {kinds or ['-']}"
 
 
 def check_list_sources(client: TestClient) -> str:
