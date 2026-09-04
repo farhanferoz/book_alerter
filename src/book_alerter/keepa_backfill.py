@@ -128,6 +128,14 @@ def backfill_blocking(
     with session_factory() as session:
         for ext in extractions:
             seller, condition = keepa_chart.SERIES_TO_SELLER_CONDITION[ext.series]
+            # A Keepa row reconstructs a single historical price point from the
+            # chart; it is never re-scraped, so the offer's first and last
+            # sighting are the same instant. Backdating `last_seen_at` rather
+            # than stamping "now" is load-bearing for the history-summary view,
+            # whose `last_polled_at` is MAX(last_seen_at) over every row of the
+            # table, keepa included: stamping now would make a book with only
+            # backfilled history claim it had just been polled.
+            when = keepa_chart.observed_at_to_datetime(ext.observed_at)
             session.add(
                 schema.observation_model(
                     **{schema.fk_attr: item_id},
@@ -139,7 +147,8 @@ def backfill_blocking(
                     shipping_minor=None,
                     total_minor=ext.price_minor,
                     url=url,
-                    observed_at=keepa_chart.observed_at_to_datetime(ext.observed_at),
+                    observed_at=when,
+                    last_seen_at=when,
                     raw={"series": ext.series, "from": "keepa_chart_png"},
                 )
             )

@@ -44,6 +44,7 @@ def _seed_product_observations(
 ) -> None:
     now = datetime.now(UTC)
     for i, total in enumerate(totals):
+        when = now - timedelta(minutes=i)
         session.add(
             models.ProductObservation(
                 product_id=product_id,
@@ -54,7 +55,8 @@ def _seed_product_observations(
                 shipping_minor=0,
                 total_minor=total,
                 url=f"https://example.com/{i}",
-                observed_at=now - timedelta(minutes=i),
+                observed_at=when,
+                last_seen_at=when,
                 raw={},
             ),
         )

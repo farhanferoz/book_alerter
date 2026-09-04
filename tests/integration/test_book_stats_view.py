@@ -45,7 +45,7 @@ def test_book_stats_view_current_best(tmp_path):
                 book_id=book.id, source=source, condition="new",
                 price_minor=total, currency="GBP", shipping_minor=0,
                 total_minor=total, url=f"https://{source}",
-                observed_at=obs_at, raw={},
+                observed_at=obs_at, last_seen_at=obs_at, raw={},
             ))
         s.commit()
 
@@ -97,7 +97,8 @@ def test_book_stats_view_excludes_stale_source_partition(tmp_path):
             seller="Amazon Resale",
             price_minor=2860, currency="GBP", shipping_minor=0,
             total_minor=2860, url="https://example/old-dp",
-            observed_at=now - timedelta(minutes=30), raw={},
+            observed_at=now - timedelta(minutes=30),
+            last_seen_at=now - timedelta(minutes=30), raw={},
         ))
         # Post-fix scrape (just now): the same seller correctly tagged
         # used_vg at £24.62 (and at £28.60 as a separate offer from the
@@ -108,14 +109,14 @@ def test_book_stats_view_excludes_stale_source_partition(tmp_path):
             price_minor=2462, currency="GBP", shipping_minor=0,
             total_minor=2462,
             url="https://example/warehouse-deals",
-            observed_at=now, raw={},
+            observed_at=now, last_seen_at=now, raw={},
         ))
         s.add(models.PriceObservation(
             book_id=book.id, source="amazon", condition="used_vg",
             seller="Amazon Resale",
             price_minor=2860, currency="GBP", shipping_minor=0,
             total_minor=2860, url="https://example/new-dp",
-            observed_at=now, raw={},
+            observed_at=now, last_seen_at=now, raw={},
         ))
         s.commit()
 
@@ -164,7 +165,7 @@ def test_book_stats_view_excludes_stale_source_when_fresher_exists(tmp_path):
             book_id=book.id, source="wob", condition="used_vg", seller="WOB",
             price_minor=1600, currency="GBP", shipping_minor=0,
             total_minor=1600, url="https://wob/stale",
-            observed_at=now - timedelta(days=8), raw={},
+            observed_at=now - timedelta(days=8), last_seen_at=now - timedelta(days=8), raw={},
         ))
         # Amazon: live, scraped just now at £17.59.
         s.add(models.PriceObservation(
@@ -172,7 +173,7 @@ def test_book_stats_view_excludes_stale_source_when_fresher_exists(tmp_path):
             seller="Amazon Resale",
             price_minor=1759, currency="GBP", shipping_minor=0,
             total_minor=1759, url="https://amazon/fresh",
-            observed_at=now, raw={},
+            observed_at=now, last_seen_at=now, raw={},
         ))
         s.commit()
 
@@ -216,24 +217,21 @@ def test_book_stats_view_uses_last_seen_not_first_seen(tmp_path):
         )
         s.add(book); s.commit(); s.refresh(book)
 
-        # Live £20: first seen 10 days ago (canonical), re-seen today as a dup.
-        live = models.PriceObservation(
-            book_id=book.id, source="wob", condition="used_vg", seller="WOB",
-            price_minor=2000, currency="GBP", shipping_minor=0, total_minor=2000,
-            url="https://wob/live", observed_at=now - timedelta(days=10), raw={},
-        )
-        s.add(live); s.commit(); s.refresh(live)
+        # Live £20: first seen 10 days ago, re-seen today — scheduler._persist
+        # updates last_seen_at in place (migration 0021, T3.2) rather than
+        # inserting a duplicate row.
         s.add(models.PriceObservation(
             book_id=book.id, source="wob", condition="used_vg", seller="WOB",
             price_minor=2000, currency="GBP", shipping_minor=0, total_minor=2000,
-            url="https://wob/live", observed_at=now, raw={},
-            is_duplicate_of=live.id,  # today's re-sighting → refreshes last_seen
+            url="https://wob/live", observed_at=now - timedelta(days=10),
+            last_seen_at=now, raw={},
         ))
-        # Vanished £18: first seen 2 days ago (canonical), never seen again.
+        # Vanished £18: first seen 2 days ago, never seen again.
         s.add(models.PriceObservation(
             book_id=book.id, source="wob", condition="used_vg", seller="WOB",
             price_minor=1800, currency="GBP", shipping_minor=0, total_minor=1800,
-            url="https://wob/gone", observed_at=now - timedelta(days=2), raw={},
+            url="https://wob/gone", observed_at=now - timedelta(days=2),
+            last_seen_at=now - timedelta(days=2), raw={},
         ))
         s.commit()
 
@@ -276,22 +274,15 @@ def test_book_stats_view_current_best_url_is_latest_sighting(tmp_path):
         s.add(book); s.commit(); s.refresh(book)
 
         # Canonical first-sighting (old parser): broken category URL.
-        canonical = models.PriceObservation(
-            book_id=book.id, source="amazon", condition="used_vg",
-            seller="Amazon Resale",
-            price_minor=2354, currency="GBP", shipping_minor=0, total_minor=2354,
-            url="https://www.amazon.co.uk/Amazon-Warehouse-Deals/b?node=358",
-            observed_at=now - timedelta(days=5), raw={},
-        )
-        s.add(canonical); s.commit(); s.refresh(canonical)
-        # Today's re-sighting (fixed parser): proper offer-listing URL. Same
-        # offer → deduped onto the canonical row.
+        # Today's re-sighting (fixed parser) updates the row's `url` and
+        # `last_seen_at` in place (scheduler._persist, migration 0021 T3.2)
+        # — `observed_at` stays frozen at the original (broken-url) sighting.
         s.add(models.PriceObservation(
             book_id=book.id, source="amazon", condition="used_vg",
             seller="Amazon Resale",
             price_minor=2354, currency="GBP", shipping_minor=0, total_minor=2354,
             url="https://www.amazon.co.uk/gp/offer-listing/024163/?condition=all",
-            observed_at=now, raw={}, is_duplicate_of=canonical.id,
+            observed_at=now - timedelta(days=5), last_seen_at=now, raw={},
         ))
         s.commit()
 
@@ -330,12 +321,14 @@ def test_book_stats_view_all_sources_stale_still_shows_cheapest(tmp_path):
         s.add(models.PriceObservation(
             book_id=book.id, source="amazon", condition="new", seller="Amazon",
             price_minor=2000, currency="GBP", shipping_minor=0, total_minor=2000,
-            url="https://amazon", observed_at=now - timedelta(days=30), raw={},
+            url="https://amazon", observed_at=now - timedelta(days=30),
+            last_seen_at=now - timedelta(days=30), raw={},
         ))
         s.add(models.PriceObservation(
             book_id=book.id, source="wob", condition="used_vg", seller="WOB",
             price_minor=1800, currency="GBP", shipping_minor=0, total_minor=1800,
-            url="https://wob", observed_at=now - timedelta(days=30, hours=2), raw={},
+            url="https://wob", observed_at=now - timedelta(days=30, hours=2),
+            last_seen_at=now - timedelta(days=30, hours=2), raw={},
         ))
         s.commit()
         stats = compute_book_stats(book.id, s)
@@ -373,12 +366,12 @@ def test_book_stats_view_freshness_gate_boundary_is_one_day(tmp_path):
         s.add(models.PriceObservation(
             book_id=book.id, source="amazon", condition="new", seller="Amazon",
             price_minor=3000, currency="GBP", shipping_minor=0, total_minor=3000,
-            url="https://amazon", observed_at=now, raw={},
+            url="https://amazon", observed_at=now, last_seen_at=now, raw={},
         ))
         s.add(models.PriceObservation(
             book_id=book.id, source="wob", condition="used_vg", seller="WOB",
             price_minor=1000, currency="GBP", shipping_minor=0, total_minor=1000,
-            url="https://wob", observed_at=now - lag, raw={},
+            url="https://wob", observed_at=now - lag, last_seen_at=now - lag, raw={},
         ))
         s.commit()
         return book.id
@@ -431,7 +424,7 @@ def test_book_stats_view_null_and_empty_seller_do_not_duplicate(tmp_path):
             s.add(models.PriceObservation(
                 book_id=book.id, source="amazon", condition="new", seller=seller,
                 price_minor=1500, currency="GBP", shipping_minor=0, total_minor=1500,
-                url="https://x", observed_at=now, raw={},
+                url="https://x", observed_at=now, last_seen_at=now, raw={},
             ))
         s.commit()
         stats = compute_book_stats(book.id, s)

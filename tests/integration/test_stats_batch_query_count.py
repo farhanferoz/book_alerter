@@ -55,7 +55,7 @@ def test_compute_stats_for_items_issues_three_selects_for_a_batch(
                 book_id=book.id, source="wob", condition="new",
                 price_minor=1000 + i, currency="GBP", shipping_minor=0,
                 total_minor=1000 + i, url="https://wob",
-                observed_at=now, raw={},
+                observed_at=now, last_seen_at=now, raw={},
             ))
         s.commit()
 
@@ -92,7 +92,7 @@ def test_compute_stats_for_items_query_count_independent_of_item_count(
                 book_id=book.id, source="wob", condition="new",
                 price_minor=1000 + i, currency="GBP", shipping_minor=0,
                 total_minor=1000 + i, url="https://wob",
-                observed_at=now, raw={},
+                observed_at=now, last_seen_at=now, raw={},
             ))
         s.commit()
 

@@ -226,12 +226,17 @@ async def test_scheduler_alert_pipeline_failure_does_not_corrupt_audit(
 async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
     sqlite_engine, make_book, wob_vcr,
 ):
-    """Second scrape with identical prices flags rows as is_duplicate_of <prior>.
+    """Second scrape with identical prices updates the existing row's
+    `last_seen_at` in place rather than inserting a new one (migration 0021,
+    T3.2 heartbeat compaction — before that, a repeat sighting inserted an
+    `is_duplicate_of`-pointing row instead).
 
-    The book_stats view excludes duplicates, so observation_count stays honest
-    and percentile distributions aren't polluted by same-day repeats. See
-    Scheduler._persist for the dedup logic and RecommendationConfig.min_days_of_history
-    for why this matters to signal correctness.
+    `book_history_summary.observation_count` reads straight off the table
+    row count, so this is what keeps it honest and keeps percentile
+    distributions from being polluted by same-day repeats. See
+    Scheduler._persist for the update-in-place logic and
+    RecommendationConfig.min_days_of_history for why this matters to signal
+    correctness.
     """
     with Session(sqlite_engine) as s:
         make_book(s, isbn13=WOB_CARRIED_ISBN)
@@ -262,42 +267,36 @@ async def test_scheduler_marks_repeat_same_day_observations_as_duplicates(
         cassette, allow_playback_repeats=True,
     ):
         await scheduler.trigger_now("wob")
+        with Session(sqlite_engine) as s:
+            after_pass_1 = s.exec(
+                select(models.PriceObservation).where(models.PriceObservation.source == "wob")
+            ).all()
+            rows_after_pass_1 = {o.id: o.last_seen_at for o in after_pass_1}
+
         await scheduler.trigger_now("wob")
 
     with Session(sqlite_engine) as s:
-        canonical = s.exec(
-            select(models.PriceObservation).where(
-                models.PriceObservation.source == "wob",
-                models.PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
-            )
-        ).all()
-        dupes = s.exec(
-            select(models.PriceObservation).where(
-                models.PriceObservation.source == "wob",
-                models.PriceObservation.is_duplicate_of.is_not(None),  # type: ignore[union-attr]
-            )
+        after_pass_2 = s.exec(
+            select(models.PriceObservation).where(models.PriceObservation.source == "wob")
         ).all()
 
-    # Each pass scrapes the same N variants. After two passes we expect
-    # N canonical rows (from pass 1) and N duplicate rows (from pass 2).
-    assert len(canonical) > 0
-    assert len(dupes) == len(canonical), (
-        f"expected pass-2 to fully duplicate pass-1, got "
-        f"{len(canonical)} canonical, {len(dupes)} duplicates"
-    )
-    # Each duplicate must reference a real canonical row.
-    canonical_ids = {o.id for o in canonical}
-    for d in dupes:
-        assert d.is_duplicate_of in canonical_ids
+    assert len(rows_after_pass_1) > 0
+    # Same rows, not doubled — pass 2 updated in place rather than inserting.
+    assert {o.id for o in after_pass_2} == set(rows_after_pass_1)
+    # And every row's last_seen_at moved forward with pass 2's re-sighting.
+    for o in after_pass_2:
+        assert o.last_seen_at > rows_after_pass_1[o.id], (
+            f"row {o.id}: last_seen_at did not advance on the repeat scrape"
+        )
 
 
 async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine, make_book):
     """If a source returns 'Amazon' on one scrape, ' amazon ' on the next,
     and 'AMAZON' on the third (rendered seller link text is not
-    contractually stable on casing or whitespace), `_persist` must flag
-    each later row as a duplicate of the first — otherwise the
-    `book_stats` view counts each as a canonical observation and the
-    percentile distribution drifts.
+    contractually stable on casing or whitespace), `_persist` must fold each
+    later row into the first as an update-in-place re-sighting — otherwise
+    `book_history_summary.observation_count` counts each as a distinct
+    observation and the percentile distribution drifts.
 
     Covers both axes (case AND whitespace) so the persist-time match
     stays in lockstep with `_normalize_seller` in sources/amazon.py,
@@ -334,23 +333,13 @@ async def test_persist_dedup_normalizes_seller_case_and_whitespace(sqlite_engine
             scheduler._persist("amazon", ItemKind.BOOK, book_row, [_cand(variant)])
 
     with Session(sqlite_engine) as s:
-        canonical = s.exec(
-            select(models.PriceObservation).where(
-                models.PriceObservation.book_id == book_id,
-                models.PriceObservation.is_duplicate_of.is_(None),  # type: ignore[union-attr]
-            )
-        ).all()
-        dupes = s.exec(
-            select(models.PriceObservation).where(
-                models.PriceObservation.book_id == book_id,
-                models.PriceObservation.is_duplicate_of.is_not(None),  # type: ignore[union-attr]
-            )
+        rows = s.exec(
+            select(models.PriceObservation).where(models.PriceObservation.book_id == book_id)
         ).all()
 
-    assert len(canonical) == 1, f"expected 1 canonical, got {len(canonical)}"
-    assert len(dupes) == len(variants) - 1
-    for d in dupes:
-        assert d.is_duplicate_of == canonical[0].id
+    assert len(rows) == 1, (
+        f"expected all {len(variants)} variants folded into 1 row, got {len(rows)}"
+    )
 
 
 async def test_scheduler_calls_prepare_and_cleanup_once_when_fetch_raises(

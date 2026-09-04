@@ -56,6 +56,7 @@ def test_compute_product_stats_window_percentile_matches_book_path(
                     total_minor=1000 + i * 100,
                     url="https://example",
                     observed_at=ts,
+                    last_seen_at=ts,
                 ),
             )
             session.add(
@@ -70,6 +71,7 @@ def test_compute_product_stats_window_percentile_matches_book_path(
                     total_minor=1000 + i * 100,
                     url="https://example",
                     observed_at=ts,
+                    last_seen_at=ts,
                 ),
             )
         session.commit()
@@ -107,20 +109,21 @@ def test_product_stats_view_stale_source_and_last_seen(
     with Session(engine_with_view) as session:
         product = make_product(session, asin="B070000003")
 
-        def obs(source, total, when, *, dup_of=None, cond="used_vg", seller="S"):
+        def obs(source, total, when, *, last_seen=None, cond="used_vg", seller="S"):
             o = models.ProductObservation(
                 product_id=product.id, source=source, condition=cond, seller=seller,
                 price_minor=total, currency="GBP", shipping_minor=0, total_minor=total,
-                url=f"https://{source}", observed_at=when, raw={}, is_duplicate_of=dup_of,
+                url=f"https://{source}", observed_at=when,
+                last_seen_at=last_seen if last_seen is not None else when, raw={},
             )
             session.add(o); session.commit(); session.refresh(o)
             return o
 
         # Live, freshest source: amazon £17.59 today.
         obs("amazon_uk_product", 1759, now, cond="used_acceptable", seller="Amazon")
-        # Stable-but-live wob £21: first seen 10d ago, re-seen today as a dup.
-        live = obs("wob", 2100, now - timedelta(days=10))
-        obs("wob", 2100, now, dup_of=live.id)
+        # Stable-but-live wob £21: first seen 10d ago, re-seen today (migration
+        # 0021, T3.2 — last_seen_at updates in place, no separate dup row).
+        obs("wob", 2100, now - timedelta(days=10), last_seen=now)
         # Vanished wob £16: first seen 8d ago, never seen again.
         obs("wob", 1600, now - timedelta(days=8))
 
@@ -128,6 +131,6 @@ def test_product_stats_view_stale_source_and_last_seen(
 
     # Cheapest LIVE offer wins: amazon £17.59. The vanished £16 is excluded
     # (last_seen 8d ago, not in wob's latest scrape); the stable £21 is live
-    # (its dup refreshed last_seen to today) but pricier.
+    # (re-sighting refreshed its last_seen_at to today) but pricier.
     assert stats.current_best_total_minor == 1759
     assert stats.current_best_source == "amazon_uk_product"

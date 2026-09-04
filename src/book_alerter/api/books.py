@@ -28,7 +28,6 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func
 from sqlmodel import Session, select
 
 from book_alerter import keepa, keepa_backfill
@@ -198,18 +197,17 @@ class BookStatsOut(BaseModel):
 
 
 class PriceObservationOut(BaseModel):
-    """Wire mirror of `book_alerter.db.models.PriceObservation`.
+    """Wire mirror of `book_alerter.db.models.PriceObservation`. Excludes the
+    internal `raw` source payload.
 
-    Excludes the internal `raw` source payload and the `is_duplicate_of`
-    dedup pointer — the observations endpoint filters duplicates out before
-    serializing, so the pointer is irrelevant to callers.
-
-    Each returned row is a dedup *canonical* (first-sighting) row. `observed_at`
-    is therefore the FIRST time this offer was seen — the right x for a price
-    timeline. `last_seen` is the most recent scrape that re-confirmed the offer
-    (MAX over the dedup group), and `url` is that latest sighting's link — the
-    canonical row's own link can be a stale page an older parser recorded. The
-    dedup key excludes url, so the latest link is for the same offer.
+    `observed_at` is the FIRST time this offer was seen — the right x for a
+    price timeline; it never changes. `last_seen` is the most recent scrape
+    that re-confirmed the offer and `url` is that scrape's link (a
+    parser-corrected link supersedes a stale one an older parser recorded)
+    — both live directly on the row (`PriceObservation.last_seen_at` /
+    `.url`), updated in place by `scheduler._persist` on every re-confirming
+    scrape since migration 0021 (T3.2, heartbeat compaction) replaced
+    duplicate-row heartbeats with this update-in-place model.
     """
     id: int
     book_id: int
@@ -225,14 +223,7 @@ class PriceObservationOut(BaseModel):
     last_seen: UtcDateTime
 
     @classmethod
-    def from_obs(
-        cls,
-        obs: models.PriceObservation,
-        latest: tuple[datetime, str] | None = None,
-    ) -> PriceObservationOut:
-        # `latest` = (last_seen, current_url) for this row's dedup group. Absent
-        # (e.g. a lone canonical with no dups) → the row speaks for itself.
-        last_seen, current_url = latest if latest is not None else (obs.observed_at, obs.url)
+    def from_obs(cls, obs: models.PriceObservation) -> PriceObservationOut:
         return cls(
             id=obs.id or 0,
             book_id=obs.book_id,
@@ -243,9 +234,9 @@ class PriceObservationOut(BaseModel):
             currency=obs.currency,
             shipping_minor=obs.shipping_minor,
             total_minor=obs.total_minor,
-            url=current_url,
+            url=obs.url,
             observed_at=obs.observed_at,
-            last_seen=last_seen,
+            last_seen=obs.last_seen_at,
         )
 
 
@@ -481,41 +472,6 @@ def delete_book(
     return BookOut.from_book(book, stats, reco=cfg.recommendation)
 
 
-def latest_sighting_by_canonical(
-    session: Session,
-    model: type[models.PriceObservation] | type[models.ProductObservation],
-    canonical_ids: list[int],
-) -> dict[int, tuple[datetime, str]]:
-    """Map each canonical observation id → (last_seen, current_url).
-
-    A dedup group is every row sharing `COALESCE(is_duplicate_of, id)`. For the
-    given canonical ids this returns the `observed_at` and `url` of the most
-    recent sighting in each group. The dedup key excludes url, so the latest
-    sighting's url is the same offer with a fresher (e.g. parser-corrected)
-    link, while the canonical row's own url may be a stale page. Shared by the
-    book and product observation endpoints (kills duplicated query logic).
-
-    Tie note: each scrape stamps one `observed_at` (a single `now` per batch)
-    and writes at most one row per offer, so within a group the max-observed_at
-    row is unique. The `observed_at ASC, id ASC` order (last wins) therefore
-    resolves to the same row the view's `MAX(observed_at)` bare-column picks —
-    keeping the breakdown link consistent with `current_best_url`.
-    """
-    if not canonical_ids:
-        return {}
-    canon = func.coalesce(model.is_duplicate_of, model.id)
-    rows = session.exec(
-        select(canon.label("canon"), model.observed_at, model.url)
-        .where(canon.in_(canonical_ids))
-        .order_by(model.observed_at.asc(), model.id.asc())  # type: ignore[union-attr]
-    ).all()
-    # Ascending order → the last row written per canonical id wins (latest).
-    latest: dict[int, tuple[datetime, str]] = {}
-    for canon_id, observed_at, url in rows:
-        latest[canon_id] = (observed_at, url)
-    return latest
-
-
 @router.get("/{book_id}/observations", response_model=ObservationsPage)
 def list_observations(
     book_id: int,
@@ -526,18 +482,14 @@ def list_observations(
 ) -> ObservationsPage:
     """Paginated price history for a book (newest-first).
 
-    Excludes deduplicated rows (`is_duplicate_of IS NOT NULL`). Cursor via
-    `before` (ISO 8601 `observed_at`); response includes `next_before` for the
-    next page.
+    Cursor via `before` (ISO 8601 `observed_at`); response includes
+    `next_before` for the next page. One row per distinct offer since
+    migration 0021 (T3.2) — no more `is_duplicate_of` rows to filter out.
     """
     if session.get(models.Book, book_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="book not found")
 
-    stmt = (
-        select(models.PriceObservation)
-        .where(models.PriceObservation.book_id == book_id)
-        .where(models.PriceObservation.is_duplicate_of.is_(None))  # type: ignore[union-attr]
-    )
+    stmt = select(models.PriceObservation).where(models.PriceObservation.book_id == book_id)
     if source is not None:
         stmt = stmt.where(models.PriceObservation.source == source)
     if before is not None:
@@ -545,10 +497,7 @@ def list_observations(
     stmt = stmt.order_by(models.PriceObservation.observed_at.desc()).limit(limit)  # type: ignore[attr-defined]
 
     rows = session.exec(stmt).all()
-    latest = latest_sighting_by_canonical(
-        session, models.PriceObservation, [r.id for r in rows if r.id is not None]
-    )
-    items = [PriceObservationOut.from_obs(r, latest.get(r.id)) for r in rows]
+    items = [PriceObservationOut.from_obs(r) for r in rows]
     next_before = (
         to_z_iso(rows[-1].observed_at) if len(rows) == limit and rows else None
     )

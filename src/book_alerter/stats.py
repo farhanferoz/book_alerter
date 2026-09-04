@@ -388,10 +388,10 @@ def compute_stats_for_items(
        live offer, already freshness-gated in SQL exactly as the old
        `book_stats`/`product_stats` views were (see `db/views.py`).
     2. Window observations (`{schema.observation_table}`, `observed_at >=
-       now - max_window`) — dupes included, split in Python below into the
-       canonical (`is_duplicate_of IS NULL`) rows that feed the imputed
-       percentile totals, and the full (dupes-included) rows that feed the
-       per-(item, source) shipping medians.
+       now - max_window`) — one row per distinct offer (migration 0021,
+       T3.2, deleted the heartbeat-duplicate rows this used to have to
+       split out), feeding both the imputed percentile totals and the
+       per-(item, source) shipping medians equally.
     3. Full-history summaries (`{schema.history_summary_view}`) —
        observation_count / last_observed_at / days_of_history /
        last_polled_at, unbounded by window (gates INSUFFICIENT_DATA).
@@ -448,9 +448,9 @@ def compute_stats_for_items(
 
     # Query 2: window observations for every requested item, bounded to the
     # widest window in play (any per-item override, or the widest canonical
-    # WINDOW_DAYS bucket). Dupes are included on purpose (they repeat the
-    # canonical shipping signal, and on slow-moving items are the bulk of
-    # the sample) — split per-consumer below instead of a second query.
+    # WINDOW_DAYS bucket). Every row is one distinct offer (post-compaction),
+    # so it feeds both the imputed percentile totals and the per-(item,
+    # source) shipping medians — no more canonical/duplicate split.
     max_window_days = max(max(WINDOW_DAYS.values()), *(window_days.get(i, 0) for i in ids))
     since = datetime.now(UTC) - timedelta(days=max_window_days)
     imputed_rows_by_id: dict[int, list[tuple]] = defaultdict(list)
@@ -459,7 +459,7 @@ def compute_stats_for_items(
         text(
             f"""
             SELECT {schema.id_column}, observed_at, source, seller, price_minor,
-                   shipping_minor, total_minor, is_duplicate_of
+                   shipping_minor, total_minor
             FROM {schema.observation_table}
             WHERE {schema.id_column} IN :ids AND observed_at >= :since
             """
@@ -467,15 +467,14 @@ def compute_stats_for_items(
         .bindparams(bindparam("ids", expanding=True))
         .bindparams(ids=ids, since=since)
     )
-    for iid, observed_at, source, seller, price, shipping, total, dup_of in (
+    for iid, observed_at, source, seller, price, shipping, total in (
         session.connection().execute(window_obs_stmt).all()
     ):
         if shipping is not None:
             shipping_rows_by_id[iid].append((source, int(shipping)))
-        if dup_of is None:
-            imputed_rows_by_id[iid].append(
-                (_to_aware(observed_at), source, seller, price, shipping, total)
-            )
+        imputed_rows_by_id[iid].append(
+            (_to_aware(observed_at), source, seller, price, shipping, total)
+        )
 
     # Query 3: full-history summaries for every requested item.
     history_by_id: dict[int, tuple] = {}

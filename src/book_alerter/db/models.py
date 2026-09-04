@@ -89,16 +89,25 @@ class Book(SQLModel, table=True):
 
 
 class PriceObservation(SQLModel, table=True):
+    """One row per distinct offer (item/source/seller/condition/price/
+    shipping) — NOT one row per scrape. Pre-migration-0021 semantics kept a
+    heartbeat row (`is_duplicate_of` pointing at the canonical row) for every
+    re-sighting of an unchanged offer; that column is gone (86% of the table
+    was heartbeat rows). A re-sighting now updates the existing row's
+    `last_seen_at` (and `url`, so a parser-corrected link still reaches
+    current_best_url) in place — see `scheduler._persist`."""
+
     id: int | None = Field(default=None, primary_key=True)
     # ondelete=CASCADE so dropping a Book takes its observation history with
     # it. Enforced once PRAGMA foreign_keys=ON (set per-connection in
-    # `db/session.py`); see migration 0013.
+    # `db/session.py`); see migration 0013. No single-column index here —
+    # `ix_obs_book_source_lastseen` below covers book_id-only lookups too
+    # (leftmost-prefix), and a redundant one was dropped in migration 0021.
     book_id: int = Field(
         sa_column=Column(
             Integer,
             ForeignKey("book.id", ondelete="CASCADE"),
             nullable=False,
-            index=True,
         ),
     )
     source: str
@@ -109,13 +118,25 @@ class PriceObservation(SQLModel, table=True):
     shipping_minor: int | None = None
     total_minor: int
     url: str
+    # First-sighting timestamp — frozen at insert, never updated. Drives
+    # `days_of_history` / `last_observed_at` (both are about DISTINCT prices,
+    # not scrape cadence).
     observed_at: datetime = Field(index=True)
+    # Most recent sighting of this exact offer, whether the price changed or
+    # not. Starts equal to `observed_at`; `scheduler._persist` bumps it on
+    # every re-confirming scrape. Drives current-best candidate selection
+    # (`db/views.py`'s `*_live_offers`) and `last_polled_at`
+    # (`*_history_summary`) — both used to read this off a separate
+    # `buyable_last_seen`/`polled` aggregate over the (now-gone) duplicate
+    # rows; migration 0021 backfilled it as MAX(observed_at) over each
+    # dedup group before deleting the duplicates.
+    last_seen_at: datetime
     raw: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    is_duplicate_of: int | None = Field(default=None, foreign_key="priceobservation.id")
 
     __table_args__ = (
         Index("ix_obs_book_observed", "book_id", "observed_at"),
         Index("ix_obs_book_source_observed", "book_id", "source", "observed_at"),
+        Index("ix_obs_book_source_lastseen", "book_id", "source", "last_seen_at"),
     )
 
 
@@ -263,7 +284,9 @@ class ProductObservation(SQLModel, table=True):
 
     Field-for-field mirror of `PriceObservation` with `product_id` swapped
     in for `book_id`. Kept as a separate table per the "separate parallel
-    tables" decision so the existing book pipeline is untouched.
+    tables" decision so the existing book pipeline is untouched. See
+    `PriceObservation`'s docstring for `last_seen_at` / the heartbeat-
+    compaction rationale (migration 0021).
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -272,7 +295,6 @@ class ProductObservation(SQLModel, table=True):
             Integer,
             ForeignKey("product.id", ondelete="CASCADE"),
             nullable=False,
-            index=True,
         ),
     )
     source: str
@@ -284,12 +306,13 @@ class ProductObservation(SQLModel, table=True):
     total_minor: int
     url: str
     observed_at: datetime = Field(index=True)
+    last_seen_at: datetime
     raw: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    is_duplicate_of: int | None = Field(default=None, foreign_key="productobservation.id")
 
     __table_args__ = (
         Index("ix_pobs_product_observed", "product_id", "observed_at"),
         Index("ix_pobs_product_source_observed", "product_id", "source", "observed_at"),
+        Index("ix_pobs_product_source_lastseen", "product_id", "source", "last_seen_at"),
     )
 
 

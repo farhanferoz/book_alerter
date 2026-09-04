@@ -481,15 +481,19 @@ class Scheduler:
         item: Book | Product,
         candidates: list[ObservationCandidate],
     ) -> None:
-        """Persist a scrape's candidates, marking exact-match repeats as duplicates.
+        """Persist a scrape's candidates, refreshing an unchanged offer in place.
 
-        A new observation is marked `is_duplicate_of=<prior_canonical_id>` when
-        the most recent canonical (non-duplicate) observation for the same
-        (item, source, seller, condition) tuple has identical price + shipping.
-        Duplicates still land in the table (so we keep a heartbeat of "we did
-        check") but the `{book,product}_stats` view excludes them, keeping the
-        observation count and percentile distribution honest. See
-        `RecommendationConfig.min_days_of_history` for why this matters.
+        When the most recent observation for the same (item, source, seller,
+        condition) tuple has identical price + shipping, the offer has simply
+        been seen again: its `last_seen_at` moves to now and no new row is
+        written. Before the heartbeat compaction (migration 0021) each
+        re-sighting inserted a duplicate row instead, which is how 86% of the
+        production observation table came to be heartbeats.
+
+        `url` is refreshed on the matched row too. It is not part of the dedup
+        key, and migration 0019 exists precisely because current-best must
+        surface the latest sighting's URL rather than a frozen first-sighting
+        one — leaving it stale here would reintroduce that bug.
 
         Also updates the item row's last_scrape_attempt_at + clears
         last_scrape_error in the SAME session so a per-item scrape costs
@@ -532,7 +536,6 @@ class Scheduler:
                     seller_clause,
                     observation_model.condition == c.condition,
                     observation_model.price_minor == c.price_minor,
-                    observation_model.is_duplicate_of.is_(None),  # type: ignore[union-attr]
                 )
                 if c.shipping_minor is None:
                     prior_q = prior_q.where(
@@ -547,23 +550,28 @@ class Scheduler:
                     .order_by(observation_model.observed_at.desc())  # type: ignore[union-attr]
                     .limit(1)
                 ).first()
-                duplicate_of: int | None = prior.id if prior is not None else None
-                session.add(
-                    observation_model(
-                        **{item_fk_attr: item.id},
-                        source=source_name,
-                        seller=c.seller,
-                        condition=c.condition,
-                        price_minor=c.price_minor,
-                        currency=c.currency,
-                        shipping_minor=c.shipping_minor,
-                        total_minor=total,
-                        url=c.url,
-                        observed_at=now,
-                        raw=c.model_dump(),
-                        is_duplicate_of=duplicate_of,
+                if prior is not None:
+                    # Seen again, unchanged: move the sighting forward in place.
+                    prior.last_seen_at = now
+                    prior.url = c.url
+                    session.add(prior)
+                else:
+                    session.add(
+                        observation_model(
+                            **{item_fk_attr: item.id},
+                            source=source_name,
+                            seller=c.seller,
+                            condition=c.condition,
+                            price_minor=c.price_minor,
+                            currency=c.currency,
+                            shipping_minor=c.shipping_minor,
+                            total_minor=total,
+                            url=c.url,
+                            observed_at=now,
+                            last_seen_at=now,
+                            raw=c.model_dump(),
+                        )
                     )
-                )
             if item.id is not None:
                 fresh_item = session.get(item_model, item.id)
                 if fresh_item is not None:

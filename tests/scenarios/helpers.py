@@ -139,6 +139,7 @@ def add_observation(
     observed_at: datetime | None = None,
     seller: str | None = None,
 ) -> models.PriceObservation:
+    when = observed_at or datetime.now(UTC)
     obs = models.PriceObservation(
         book_id=book_id,
         source=source,
@@ -148,7 +149,8 @@ def add_observation(
         currency="GBP",
         total_minor=total_minor,
         url=f"https://example.com/{source}/{total_minor}",
-        observed_at=observed_at or datetime.now(UTC),
+        observed_at=when,
+        last_seen_at=when,
         raw={},
     )
     session.add(obs)
@@ -192,6 +194,7 @@ def add_product_observation(
     observed_at: datetime | None = None,
     seller: str | None = "Amazon",
 ) -> models.ProductObservation:
+    when = observed_at or datetime.now(UTC)
     obs = models.ProductObservation(
         product_id=product_id,
         source=source,
@@ -201,7 +204,8 @@ def add_product_observation(
         currency="GBP",
         total_minor=total_minor,
         url=f"https://example.com/{source}/{total_minor}",
-        observed_at=observed_at or datetime.now(UTC),
+        observed_at=when,
+        last_seen_at=when,
         raw={},
     )
     session.add(obs)

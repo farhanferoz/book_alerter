@@ -1,7 +1,8 @@
 """Canonical DDL for SQL views. Imported by Alembic migrations and by
 integration tests (SQLModel.metadata.create_all does not create views).
 
-As of migration 0020 (plan task T3.1), the LIVE production views are
+As of migration 0021 (plan task T3.2, heartbeat compaction — following
+migration 0020's T3.1 restructure), the LIVE production views are
 `book_live_offers` / `product_live_offers` (candidates: one row per live
 offer, freshness-gated) and `book_history_summary` / `product_history_summary`
 (observation_count / last_observed_at / days_of_history / last_polled_at).
@@ -22,6 +23,14 @@ because migration 0020's `downgrade()` recreates book_stats/product_stats
 from these same constants. Do not edit this block to "fix" it going
 forward — new view logic belongs in `_LIVE_OFFERS_VIEW_TEMPLATE` /
 `_HISTORY_SUMMARY_VIEW_TEMPLATE` below.
+
+The T3.1-era (`is_duplicate_of`-based) shape of `_LIVE_OFFERS_VIEW_TEMPLATE`
+/ `_HISTORY_SUMMARY_VIEW_TEMPLATE` is NOT frozen here the same way — it's
+inlined directly in migration `0020_live_offers_views.py` instead (that
+migration owns its own upgrade-path DDL, matching the 0017/0018/0019
+convention for `book_stats`/`product_stats`). Migration `0021_...` imports
+the templates below (current, `last_seen_at`-based) for its upgrade and
+inlines the 0020-era shape for its downgrade.
 
 Both eras render their book/product pair from ONE template each so the
 freshness logic lives in a single place — an earlier version kept two
@@ -207,32 +216,30 @@ DROP_PRODUCT_STATS_VIEW_SQL = "DROP VIEW IF EXISTS product_stats"
 
 
 # ---------------------------------------------------------------------------
-# Live views (migration 0020 onward). `_LIVE_OFFERS_VIEW_TEMPLATE` is the
+# Live views (migration 0020 onward; last_seen_at-based shape as of migration
+# 0021, T3.2 heartbeat compaction). `_LIVE_OFFERS_VIEW_TEMPLATE` is the
 # candidate half of the old `current_best` CTE chain — everything through
-# `latest_per_offer`, unchanged — filtered to `rn = 1` and stopped there: one
-# row per live offer (freshness-gated exactly as before), no ranking. Ranking
-# by effective total (price + observed-or-cascade shipping) and the
-# alphabetical tie-break both move to `stats.compute_stats_for_items`.
+# `latest_per_offer` — filtered to `rn = 1` and stopped there: one row per
+# live offer (freshness-gated exactly as before), no ranking. Ranking by
+# effective total (price + observed-or-cascade shipping) and the alphabetical
+# tie-break both live in `stats.compute_stats_for_items`.
+#
+# Migration 0021 deleted every `is_duplicate_of`-pointing heartbeat row and
+# dropped that column — every remaining row is already the one row for its
+# offer, carrying its own `last_seen_at` (bumped in place by
+# `scheduler._persist` on a re-confirming scrape, instead of a new duplicate
+# row). That's what let `non_dupes` / `buyable_last_seen` (the dedup-fold
+# that used to reconstruct "last seen" and "current url" from a GROUP BY
+# over the duplicate rows) disappear — `o.last_seen_at` and `o.url` are
+# already current on the row itself.
 # ---------------------------------------------------------------------------
 
 _LIVE_OFFERS_VIEW_TEMPLATE = """
 CREATE VIEW {view} AS
-WITH non_dupes AS (
-    SELECT * FROM {obs} WHERE is_duplicate_of IS NULL
-),
-buyable_last_seen AS (
-    SELECT COALESCE(is_duplicate_of, id) AS canonical_id,
-           MAX(observed_at) AS last_seen,
-           url AS current_url
-    FROM {obs}
-    WHERE source != 'keepa'
-    GROUP BY COALESCE(is_duplicate_of, id)
-),
-live_offers AS (
+WITH live_offers AS (
     SELECT o.{id}, o.source, o.total_minor, o.price_minor, o.shipping_minor,
-           o.condition, o.seller, ls.current_url AS url, o.id, ls.last_seen
-    FROM non_dupes o
-    JOIN buyable_last_seen ls ON ls.canonical_id = o.id
+           o.condition, o.seller, o.url, o.id, o.last_seen_at AS last_seen
+    FROM {obs} o
     WHERE o.source != 'keepa'
 ),
 latest_scrape_per_source AS (
@@ -272,33 +279,25 @@ FROM latest_per_offer
 WHERE rn = 1
 """
 
-# `_HISTORY_SUMMARY_VIEW_TEMPLATE` is the old view's `agg_history` (full
-# canonical history, gates INSUFFICIENT_DATA) + `polled` (last_polled_at over
-# EVERY row including dups — the dashboard's "Last seen") CTEs, unchanged,
-# minus the join against {main} (title/isbn13/asin were never read by
-# `compute_*_stats`; callers already have the Book/Product row).
+# `_HISTORY_SUMMARY_VIEW_TEMPLATE`: `observation_count` / `last_observed_at`
+# (max first-sighting time — moves only when a genuinely new price appears)
+# / `days_of_history` gate INSUFFICIENT_DATA exactly as before (every row IS
+# already what `non_dupes` used to filter to, so no WHERE is needed here any
+# more). `last_polled_at` (the dashboard's "Last seen") is `MAX(last_seen_at)`
+# rather than `MAX(observed_at)` — before 0021 that meant "max observed_at
+# over every row including duplicates"; since a repeat sighting no longer
+# writes a new row, `last_seen_at` is now the only column that "moves on
+# every scrape" the way `last_polled_at` is documented to. One GROUP BY
+# instead of two CTEs + a LEFT JOIN, now that both halves read the same rows.
 _HISTORY_SUMMARY_VIEW_TEMPLATE = """
 CREATE VIEW {view} AS
-WITH non_dupes AS (
-    SELECT * FROM {obs} WHERE is_duplicate_of IS NULL
-),
-agg_history AS (
-    SELECT {id},
-           COUNT(*)         AS observation_count,
-           MAX(observed_at) AS last_observed_at,
-           CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history
-    FROM non_dupes
-    GROUP BY {id}
-),
-polled AS (
-    SELECT {id}, MAX(observed_at) AS last_polled_at
-    FROM {obs}
-    GROUP BY {id}
-)
-SELECT ah.{id}, ah.observation_count, ah.last_observed_at, ah.days_of_history,
-       pol.last_polled_at
-FROM agg_history ah
-LEFT JOIN polled pol ON pol.{id} = ah.{id}
+SELECT {id},
+       COUNT(*)          AS observation_count,
+       MAX(observed_at)  AS last_observed_at,
+       CAST((julianday(MAX(observed_at)) - julianday(MIN(observed_at))) AS INTEGER) AS days_of_history,
+       MAX(last_seen_at) AS last_polled_at
+FROM {obs}
+GROUP BY {id}
 """
 
 

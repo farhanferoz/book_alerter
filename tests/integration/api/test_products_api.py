@@ -189,33 +189,29 @@ def test_delete_product_hard_removes_row(api_client) -> None:
 # --- observations ---
 
 
-def test_get_product_observations_excludes_duplicates(api_client) -> None:
+def test_get_product_observations_reports_last_seen_from_same_row(api_client) -> None:
+    """A row re-seen later carries its own updated `last_seen_at` (migration
+    0021, T3.2 heartbeat compaction — `scheduler._persist` updates the
+    existing row in place instead of inserting an `is_duplicate_of`-pointing
+    duplicate), so the observations endpoint returns exactly one item for
+    one offer regardless of how many times it was re-confirmed."""
     eng = api_client.app.state.engine
     pid = _seed_product(eng, asin="B07OBS0001")
     now = datetime.now(UTC)
     with Session(eng) as s:
-        canon = models.ProductObservation(
+        obs = models.ProductObservation(
             product_id=pid, source="amazon_uk_product", condition="new",
             price_minor=999, currency="GBP", shipping_minor=0,
             total_minor=999, url="https://amazon.co.uk/x", observed_at=now,
+            last_seen_at=now + timedelta(minutes=1),
         )
-        s.add(canon)
-        s.commit()
-        s.refresh(canon)
-        dup = models.ProductObservation(
-            product_id=pid, source="amazon_uk_product", condition="new",
-            price_minor=999, currency="GBP", shipping_minor=0,
-            total_minor=999, url="https://amazon.co.uk/x",
-            observed_at=now + timedelta(minutes=1),
-            is_duplicate_of=canon.id,
-        )
-        s.add(dup)
+        s.add(obs)
         s.commit()
 
     r = api_client.get(f"/api/products/{pid}/observations")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["items"]) == 1  # dupe excluded
+    assert len(body["items"]) == 1
     assert body["items"][0]["price_minor"] == 999
 
 

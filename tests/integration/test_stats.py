@@ -16,11 +16,11 @@ from book_alerter.stats import BookStats, compute_book_stats, seller_class
 def _add_obs(
     session: Session, *, book_id: int, total: int, source: str = "wob",
     observed_at: datetime | None = None,
-    is_duplicate_of: int | None = None,
 ) -> models.PriceObservation:
     # shipping_minor=0 (not None) so the row is treated as "buyable" by the
-    # book_stats view's current_best CTE. Tests that need a known shipping
-    # value pass it explicitly via other helpers.
+    # book_live_offers view's current-best selection. Tests that need a
+    # known shipping value pass it explicitly via other helpers.
+    when = observed_at or datetime.now(UTC)
     obs = models.PriceObservation(
         book_id=book_id,
         source=source,
@@ -30,9 +30,9 @@ def _add_obs(
         shipping_minor=0,
         total_minor=total,
         url=f"https://{source}/{total}",
-        observed_at=observed_at or datetime.now(UTC),
+        observed_at=when,
+        last_seen_at=when,
         raw={},
-        is_duplicate_of=is_duplicate_of,
     )
     session.add(obs)
     session.commit()
@@ -194,21 +194,6 @@ def test_percentile_monotonicity_property(values):
         assert pa <= pb, f"percentile_at({a})={pa} > percentile_at({b})={pb} for {sorted(values)}"
 
 
-def test_duplicate_observations_excluded_from_percentiles(engine_with_view, make_book):
-    with Session(engine_with_view) as s:
-        book = make_book(s, isbn13="9780000000015")
-        # 3 real, 2 duplicates of the first
-        base = _add_obs(s, book_id=book.id, total=100, source="wob_a")
-        _add_obs(s, book_id=book.id, total=200, source="wob_b")
-        _add_obs(s, book_id=book.id, total=300, source="wob_c")
-        _add_obs(s, book_id=book.id, total=999, source="dup_x", is_duplicate_of=base.id)
-        _add_obs(s, book_id=book.id, total=888, source="dup_y", is_duplicate_of=base.id)
-        stats = compute_book_stats(book.id, s)
-
-    assert stats.sorted_totals == [100, 200, 300]
-    assert stats.observation_count == 3
-
-
 def _add_obs_with_shipping(
     session: Session,
     *,
@@ -223,6 +208,7 @@ def _add_obs_with_shipping(
     historical row; the view treats those as eligible buyable rows but the
     distribution-builder folds them in via the per-book estimate."""
     total = price if shipping is None else price + shipping
+    when = observed_at or datetime.now(UTC)
     obs = models.PriceObservation(
         book_id=book_id,
         source=source,
@@ -233,7 +219,8 @@ def _add_obs_with_shipping(
         shipping_minor=shipping,
         total_minor=total,
         url=f"https://{source}/{price}",
-        observed_at=observed_at or datetime.now(UTC),
+        observed_at=when,
+        last_seen_at=when,
         raw={},
     )
     session.add(obs)

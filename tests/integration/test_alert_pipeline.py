@@ -46,6 +46,7 @@ def _seed_observations(session: Session, *, book_id: int, totals: list[int],
     book_stats view treats each as a separate latest_per_source row."""
     now = datetime.now(UTC)
     for i, total in enumerate(totals):
+        when = now - timedelta(minutes=i)
         session.add(models.PriceObservation(
             book_id=book_id,
             source=f"{source_prefix}_{i:02d}",
@@ -55,7 +56,8 @@ def _seed_observations(session: Session, *, book_id: int, totals: list[int],
             shipping_minor=0,
             total_minor=total,
             url=f"https://example.com/{i}",
-            observed_at=now - timedelta(minutes=i),
+            observed_at=when,
+            last_seen_at=when,
             raw={},
         ))
     session.commit()

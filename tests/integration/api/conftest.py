@@ -97,6 +97,9 @@ def make_observation():
     Used by Task 7.2+ tests that need price-history fixtures without going
     through the full source pipeline. `total_minor` defaults to
     `price_minor + (shipping_minor or 0)` to satisfy the existing DB check.
+    `last_seen_at` defaults to `observed_at` (a fresh, never-re-confirmed
+    sighting); pass it explicitly to model a repeat scrape updating the row
+    in place (`scheduler._persist`, migration 0021 T3.2).
     """
     def _make(
         session: Session,
@@ -111,7 +114,7 @@ def make_observation():
         shipping_minor: int | None = 0,
         total_minor: int | None = None,
         url: str = "https://example.com/o",
-        is_duplicate_of: int | None = None,
+        last_seen_at: datetime | None = None,
     ) -> models.PriceObservation:
         if total_minor is None:
             total_minor = price_minor + (shipping_minor or 0)
@@ -126,7 +129,7 @@ def make_observation():
             total_minor=total_minor,
             url=url,
             observed_at=observed_at,
-            is_duplicate_of=is_duplicate_of,
+            last_seen_at=last_seen_at if last_seen_at is not None else observed_at,
         )
         session.add(obs)
         session.commit()

@@ -33,7 +33,6 @@ from book_alerter.api._serializers import UtcDateTime, to_z_iso
 from book_alerter.api.books import (
     BookStatsOut,  # shape is item-agnostic
     _run_refetch,
-    latest_sighting_by_canonical,
 )
 from book_alerter.api.books import (
     RefetchResult as BookRefetchResult,
@@ -157,10 +156,10 @@ class ProductOut(BaseModel):
 
 
 class ProductObservationOut(BaseModel):
-    # Mirror of PriceObservationOut: `observed_at` is the offer's FIRST sighting
-    # (canonical row, for the price timeline), `last_seen` the latest scrape that
-    # re-confirmed it, and `url` that latest sighting's link. See that class for
-    # the full rationale.
+    # Mirror of PriceObservationOut: `observed_at` is the offer's FIRST
+    # sighting (never changes), `last_seen`/`url` are the row's own
+    # `last_seen_at`/`url`, updated in place on every re-confirming scrape.
+    # See that class for the full rationale.
     id: int
     product_id: int
     source: str
@@ -175,12 +174,7 @@ class ProductObservationOut(BaseModel):
     last_seen: UtcDateTime
 
     @classmethod
-    def from_obs(
-        cls,
-        obs: models.ProductObservation,
-        latest: tuple[datetime, str] | None = None,
-    ) -> ProductObservationOut:
-        last_seen, current_url = latest if latest is not None else (obs.observed_at, obs.url)
+    def from_obs(cls, obs: models.ProductObservation) -> ProductObservationOut:
         return cls(
             id=obs.id or 0,
             product_id=obs.product_id,
@@ -191,9 +185,9 @@ class ProductObservationOut(BaseModel):
             currency=obs.currency,
             shipping_minor=obs.shipping_minor,
             total_minor=obs.total_minor,
-            url=current_url,
+            url=obs.url,
             observed_at=obs.observed_at,
-            last_seen=last_seen,
+            last_seen=obs.last_seen_at,
         )
 
 
@@ -369,14 +363,12 @@ def list_product_observations(
     source: str | None = None,
 ) -> ProductObservationsPage:
     """Paginated price history for a product (newest-first). Mirror of the
-    book observations endpoint — same dedup-aware filter, same cursor shape."""
+    book observations endpoint — same cursor shape."""
     if session.get(models.Product, product_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="product not found")
 
-    stmt = (
-        select(models.ProductObservation)
-        .where(models.ProductObservation.product_id == product_id)
-        .where(models.ProductObservation.is_duplicate_of.is_(None))  # type: ignore[union-attr]
+    stmt = select(models.ProductObservation).where(
+        models.ProductObservation.product_id == product_id
     )
     if source is not None:
         stmt = stmt.where(models.ProductObservation.source == source)
@@ -385,10 +377,7 @@ def list_product_observations(
     stmt = stmt.order_by(models.ProductObservation.observed_at.desc()).limit(limit)  # type: ignore[attr-defined]
 
     rows = session.exec(stmt).all()
-    latest = latest_sighting_by_canonical(
-        session, models.ProductObservation, [r.id for r in rows if r.id is not None]
-    )
-    items = [ProductObservationOut.from_obs(r, latest.get(r.id)) for r in rows]
+    items = [ProductObservationOut.from_obs(r) for r in rows]
     next_before = (
         to_z_iso(rows[-1].observed_at) if len(rows) == limit and rows else None
     )

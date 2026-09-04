@@ -67,6 +67,7 @@ def _offer(
         total_minor=price_minor + (shipping_minor or 0),
         url=f"https://amazon.example/{seller}",
         observed_at=SCRAPED_AT,
+        last_seen_at=SCRAPED_AT,
         raw={},
     )
     session.add(obs)

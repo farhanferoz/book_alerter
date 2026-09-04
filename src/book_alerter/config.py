@@ -58,7 +58,14 @@ class RecommendationConfig(BaseModel):
     # third-party Amazon rows that all happen to be free-shipping aren't
     # enough to assert "third-party Amazon ships free"). Below the
     # threshold the row falls through to the terminal default.
-    min_global_median_observations: int = 10
+    #
+    # Default dropped 10 -> 5 in migration 0021 (T3.2, heartbeat compaction).
+    # Before that, a bucket's row count was inflated by however many times
+    # each offer got re-scraped with an unchanged price (heartbeat
+    # duplicates) — 10 rows could be as few as 2-3 distinct observed prices.
+    # Post-compaction each row is one distinct observation, so the same
+    # confidence level needs proportionally fewer of them.
+    min_global_median_observations: int = 5
 
 
 class QuietHours(BaseModel):

@@ -101,23 +101,21 @@ def test_current_best_selection_matches_effective_total_reference(engine_with_vi
         s.add(book); s.commit(); s.refresh(book)
 
         for o in offers:
-            hours = sorted(o["hours_ago"], reverse=True)  # oldest first = canonical
+            hours = sorted(o["hours_ago"], reverse=True)  # oldest first = observed_at
             total = o["price"] + o["shipping"]
-            canonical = models.PriceObservation(
+            # One row per offer (migration 0021, T3.2): observed_at is the
+            # first sighting, last_seen_at the most recent re-confirming one
+            # — what scheduler._persist's update-in-place would produce for
+            # this many sightings of the same (source, condition, seller,
+            # price, shipping) identity.
+            s.add(models.PriceObservation(
                 book_id=book.id, source=o["source"], condition=o["condition"],
                 seller=o["seller"], price_minor=o["price"], currency="GBP",
                 shipping_minor=o["shipping"], total_minor=total, url="https://x",
-                observed_at=_BASE - timedelta(hours=hours[0]), raw={},
-            )
-            s.add(canonical); s.commit(); s.refresh(canonical)
-            for h in hours[1:]:  # later sightings are dups of the canonical
-                s.add(models.PriceObservation(
-                    book_id=book.id, source=o["source"], condition=o["condition"],
-                    seller=o["seller"], price_minor=o["price"], currency="GBP",
-                    shipping_minor=o["shipping"], total_minor=total, url="https://x",
-                    observed_at=_BASE - timedelta(hours=h), raw={},
-                    is_duplicate_of=canonical.id,
-                ))
+                observed_at=_BASE - timedelta(hours=hours[0]),
+                last_seen_at=_BASE - timedelta(hours=hours[-1]),
+                raw={},
+            ))
         s.commit()
 
         stats = compute_book_stats(book.id, s)
