@@ -1,7 +1,7 @@
 // React Query hooks over the `/api/alerts` endpoints.
 //
 //   useAlerts({ dismissed, kind, limit, before })   → GET  /api/alerts
-//   useDismissAlert()                               → POST /api/alerts/{id}/dismiss
+//   useDismissAlert()                               → POST /api/alerts/{item_kind}/{id}/dismiss
 //   useDismissAllAlerts()                           → POST /api/alerts/dismiss-all
 //
 // Backend handler at `src/book_alerter/api/alerts.py`. Cursor pagination is
@@ -25,10 +25,24 @@ import type { components } from "@/api/schema";
 export type Alert = components["schemas"]["AlertOut"];
 export type AlertsPage = components["schemas"]["AlertsPage"];
 export type AlertKind = Alert["kind"];
+export type ItemKind = Alert["item_kind"];
+
+/** Alert ids are unique only within their own table, so a row is addressed by
+ *  the (item_kind, id) pair. */
+export type AlertRef = { item_kind: ItemKind; id: number };
+
+export function alertRef(alert: Alert): AlertRef {
+  return { item_kind: alert.item_kind, id: alert.id };
+}
+
+export function sameAlertRef(a: AlertRef | undefined, b: AlertRef): boolean {
+  return a !== undefined && a.item_kind === b.item_kind && a.id === b.id;
+}
 
 export type AlertsQueryParams = {
   dismissed?: boolean;
   kind?: AlertKind;
+  item_kind?: ItemKind;
   limit?: number;
   before?: string;
 };
@@ -42,6 +56,7 @@ export function useAlerts(params: AlertsQueryParams = {}) {
         search.set("dismissed", String(params.dismissed));
       }
       if (params.kind) search.set("kind", params.kind);
+      if (params.item_kind) search.set("item_kind", params.item_kind);
       if (params.limit !== undefined) search.set("limit", String(params.limit));
       if (params.before) search.set("before", params.before);
       const qs = search.toString();
@@ -72,6 +87,7 @@ export function useInfiniteAlerts(
         search.set("dismissed", String(params.dismissed));
       }
       if (params.kind) search.set("kind", params.kind);
+      if (params.item_kind) search.set("item_kind", params.item_kind);
       search.set("limit", String(limit));
       if (typeof pageParam === "string") search.set("before", pageParam);
       const path = `/api/alerts?${search.toString()}`;
@@ -84,9 +100,10 @@ export function useInfiniteAlerts(
 
 export function useDismissAlert() {
   const qc = useQueryClient();
-  return useMutation<Alert, ApiError, number>({
-    mutationFn: async (id: number) => {
-      const path = `/api/alerts/${id}/dismiss` as "/api/alerts/{alert_id}/dismiss";
+  return useMutation<Alert, ApiError, AlertRef>({
+    mutationFn: async ({ item_kind, id }: AlertRef) => {
+      const path =
+        `/api/alerts/${item_kind}/${id}/dismiss` as "/api/alerts/{item_kind}/{alert_id}/dismiss";
       const body = await apiPost(path);
       return body as Alert;
     },

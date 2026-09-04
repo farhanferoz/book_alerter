@@ -124,7 +124,7 @@ def test_get_alerts_empty(api_client):
     assert resp.json() == {"items": [], "next_before": None}
 
 
-# --- POST /api/alerts/{id}/dismiss ------------------------------------------
+# --- POST /api/alerts/{item_kind}/{id}/dismiss ------------------------------------------
 
 
 def test_post_dismiss_happy_path(api_client, engine_with_view, make_alert):
@@ -134,7 +134,7 @@ def test_post_dismiss_happy_path(api_client, engine_with_view, make_alert):
         alert = make_alert(s, book_id=bid, fired_at=base)
         aid = alert.id
 
-    resp = api_client.post(f"/api/alerts/{aid}/dismiss")
+    resp = api_client.post(f"/api/alerts/book/{aid}/dismiss")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["id"] == aid
@@ -157,7 +157,7 @@ def test_post_dismiss_idempotent_preserves_original(
         )
         aid = alert.id
 
-    resp = api_client.post(f"/api/alerts/{aid}/dismiss")
+    resp = api_client.post(f"/api/alerts/book/{aid}/dismiss")
     assert resp.status_code == 200
     body = resp.json()
     # Original timestamp preserved — not overwritten.
@@ -165,7 +165,7 @@ def test_post_dismiss_idempotent_preserves_original(
 
 
 def test_post_dismiss_unknown_id_returns_404(api_client):
-    resp = api_client.post("/api/alerts/99999/dismiss")
+    resp = api_client.post("/api/alerts/book/99999/dismiss")
     assert resp.status_code == 404
 
 

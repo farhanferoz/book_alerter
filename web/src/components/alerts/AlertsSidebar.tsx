@@ -1,27 +1,26 @@
 // Right-rail alerts feed, mounted inside `AppShell` on every route.
 //
 // Pulls the 20 newest undismissed alerts via `useAlerts({ dismissed: false,
-// limit: 20 })` and renders each with the shared `AlertItem`. Book titles
-// come from the already-cached `useBooks()` dashboard list (active books); we
-// also request `include_archived` so alerts on archived/bought books still
-// resolve to a real title rather than "Book #<id>".
+// limit: 20 })` and renders each with the shared `AlertItem`. The feed spans
+// books and products; each row carries its own title and item identity from
+// the backend, so no client-side title lookup is needed.
 
 import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAlerts, useDismissAlert } from "@/hooks/useAlerts";
-import { useBooks } from "@/hooks/useBooks";
+import {
+  alertRef,
+  sameAlertRef,
+  useAlerts,
+  useDismissAlert,
+} from "@/hooks/useAlerts";
 
 import { AlertItem } from "./AlertItem";
 
 export function AlertsSidebar() {
   const alertsQuery = useAlerts({ dismissed: false, limit: 20 });
-  const booksQuery = useBooks({ include_archived: true });
   const dismiss = useDismissAlert();
 
-  const titleById = new Map<number, string>(
-    (booksQuery.data ?? []).map((b) => [b.id, b.title]),
-  );
   const items = alertsQuery.data?.items ?? [];
 
   return (
@@ -59,11 +58,10 @@ export function AlertsSidebar() {
 
         {items.map((alert) => (
           <AlertItem
-            key={alert.id}
+            key={`${alert.item_kind}-${alert.id}`}
             alert={alert}
-            bookTitle={titleById.get(alert.book_id)}
-            onDismiss={(id) => dismiss.mutate(id)}
-            dismissing={dismiss.isPending && dismiss.variables === alert.id}
+            onDismiss={(ref) => dismiss.mutate(ref)}
+            dismissing={dismiss.isPending && sameAlertRef(dismiss.variables, alertRef(alert))}
             compact
           />
         ))}

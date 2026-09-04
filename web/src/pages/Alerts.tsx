@@ -7,8 +7,9 @@
 // just the main-area content.
 //
 // Filter shape: { dismissed, kind, book }. `dismissed=all` → omit the param;
-// `kind=all` → omit the param. Book-title filter is applied client-side
-// because the backend has no title-search endpoint.
+// `kind=all` → omit the param. The title filter is applied client-side because
+// the backend has no title-search endpoint; it matches the title the alert
+// itself carries, so it covers products as well as books.
 
 import { useMemo, useState } from "react";
 
@@ -25,11 +26,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AlertFilters, type Filters } from "@/components/alerts/AlertFilters";
 import { AlertItem } from "@/components/alerts/AlertItem";
 import {
+  alertRef,
+  sameAlertRef,
   useDismissAlert,
   useDismissAllAlerts,
   useInfiniteAlerts,
 } from "@/hooks/useAlerts";
-import { useBooks } from "@/hooks/useBooks";
 
 const PAGE_SIZE = 50;
 
@@ -55,28 +57,20 @@ export function Alerts() {
   const [confirmDismissAll, setConfirmDismissAll] = useState(false);
 
   const alertsQuery = useInfiniteAlerts(filtersToParams(filters));
-  const booksQuery = useBooks({ include_archived: true });
   const dismiss = useDismissAlert();
   const dismissAll = useDismissAllAlerts();
-
-  const titleById = useMemo(
-    () => new Map((booksQuery.data ?? []).map((b) => [b.id, b.title])),
-    [booksQuery.data],
-  );
 
   const allItems = useMemo(
     () => alertsQuery.data?.pages.flatMap((p) => p.items) ?? [],
     [alertsQuery.data],
   );
 
-  // Client-side book-title filter.
+  // Client-side title filter, across both item kinds.
   const items = useMemo(() => {
     const needle = filters.book.trim().toLowerCase();
     if (!needle) return allItems;
-    return allItems.filter((a) =>
-      (titleById.get(a.book_id) ?? "").toLowerCase().includes(needle),
-    );
-  }, [allItems, filters.book, titleById]);
+    return allItems.filter((a) => a.title.toLowerCase().includes(needle));
+  }, [allItems, filters.book]);
 
   const hasActive = allItems.some((a) => a.dismissed_at === null);
   const showDismissAll = filters.dismissed !== "dismissed" && hasActive;
@@ -127,15 +121,16 @@ export function Alerts() {
       <div className="space-y-2">
         {items.map((alert) => (
           <AlertItem
-            key={alert.id}
+            key={`${alert.item_kind}-${alert.id}`}
             alert={alert}
-            bookTitle={titleById.get(alert.book_id)}
             onDismiss={
               alert.dismissed_at === null
-                ? (id) => dismiss.mutate(id)
+                ? (ref) => dismiss.mutate(ref)
                 : undefined
             }
-            dismissing={dismiss.isPending && dismiss.variables === alert.id}
+            dismissing={
+              dismiss.isPending && sameAlertRef(dismiss.variables, alertRef(alert))
+            }
           />
         ))}
       </div>

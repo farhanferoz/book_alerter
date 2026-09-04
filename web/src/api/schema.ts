@@ -329,9 +329,9 @@ export interface paths {
         };
         /**
          * List Alerts
-         * @description Cursor-paginated alerts feed (newest-first).
+         * @description Cursor-paginated alerts feed across books and products (newest-first).
          *
-         *     - `kind` filters by alert kind.
+         *     - `kind` filters by alert kind; `item_kind` restricts to one item kind.
          *     - `dismissed=false` → only undismissed; `dismissed=true` → only dismissed;
          *       omitted → both.
          *     - `before` (ISO 8601 `fired_at`) is strict `<`; pass the previous page's
@@ -346,7 +346,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/alerts/{alert_id}/dismiss": {
+    "/api/alerts/{item_kind}/{alert_id}/dismiss": {
         parameters: {
             query?: never;
             header?: never;
@@ -357,10 +357,13 @@ export interface paths {
         put?: never;
         /**
          * Dismiss Alert
-         * @description Dismiss an alert. Idempotent: re-dismissing preserves the original
+         * @description Dismiss one alert. Idempotent: re-dismissing preserves the original
          *     `dismissed_at` and still returns 200.
+         *
+         *     The kind is part of the path because alert ids are unique only within
+         *     their own table.
          */
-        post: operations["dismiss_alert_api_alerts__alert_id__dismiss_post"];
+        post: operations["dismiss_alert_api_alerts__item_kind___alert_id__dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -378,10 +381,10 @@ export interface paths {
         put?: never;
         /**
          * Dismiss All Alerts
-         * @description Bulk-dismiss every alert with `dismissed_at IS NULL`.
+         * @description Bulk-dismiss every undismissed alert of every kind.
          *
-         *     Single UPDATE — never iterates row-by-row. Returns the number of rows
-         *     updated; previously-dismissed alerts retain their original timestamp.
+         *     One UPDATE per table — never iterates row-by-row. Returns the total number
+         *     of rows updated; previously-dismissed alerts retain their timestamp.
          */
         post: operations["dismiss_all_alerts_api_alerts_dismiss_all_post"];
         delete?: never;
@@ -633,19 +636,30 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AlertKind
+         * @description Kinds of alerts the pipeline can fire. Order matters only for the
+         *     dispatch precedence in `detect_alert_kinds` (NEW_LOW > TARGET_HIT >
+         *     PERCENTILE_CROSS for the same observation), which is encoded in the
+         *     function, not here.
+         * @enum {string}
+         */
+        AlertKind: "target_hit" | "percentile_cross" | "new_low";
+        /**
          * AlertOut
-         * @description Wire mirror of `book_alerter.db.models.Alert`.
+         * @description Wire mirror of an alert row, kind-agnostic.
+         *
+         *     `item_kind` + `item_id` identify what the alert is about; together with
+         *     `id` they address the row for dismissal.
          */
         AlertOut: {
             /** Id */
             id: number;
-            /** Book Id */
-            book_id: number;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "new_low" | "target_hit" | "percentile_cross";
+            item_kind: components["schemas"]["ItemKind"];
+            /** Item Id */
+            item_id: number;
+            /** Title */
+            title: string;
+            kind: components["schemas"]["AlertKind"];
             /** Price Minor */
             price_minor: number;
             /** Currency */
@@ -910,6 +924,14 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * ItemKind
+         * @description Discriminator for tracked-item polymorphism. Used by `SourceConfig` to
+         *     declare which kinds a source serves, by the scheduler to route per-kind
+         *     iteration, and by the dispatcher to choose alert-title prefixes.
+         * @enum {string}
+         */
+        ItemKind: "book" | "product";
         /**
          * NotificationTestResult
          * @description Result of `POST /api/notifications/{channel}/test`.
@@ -1966,7 +1988,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 before?: string | null;
-                kind?: ("new_low" | "target_hit" | "percentile_cross") | null;
+                kind?: components["schemas"]["AlertKind"] | null;
+                item_kind?: components["schemas"]["ItemKind"] | null;
                 dismissed?: boolean | null;
             };
             header?: never;
@@ -1995,11 +2018,12 @@ export interface operations {
             };
         };
     };
-    dismiss_alert_api_alerts__alert_id__dismiss_post: {
+    dismiss_alert_api_alerts__item_kind___alert_id__dismiss_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                item_kind: components["schemas"]["ItemKind"];
                 alert_id: number;
             };
             cookie?: never;

@@ -235,8 +235,8 @@ def _run_scenario() -> int:
         ).all()
     if active:
         aid = active[0].id
-        resp = client.post(f"/api/alerts/{aid}/dismiss")
-        r.expect(resp.status_code == 200, "POST /api/alerts/{id}/dismiss == 200")
+        resp = client.post(f"/api/alerts/book/{aid}/dismiss")
+        r.expect(resp.status_code == 200, "POST /api/alerts/{item_kind}/{id}/dismiss == 200")
         resp2 = client.get("/api/alerts?dismissed=false")
         new_count = len(resp2.json()["items"])
         r.expect(

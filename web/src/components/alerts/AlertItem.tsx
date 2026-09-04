@@ -1,10 +1,9 @@
 // Single alert row, reused by the sidebar and the full Alerts page.
 //
-// Layout: kind pill · book title (linked to /books/:id) · message · relative
-// timestamp · dismiss "X" button. The book title comes from the optional
-// `bookTitle` prop — callers look it up against `useBooks()` (cached). When
-// the title is unknown we fall back to "Book #<id>" so the row is still
-// useful.
+// Layout: kind pill · item title (linked to the item's detail page) · message ·
+// relative timestamp · dismiss "X" button. The title and the item identity come
+// from the alert itself — the backend resolves them — so this row renders a
+// book alert and a product alert identically and needs no lookup table.
 //
 // `compact` shrinks the row for the sidebar (tighter padding, smaller text);
 // the page passes `compact={false}` for a roomier list.
@@ -15,27 +14,31 @@ import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatMoneyMinor, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { Alert } from "@/hooks/useAlerts";
+import { alertRef, type Alert, type AlertRef } from "@/hooks/useAlerts";
 
 import { AlertKindBadge } from "./AlertKindBadge";
 
 type Props = {
   alert: Alert;
-  bookTitle?: string;
-  onDismiss?: (id: number) => void;
+  onDismiss?: (ref: AlertRef) => void;
   dismissing?: boolean;
   compact?: boolean;
 };
 
+/** Detail route for the item an alert fired for. */
+function alertItemHref(alert: Alert): string {
+  const segment = alert.item_kind === "product" ? "products" : "books";
+  return `/${segment}/${alert.item_id}`;
+}
+
 export function AlertItem({
   alert,
-  bookTitle,
   onDismiss,
   dismissing = false,
   compact = false,
 }: Props) {
   const isDismissed = alert.dismissed_at !== null;
-  const title = bookTitle ?? `Book #${alert.book_id}`;
+  const title = alert.title;
   return (
     <article
       className={cn(
@@ -48,7 +51,7 @@ export function AlertItem({
         <div className="flex items-center gap-2 flex-wrap">
           <AlertKindBadge kind={alert.kind} />
           <Link
-            to={`/books/${alert.book_id}`}
+            to={alertItemHref(alert)}
             className="font-medium truncate hover:underline"
             title={title}
           >
@@ -73,7 +76,7 @@ export function AlertItem({
           variant="ghost"
           size="sm"
           className="h-6 w-6 p-0 shrink-0"
-          onClick={() => onDismiss(alert.id)}
+          onClick={() => onDismiss(alertRef(alert))}
           disabled={dismissing}
           aria-label="Dismiss alert"
           title="Dismiss"
