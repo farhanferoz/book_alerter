@@ -27,7 +27,13 @@ import {
   formatShippingMinorWithEstimate,
   isBookfinderSourcedLabel,
 } from "@/lib/format";
-import { bookToItem, itemHref, type Book, type Item } from "@/lib/item";
+import {
+  bookToItem,
+  itemHref,
+  sortableTotalMinor,
+  type Book,
+  type Item,
+} from "@/lib/item";
 import { rank3mOrInf } from "@/lib/windows";
 import { ItemRowMenu } from "./ItemRowMenu";
 import { CoverImage } from "./CoverImage";
@@ -119,7 +125,7 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
     },
     {
       id: "best_price",
-      accessorFn: (row) => toItem(row).stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER,
+      accessorFn: (row) => sortableTotalMinor(toItem(row).stats),
       header: "Best price",
       cell: ({ row }) => {
         const item = toItem(row.original);

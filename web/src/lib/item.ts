@@ -110,6 +110,24 @@ export function itemDetailQueryKey(kind: ItemKind): "book" | "product" {
   return kind === "product" ? "product" : "book";
 }
 
+/**
+ * Sort key for any "cheapest first" ordering.
+ *
+ * Ranks on `current_best_total_minor` and you rank on a number that folds
+ * unknown shipping to zero, so a "£7.99 + unknown delivery" item sorts above
+ * an "£8.50, delivered free" one even though it really costs £10.79. That is
+ * the same defect class as D20/D34: an unpaid delivery charge treated as
+ * free. `current_effective_total_minor` is the price+shipping figure with the
+ * cascade estimate applied, which is what the buyer actually pays.
+ *
+ * A null effective total means we have no shipping signal at all for this
+ * item, so it sorts last rather than cheap — an unknown must never
+ * masquerade as the best price (D34).
+ */
+export function sortableTotalMinor(stats: ItemStats): number {
+  return stats.current_effective_total_minor ?? Number.MAX_SAFE_INTEGER;
+}
+
 // --- Observations ---------------------------------------------------------
 
 export type PriceObservation = components["schemas"]["PriceObservationOut"];

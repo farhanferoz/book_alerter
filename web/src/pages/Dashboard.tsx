@@ -5,6 +5,7 @@
 // follow-up note). When the catalog grows past a single fetch we'll add the
 // matching query params to the backend handler and the hook.
 
+import { sortableTotalMinor } from "@/lib/item";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -44,11 +45,9 @@ function applyFilters(books: Book[], filters: BookFiltersValue): Book[] {
       );
       break;
     case "best_price":
-      sorted.sort((a, b) => {
-        const av = a.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
-        const bv = b.stats.current_best_total_minor ?? Number.MAX_SAFE_INTEGER;
-        return av - bv;
-      });
+      sorted.sort(
+        (a, b) => sortableTotalMinor(a.stats) - sortableTotalMinor(b.stats),
+      );
       break;
     case "percentile":
       sorted.sort((a, b) => rank3mOrInf(a) - rank3mOrInf(b));
