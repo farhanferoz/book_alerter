@@ -44,16 +44,20 @@ function alertItemHref(alert: Alert): string {
  * is retitled after an alert fired. The realistic case is a product created
  * as "Amazon product B0…" whose Amazon metadata resolves later. An exact
  * match is tried first (it is correct even for a title containing the
- * separator); failing that, the generic shape is stripped, which keeps the
- * duplicate prefix off the card even when the titles have drifted.
+ * separator); failing that, only the title is treated as unknown — the KIND
+ * is stored on the alert row alongside the message and cannot drift, so the
+ * fallback stays anchored to it and can never strip a message that isn't
+ * this alert's own prefix.
+ *
+ * Alert kinds are a closed lowercase set (`AlertKind`), so they need no
+ * regex escaping.
  */
-const _ALERT_PREFIX_RE = /^\[[A-Z_]+\]\s.*?\s—\s/;
-
 function alertBody(alert: Alert): string {
-  const exact = `[${alert.kind.toUpperCase()}] ${alert.title} — `;
+  const kind = alert.kind.toUpperCase();
+  const exact = `[${kind}] ${alert.title} — `;
   const body = alert.message.startsWith(exact)
     ? alert.message.slice(exact.length)
-    : alert.message.replace(_ALERT_PREFIX_RE, "");
+    : alert.message.replace(new RegExp(`^\\[${kind}\\]\\s.*?\\s—\\s`), "");
   return body.charAt(0).toUpperCase() + body.slice(1);
 }
 
