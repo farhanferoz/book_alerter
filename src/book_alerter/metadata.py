@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from book_alerter.db.models import Product
+from book_alerter.enums import MetadataStatus
 from book_alerter.http_client import shared_or_fresh
 from book_alerter.logging_setup import get_logger
 from book_alerter.sources.amazon import BOT_MARKERS
@@ -76,6 +78,22 @@ class ProductMetadata(BaseModel):
     title: str
     image_url: str | None = None
     brand: str | None = None
+
+
+def apply_product_metadata(product: Product, result: ProductMetadata) -> None:
+    """Copy a successful `ProductMetadata` fetch onto `product` and mark it OK.
+
+    Shared (T4.1) by the immediate post-create attempt in `api/products.py`
+    and the periodic retry job in `scheduler.py`, which otherwise carried
+    this same five-line assignment independently. Caller owns `updated_at`
+    and the commit -- the two call sites differ on those.
+    """
+    product.title = result.title
+    if result.image_url is not None:
+        product.image_url = result.image_url
+    if result.brand is not None:
+        product.brand = result.brand
+    product.metadata_status = MetadataStatus.OK
 
 
 async def _fetch_openlibrary(

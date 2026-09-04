@@ -492,7 +492,7 @@ async def _refresh_product_metadata_once(
     Imports are local to avoid a circular import: `metadata` imports from
     `sources.amazon`, which this module's import graph already reaches.
     """
-    from book_alerter.metadata import fetch_amazon_uk_product_metadata
+    from book_alerter.metadata import apply_product_metadata, fetch_amazon_uk_product_metadata
     from book_alerter.sources.browser import BrowserSessionBusy
 
     try:
@@ -505,12 +505,7 @@ async def _refresh_product_metadata_once(
         product = session.get(models.Product, product_id)
         if product is None or product.metadata_status != MetadataStatus.PENDING:
             return
-        product.title = result.title
-        if result.image_url is not None:
-            product.image_url = result.image_url
-        if result.brand is not None:
-            product.brand = result.brand
-        product.metadata_status = MetadataStatus.OK
+        apply_product_metadata(product, result)
         product.updated_at = datetime.now(UTC)
         session.add(product)
         session.commit()

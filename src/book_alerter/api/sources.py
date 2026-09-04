@@ -232,8 +232,26 @@ def _last_24h_health_per_source(session) -> dict[str, SourceHealthOut]:
 
 
 def _last_24h_health_for(session, source_name: str) -> SourceHealthOut:
-    """Single-source variant, for the endpoints that return one source."""
-    return _last_24h_health_per_source(session).get(source_name, SourceHealthOut())
+    """Single-source variant, for the endpoints that return one source.
+
+    Filters in SQL rather than delegating to `_last_24h_health_per_source`
+    and discarding every row but one -- this is on the config-PATCH request
+    path, not a loop, but there is no reason to pay for a GROUP BY over
+    every configured source to read one of them.
+    """
+    since = datetime.now(UTC) - _HEALTH_WINDOW
+    stmt = select(
+        func.coalesce(func.sum(models.SourceRun.books_attempted), 0),
+        func.coalesce(func.sum(models.SourceRun.books_succeeded), 0),
+        func.coalesce(func.sum(models.SourceRun.items_challenged), 0),
+    ).where(
+        models.SourceRun.started_at >= since,
+        models.SourceRun.source == source_name,
+    )
+    attempted, succeeded, challenged = session.exec(stmt).one()
+    return SourceHealthOut(
+        attempted=int(attempted), succeeded=int(succeeded), challenged=int(challenged),
+    )
 
 
 def _status_for(
