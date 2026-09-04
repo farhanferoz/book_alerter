@@ -145,6 +145,37 @@ class BackupConfig(BaseModel):
     retain: int = Field(default=7, ge=1)
 
 
+class JanitorConfig(BaseModel):
+    """Daily sweep of everything the app writes under `data/`.
+
+    Runs after the weekly backup job so a backup is never mid-write when the
+    backup directory is tidied. Every runtime directory the application writes
+    to has a cap enforced here, and every cap is a config value with a default
+    rather than a constant buried in the sweeping code -- that is the point of
+    this section.
+    """
+
+    enabled: bool = True
+    schedule: str = "0 4 * * *"  # daily 04:00 UTC, an hour after the backup job
+
+    # Browser profiles re-warm on the next run, so they are safe to discard;
+    # caches inside a profile go first, and only then the whole profile.
+    # Floor is 1 KiB rather than something production-shaped: the validator's
+    # job is to reject nonsense (0, negative), not to enforce taste, and a
+    # production-shaped floor makes the sweep untestable at small scale.
+    browser_profile_max_bytes: int = Field(default=200 * 1024 * 1024, ge=1024)
+    # Failure-page dumps: bounded by count AND by age, because a burst of
+    # failures and a long quiet period fail in opposite directions.
+    debug_keep_files: int = Field(default=20, ge=0)
+    debug_max_age_days: int = Field(default=14, ge=1)
+    # Keepa PNGs already have a 24h freshness TTL, so anything this old is
+    # certainly stale; orphans (item deleted) go regardless of age.
+    keepa_cache_max_age_days: int = Field(default=30, ge=1)
+    # Uncompressed weekly SQLite copies dominate the data directory
+    # (~35 MB each). Compressing them in place is lossless and reversible.
+    compress_backups: bool = True
+
+
 def _default_sources() -> dict[str, SourceConfig]:
     return {
         "wob": SourceConfig(),
@@ -164,6 +195,7 @@ class Config(BaseModel):
     sources: dict[str, SourceConfig] = Field(default_factory=_default_sources)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
+    janitor: JanitorConfig = Field(default_factory=JanitorConfig)
 
     @classmethod
     def load(cls, path: Path) -> Config:

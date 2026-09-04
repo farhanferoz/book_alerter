@@ -60,4 +60,8 @@ def health(request: Request, response: Response) -> dict[str, object]:
     return {
         "status": "ok",
         "config_version": cfg.config_version if cfg else None,
+        # Null until the daily janitor has run once in this process. Reported
+        # so a silently-dead cleanup job is visible before the disk fills,
+        # rather than after. Absence is informational, never a health error.
+        "janitor_last_run_at": getattr(request.app.state, "janitor_last_run_at", None),
     }
