@@ -88,9 +88,88 @@ viewport=1366x768)`.
 
 ---
 
-## T0.2 — Delivery-location pinning probe
+## T0.2 — Delivery-location pinning probe → **Q1 SETTLED (hypothesis F1c REJECTED)**
 
-_Pending._
+This probe was supposed to test whether pinning a delivery postcode changes the AOD delivery
+promise. It answered a bigger question first, so both answers are recorded.
+
+### The actual cause of the shipping flip (F1)
+
+One live capture of book 3's AOD page (`969353137X`, 2026-09-04 15:02 UTC, 10 offer rows, no bot
+challenge) shows the cause directly in the markup:
+
+| Price | `data-csa-c-delivery-price` | Delivery promise text | Conditional? |
+|---|---|---|---|
+| — | `£2.80` | `£2.80 delivery 11 - 15 September.` | no |
+| — | `FREE` | `FREE delivery 19 - 23 October **on your first order to UK or Ireland**.` | **YES** |
+| — | `£2.80` | `£2.80 delivery 9 - 10 September.` (JJ_Books) | no |
+| — | `FREE` | `FREE delivery 17 - 23 September **on your first order to UK or Ireland**.` | **YES** |
+| … | … | 8 of 10 rows carry the same "on your first order" wording | **YES** |
+
+Amazon is offering a **first-order promotional free delivery** to what it believes is a
+brand-new visitor. `data-csa-c-delivery-price` reads `FREE`, so the parser stores
+`shipping_minor = 0` — but that price applies only to a customer who has never ordered before.
+
+Running the application's own production parser over that captured page:
+
+```
+$ parse_offer_listing(<captured html>, ...)
+  price=1816  shipping=   0  seller=Retail Maharaj      cond=new
+  price=2000  shipping= 280  seller=JJ_Books            cond=used_vg
+  price=2350  shipping=   0  seller=Pappy Mart          cond=new
+  price=2420  shipping=   0  seller=swestbooks          cond=used_vg
+  price=2422  shipping=   0  seller=swestbooks          cond=new
+  price=3125  shipping=   0  seller=Greyloop Limited    cond=new
+  price=3711  shipping=   0  seller=Book_Bloom          cond=new
+  price=4491  shipping=   0  seller=Fast Cat Books UK   cond=new
+  price=4539  shipping=   0  seller=Fast Cat Books UK   cond=used_g
+
+rows recorded as shipping = 0: 8/9
+```
+
+**Conclusion: F1 and F14 are the same bug.** `_fetch_offers_for_asin` builds a brand-new browser
+with no cookies for every item fetch, so Amazon classifies every scrape as a first-time visitor
+and frequently serves the first-order promo; the parser cannot tell a promotional price from a
+real one and records £0.00. When the promo is not served, the identical offer records £2.80.
+That is precisely the 280 / 0 / NULL alternation F1 measured.
+
+The contrast confirms the mechanism rather than merely fitting it: the one row on this page with
+an **unconditional** promise (JJ_Books, `£2.80 delivery 9 - 10 September`) is the one row the
+parser gets right — and JJ_Books is the very seller F1 cites as flipping. When it was recorded as
+0, the page must have shown it the promo too.
+
+### The pinning question itself
+
+Two independent attempts, both from the T0.3-validated launch configuration:
+
+1. **API path** (the mechanism the plan named as a candidate). `POST` to the glow address-change
+   endpoint. The required `anti-csrftoken-a2z` token could **not** be extracted from the served
+   page (`token_found: false`); the POST returned 200 but was a no-op — after reload
+   `#glow-ingress-line2` still read `Update location`, i.e. no location was set.
+2. **UI path.** Click `#nav-global-location-popover-link`, fill `#GLUXZipUpdateInput`, submit.
+   Failed earlier still: `#glow-ingress-line2` was not present on the served homepage at all
+   (30 s timeout).
+
+And decisively: **the delivery promises were identical with and without the pin attempt** — same
+sellers, same "on your first order" wording, same `FREE` / `£2.80` split.
+
+**Conclusion: hypothesis F1c (location-dependent promise) is REJECTED**, and the pinning
+mechanism does not work for a logged-out headless session as specified.
+
+⇒ **T1.2 is gated OUT by the plan's own condition** ("Only if T0.2 concluded the mechanism
+works"). It is marked dropped rather than deleted, with this evidence, so it can be revisited if
+a future need for stable delivery *dates* (as opposed to prices) appears.
+⇒ **T2.5 takes its second branch**, which is now the primary fix rather than a fallback: a
+`delivery_text`-driven rule treating a conditional promise as not-free. The observed marker is
+`on your first order`, which the plan already listed verbatim.
+⇒ **T1.5 (capture `delivery_text`) is a hard dependency of T2.5**, not a diagnostic nicety.
+⇒ **T1.1's persistent profile helps the accuracy problem too**, not just the block rate: a
+returning profile stops qualifying for the first-order promo, so the scraped value converges on
+the price the user would actually pay.
+
+Caveat, stated honestly: the pinning attempt was time-boxed to two mechanisms. A more elaborate
+flow (full modal fetch to harvest the token) was not attempted, because the location hypothesis
+had already been falsified by the promise text and so the task's motivation was gone.
 
 ## T0.4 — Product-page fixtures
 
