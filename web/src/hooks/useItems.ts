@@ -4,21 +4,32 @@
 //   useItems(kind, params)  → GET /api/books  or  /api/products, → Item[]
 //   useItem(kind, id)       → GET /api/books/{id}  or  /api/products/{id}, → Item
 //
-// These do NOT call `useBooks`/`useProducts`/`useBook`/`useProduct`
-// (`./useBooks.ts` etc.) directly. `kind === "book" ? useBooks(params) :
-// useProducts(params)` — call one hook in one branch, another in the other
-// — is exactly the shape `react-hooks/rules-of-hooks` forbids: a caller
-// could in principle re-render with a different `kind`, and the hook-call
-// sequence would then change between renders. Calling both unconditionally
-// every render satisfies the rule but has no way to suppress the OTHER
-// kind's fetch — neither `useBooks` nor `useProducts` takes an `enabled`
-// override — so every `useItems("book", …)` call would also silently issue
-// a background `GET /api/products`. Instead each hook here makes exactly
-// ONE `useQuery` call, with `kind` used only as data to pick the endpoint
-// and response mapper — matching `useBooks`/`useProducts`/`useBook`/
-// `useProduct`'s own query keys and `apiGet` usage exactly, so a mutation
-// elsewhere that invalidates `["books"]` / `["book", id]` still invalidates
-// data read through `useItems`/`useItem`.
+// Each hook here makes exactly ONE `useQuery` call, with `kind` used only
+// as data to pick the endpoint and response mapper inside `queryFn`.
+// `kind === "book" ? useSomeBookHook() : useSomeProductHook()` — call a
+// DIFFERENT hook depending on a runtime value — is exactly the shape
+// `react-hooks/rules-of-hooks` forbids: a caller could re-render with a
+// different `kind`, and the hook-call sequence would then change between
+// renders.
+//
+// D40 (frontend review F7): these are now the ONLY hooks over these query
+// keys. A separate per-kind family (`useBook`, `useBooks`, `useProduct`,
+// `useProducts`, plus their `*Observations` siblings) used to exist
+// alongside these, deliberately sharing the exact same query keys
+// (`["books", params]`, `["book", id]`, …) so a mutation elsewhere that
+// invalidates `["books"]` / `["book", id]` still invalidates data read
+// through `useItems`/`useItem` — that key-sharing contract still holds.
+// But two hook families producing two different cached SHAPES for one key
+// is a landmine, not a safety net: a `Book`-shaped cache entry read through
+// `useItem`'s `Item`-shaped accessor would render a first frame with
+// `kind`/`imageUrl`/`subtitle`/`signal` all `undefined`. Once every page
+// (`BookDetail.tsx`, `ProductDetail.tsx`, `Dashboard.tsx`,
+// `ProductsDashboard.tsx`) was re-pointed at `useItem`/`useItems`, the
+// per-kind family had zero remaining callers, so the fix was to delete it
+// rather than split the keys — splitting would have forced every mutation
+// site invalidating `["books"]` to also invalidate a second key family,
+// multiplying the exact defect F6 (missing `["products"]` invalidation on
+// config save) was about.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
@@ -88,11 +99,10 @@ export type ItemObservationsPage = {
   next_before: string | null;
 };
 
-/** Mirrors `useBookObservations`/`useProductObservations` (`./useBook.ts`,
- * `./useProduct.ts`) — same query keys (`["book"|"product", id,
- * "observations", limit]`), same default limit — one `useQuery` call with
- * `kind` picking the endpoint, for the same rules-of-hooks reason `useItems`/
- * `useItem` above do. */
+/** Same query keys the deleted `useBookObservations`/`useProductObservations`
+ * used (`["book"|"product", id, "observations", limit]`, D40 above), same
+ * default limit — one `useQuery` call with `kind` picking the endpoint, for
+ * the same rules-of-hooks reason `useItems`/`useItem` above do. */
 export function useItemObservations(
   kind: ItemKind,
   id: number | null,

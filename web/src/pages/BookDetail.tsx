@@ -11,11 +11,14 @@
 // `["book", id]` cache via TanStack so changes round-trip without a full
 // reload — see `@/lib/item`'s `itemDetailQueryKey`/`itemListQueryKey`.
 //
-// Re-pointed at the shared `Item` hooks/components (T5.3) — `useBook`/
-// `useBookObservations` (`@/hooks/useBook`) are unchanged and still used by
-// nothing else that matters here; `useItem("book", id)` uses the identical
-// query key and 404-no-retry behaviour, so this is a like-for-like swap,
-// not a behaviour change.
+// Re-pointed at the shared `Item` hooks/components (T5.3) — `useItem("book",
+// id)` used the identical query key and 404-no-retry behaviour as the old
+// `useBook`/`useBookObservations` (`@/hooks/useBook`), so this was a
+// like-for-like swap, not a behaviour change. Those old hooks are gone now
+// (D40 / F7): they'd gone fully unused once `Dashboard.tsx` was re-pointed
+// at `useItems` too, so the fix was to delete the whole per-kind family
+// rather than leave two hook families producing two different cached
+// shapes for the same query key.
 
 import { Link, useParams } from "react-router-dom";
 

@@ -19,8 +19,18 @@ function AlertsNavBadge() {
   const alertsQuery = useAlerts({ dismissed: false, limit: 20 });
   const count = alertsQuery.data?.items.length ?? 0;
   if (count === 0) return null;
+  // F14: without `aria-label`, this span's own text is a bare digit, so
+  // the enclosing "Alerts" nav link announces as e.g. "Alerts 3" with no
+  // unit -- a screen-reader user can't tell 3 of what. `aria-label`
+  // overrides the accessible name computed from the visible text, so the
+  // link announces the full phrase instead.
+  const label =
+    count === 20 ? "20+ active alerts" : `${count} active alert${count === 1 ? "" : "s"}`;
   return (
-    <span className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-primary px-1 py-0.5 text-[10px] font-medium leading-none text-primary-foreground">
+    <span
+      aria-label={label}
+      className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-primary px-1 py-0.5 text-[10px] font-medium leading-none text-primary-foreground"
+    >
       {count === 20 ? "20+" : count}
     </span>
   );

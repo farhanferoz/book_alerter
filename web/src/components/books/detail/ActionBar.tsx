@@ -137,6 +137,16 @@ export function ActionBar({ item }: { item: Item }) {
       setActionError(null);
       setConfirm(null);
       void qc.invalidateQueries({ queryKey: [listKey] });
+      // F10: REMOVE, not invalidate -- the item is gone, so there is
+      // nothing to refetch. `invalidateQueries` alone leaves the deleted
+      // item's stats sitting in the cache; Back (or a stale link) then
+      // re-mounts the detail page against that cached copy and renders the
+      // deleted item as though it still exists until a refetch eventually
+      // 404s. `removeQueries` on the un-suffixed `[detailKey, item.id]`
+      // prefix also clears `useItemObservations`'s
+      // `[detailKey, item.id, "observations", limit]` entry for the same
+      // id (TanStack matches by key prefix unless `exact: true`).
+      qc.removeQueries({ queryKey: [detailKey, item.id] });
       navigate(itemListHref(item.kind));
     },
     onError: onMutationError,

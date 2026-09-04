@@ -6,14 +6,17 @@
 // mute remains detail-page-only.
 //
 // `buildColumnsFromItem` defines every column exactly once against `Item`
-// (see `@/lib/item`) and is driven by both entry points below:
-//   - `buildBookColumns()` keeps its original `(): ColumnDef<Book>[]`
-//     signature unchanged — `pages/Dashboard.tsx` still passes it `Book[]`
-//     data and must not change behaviour — converting each row to an
-//     `Item` internally via `bookToItem` before rendering.
-//   - `buildItemColumns()` is new: the products dashboard's data is
-//     already `Item[]` (via `useItems("product")`), so no conversion is
-//     needed there.
+// (see `@/lib/item`) and `buildItemColumns()` is the one entry point both
+// dashboards use — both `pages/Dashboard.tsx` and `pages/ProductsDashboard.tsx`
+// read `Item[]` (via `useItems("book" | "product", …)`), so no per-kind
+// conversion is needed at this layer.
+//
+// D40: `buildBookColumns()` (a `ColumnDef<Book>[]` wrapper that converted
+// each row via `bookToItem` before rendering) used to be the second entry
+// point, for the era `Dashboard.tsx` still fetched `Book[]` through
+// `useBooks`. It's gone now that `Dashboard.tsx` fetches `Item[]` directly
+// through `useItems("book", …)` — same migration that deleted `useBooks.ts`
+// (see that file's git history / `lib/item.ts`'s `SIGNAL_ORDER` export).
 
 import type { ColumnDef } from "@tanstack/react-table";
 import { BookIcon, PackageIcon } from "lucide-react";
@@ -29,10 +32,8 @@ import {
   isBookfinderSourcedLabel,
 } from "@/lib/format";
 import {
-  bookToItem,
   itemHref,
   sortableTotalMinor,
-  type Book,
   type Item,
 } from "@/lib/item";
 import { rank3mOrInf } from "@/lib/windows";
@@ -286,10 +287,6 @@ function buildColumnsFromItem<TRow>(toItem: (row: TRow) => Item): ColumnDef<TRow
       enableSorting: false,
     },
   ];
-}
-
-export function buildBookColumns(): ColumnDef<Book>[] {
-  return buildColumnsFromItem<Book>(bookToItem);
 }
 
 export function buildItemColumns(): ColumnDef<Item>[] {

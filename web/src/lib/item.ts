@@ -182,7 +182,10 @@ export type ItemFilters = {
   sort: "signal" | "best_price" | "percentile" | "last_seen" | "title";
 };
 
-const SIGNAL_ORDER: Record<Signal, number> = {
+// F13: exported so `pages/Dashboard.tsx` reads this one instead of keeping
+// its own identical private copy -- two definitions of one closed-set
+// ordering drift the moment either one is edited without the other.
+export const SIGNAL_ORDER: Record<Signal, number> = {
   TARGET_HIT: 0,
   BUY: 1,
   WATCH: 2,

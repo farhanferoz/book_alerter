@@ -104,9 +104,13 @@ export function isBookfinderSourcedLabel(
 
 // Prose-friendly source name for banners/legends (contrast with
 // `displaySourceLabel` above, which uppercases the raw key for compact table
-// cells). `amazon` and `amazon_uk_product` never co-occur on one item, so
-// collapsing both to "Amazon" is safe; unknown sources fall back to the raw
-// key.
+// cells). `amazon` and `amazon_uk_product` never co-occur ON ONE ITEM, so
+// collapsing both to "Amazon" is safe here -- but that guarantee is
+// per-item only. A caller that iterates over SOURCES rather than one
+// item's own observations (e.g. a scrape-health banner listing every
+// challenged source) can see both in the same listing, indistinguishable
+// under this collapse -- use `sourceListingLabel` below for that case.
+// Unknown sources fall back to the raw key.
 const SOURCE_DISPLAY_NAME: Record<string, string> = {
   amazon: "Amazon",
   amazon_uk_product: "Amazon",
@@ -117,6 +121,48 @@ const SOURCE_DISPLAY_NAME: Record<string, string> = {
 
 export function sourceDisplayName(source: string): string {
   return SOURCE_DISPLAY_NAME[source] ?? source;
+}
+
+// F8: distinguishing label for a SOURCE-LISTING context (the scrape-health
+// banner) rather than a per-item history legend -- `amazon` and
+// `amazon_uk_product` are both configured (`config.py`'s
+// `_default_sources`) and can both appear challenged in the same listing,
+// where `sourceDisplayName`'s collapse to plain "Amazon" would print two
+// lines differing only in their numbers with no way to tell the book
+// scraper from the product scraper.
+const SOURCE_LISTING_LABEL: Record<string, string> = {
+  amazon: "Amazon (books)",
+  amazon_uk_product: "Amazon (products)",
+  wob: "World of Books",
+  bookfinder: "eBay (BookFinder)",
+  keepa: "Keepa",
+};
+
+export function sourceListingLabel(source: string): string {
+  return SOURCE_LISTING_LABEL[source] ?? source;
+}
+
+// Which item kind a scraper source targets, mirroring `_default_sources()`
+// in `config.py` (`amazon_uk_product` is the only source configured
+// `item_kinds=[ItemKind.PRODUCT]`; the rest default to books). Not on the
+// wire -- `SourceConfigOut` omits `item_kinds` -- so this is a small,
+// closed, frontend-side mirror kept only for scoping the scrape-health
+// banner to the dashboard it's actually relevant to (F8): without it,
+// `amazon_uk_product` being blocked would warn on the books page and stay
+// silent on the products page whose data it governs, or vice versa. Update
+// this mapping if a source's configured `item_kinds` ever changes.
+const SOURCE_ITEM_KIND: Record<string, "book" | "product"> = {
+  wob: "book",
+  bookfinder: "book",
+  amazon: "book",
+  amazon_uk_product: "product",
+};
+
+export function sourceTargetsKind(
+  source: string,
+  kind: "book" | "product",
+): boolean {
+  return (SOURCE_ITEM_KIND[source] ?? "book") === kind;
 }
 
 export function formatCondition(

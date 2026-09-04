@@ -63,6 +63,17 @@ function latestPerGroup(observations: ItemObservation[]): ItemObservation[] {
   return [...seen.values()].sort((a, b) => {
     const s = a.source.localeCompare(b.source);
     if (s !== 0) return s;
+    // F12 (D20/D34): an unknown-shipping row's `total_minor` folds to bare
+    // price (the "(item only)" cell below), so ranking on it directly can
+    // put an unknown-shipping row above a genuinely cheaper fully-delivered
+    // one. There's no per-row cascade estimate at this layer to rank on
+    // instead -- only the backend-computed current-best OFFER carries one
+    // (`item.stats.shipping_estimate_minor`), not every raw observation --
+    // so unknown-shipping rows sort after every known-shipping row in the
+    // group instead of competing with them on price alone.
+    const aUnknown = a.shipping_minor == null;
+    const bUnknown = b.shipping_minor == null;
+    if (aUnknown !== bUnknown) return aUnknown ? 1 : -1;
     return a.total_minor - b.total_minor;
   });
 }

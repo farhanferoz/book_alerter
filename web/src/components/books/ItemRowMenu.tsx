@@ -29,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   itemApiBase,
+  itemDetailQueryKey,
   itemListQueryKey,
   type Book,
   type Item,
@@ -62,6 +63,7 @@ export function ItemRowMenu({ item }: { item: Item }) {
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
   const base = itemApiBase(item.kind);
   const listKey = itemListQueryKey(item.kind);
+  const detailKey = itemDetailQueryKey(item.kind);
 
   const onError = (label: string) => (err: ApiError) =>
     window.alert(`${label} failed (${err.status}) — ${err.message}`);
@@ -106,6 +108,12 @@ export function ItemRowMenu({ item }: { item: Item }) {
     onSuccess: () => {
       setConfirm(null);
       void qc.invalidateQueries({ queryKey: [listKey] });
+      // F10: same fix as `ActionBar.tsx`'s delete mutation -- the item is
+      // gone, so remove its detail-page cache entry (and, by key-prefix
+      // match, its observations entry) rather than leaving it to render as
+      // though it still exists if the user opens that detail page from a
+      // stale link before the next full reload.
+      qc.removeQueries({ queryKey: [detailKey, item.id] });
     },
     onError: (err) => {
       setConfirm(null);
@@ -125,7 +133,14 @@ export function ItemRowMenu({ item }: { item: Item }) {
       <Menu.Root>
         <Menu.Trigger
           render={
-            <Button variant="ghost" size="icon-sm" aria-label="Row actions" />
+            // F14: distinguishes this row's kebab from every other row's --
+            // without the title, a screen-reader user in a 40-row table
+            // gets forty identically-announced "Row actions" buttons.
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Row actions for ${item.title}`}
+            />
           }
         >
           <MoreVerticalIcon className="size-4" />

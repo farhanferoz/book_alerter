@@ -18,6 +18,7 @@ import {
 } from "@/components/books/BookFilters";
 import { DataTable } from "@/components/books/BookTable";
 import { buildItemColumns } from "@/components/books/columns";
+import { ScrapeHealthBanner } from "@/components/books/ScrapeHealthBanner";
 import { useItems } from "@/hooks/useItems";
 import { applyItemFilters } from "@/lib/item";
 import { formatErrorMessage } from "@/lib/utils";
@@ -81,6 +82,8 @@ export function ProductsDashboard() {
         </div>
         <Button onClick={onAddProduct}>Add product</Button>
       </header>
+
+      <ScrapeHealthBanner scope="product" />
 
       <BookFilters value={filters} onChange={setFilters} />
 

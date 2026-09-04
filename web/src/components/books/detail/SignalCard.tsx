@@ -45,10 +45,19 @@ function targetDistance(item: Item): string | null {
   const current = item.stats.current_effective_total_minor;
   if (current == null) return null;
   const delta = current - item.target_price_minor;
-  const pct = Math.round((delta / item.target_price_minor) * 100);
   if (delta <= 0) {
     return `Target met — ${formatMoneyMinor(-delta, item.currency)} below target.`;
   }
+  // F9: a £0 target is reachable (`poundsToMinor("0")` returns `0`, not
+  // `null` -- `SettingsPanel.tsx` only rejects `null`, and neither
+  // `BookPatch` nor `ProductPatch` set a `ge` bound), and dividing by it
+  // below would print "+Infinity%". The absolute distance is still
+  // meaningful with no target to express it as a fraction OF, so drop the
+  // percentage rather than the whole sentence.
+  if (item.target_price_minor === 0) {
+    return `${formatMoneyMinor(delta, item.currency)} above target.`;
+  }
+  const pct = Math.round((delta / item.target_price_minor) * 100);
   return `${formatMoneyMinor(delta, item.currency)} above target (${pct > 0 ? "+" : ""}${pct}%).`;
 }
 
