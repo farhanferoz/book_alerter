@@ -171,7 +171,7 @@ Caveat, stated honestly: the pinning attempt was time-boxed to two mechanisms. A
 flow (full modal fetch to harvest the token) was not attempted, because the location hypothesis
 had already been falsified by the promise text and so the task's motivation was gone.
 
-## T0.4 — Product-page fixtures (partial: fixture (e) captured, **Q3 answered**)
+## T0.4 — Product-page fixtures (complete: fixtures (a)–(e) captured, **Q3 answered**)
 
 Fixture (e), the Echo Dot `B09B96TG33`, was captured by T0.1's new script on 2026-09-04 15:02 UTC
 — both `dp` and `aod`, neither bot-challenged.
@@ -210,13 +210,102 @@ Here the attribution happens to be true (it is an Amazon device), which is preci
 is easy to miss. **T2.7 should use this fixture as its regression test**; after T2.7 the expected
 seller for this fixture becomes `None`, so T2.7 must update the assertion in the same commit.
 
-### Still to capture
+### (a)–(d): candidates found and captured, 2026-09-04 16:22–16:30 UTC
 
 The Echo Dot turns out **not** to be a variant page (`#twister` = 0 nodes; the 260 raw
-occurrences of "twister" are all script/JSON), and it is in stock. So (a) multi-seller
-non-Amazon-brand, (b) variant/twister, (c) currently-unavailable and (d) used-offers fixtures are
-still outstanding.
+occurrences of "twister" are all script/JSON), and it is in stock. So (a)–(d) needed different
+ASINs. Method: searched Amazon UK search-results pages
+(`div[data-component-type="s-search-result"][data-asin]`) for candidates, then verified every
+marker by **counting selectolax DOM nodes on the actually-rendered page** — never by
+substring-matching the raw HTML, per the lesson already learned above (`aod-offer` appears as a
+raw substring 22 times on a page with 0 real offer rows).
+
+| Fixture (`*-uk-<kind>-2026-09-04`) | Product | Markers exhibited | Node-count evidence |
+|---|---|---|---|
+| `B0F3NVWM37` (aod) | Nintendo Switch 2 — Donkey Kong Bananza | **(a)** multi-seller non-Amazon-brand, **(d)** used offers | `#aod-offer-list #aod-offer` = **10**. Running the production `parse_offer_listing` over the fixture: **9 distinct sellers** (CashC, The Games Exchange Ltd (GEX), Yard's Games ×2, Retro Games Europe, Fuzion, Hitcouk, Tekzone UK, TheGamery, RAREWAVES); conditions present: `used_vg` (The Games Exchange Ltd, £58.48), `used_g` (Yard's Games, £55.00), `new` (the other 8 rows). |
+| `B0CYT8WL1G` (dp) | adidas Run 70s 2.0 Shoes | **(b)** size/colour variants | `#twister` (the plan's literal marker) = **0 nodes** — see finding below. Real markers: `#twister_feature_div` = **1**, `#inline-twister-row-color_name` = **1**, `#inline-twister-row-size_name` = **1**, `#inline-twister-image-0…42` = **43 image nodes** (one per variant thumbnail). |
+| `B0GX54WT36` (dp) | Nintendo Switch 2 Console + Mario Kart World bundle | **(c)** currently unavailable | `#outOfStockBuyBox_feature_div` = **1**, text `"Currently unavailable. We don't know when or if this item will be back in stock."` `#corePriceDisplay_desktop_feature_div` = **0**, `#corePrice_feature_div` = **0**, `#add-to-cart-button` = **0** — no price and no buy path exist on this page at all, not just a hidden one. |
+| `B09B96TG33` (already recorded above) | Echo Dot | **(e)** | single-seller Amazon buybox only (Q3, above) |
+
+All four captures: zero `BOT_MARKERS` hits, real `<title>` matching the product, real `<link
+rel="canonical">`.
+
+**Finding: `#twister` no longer exists on live Amazon UK markup — the plan's literal marker is
+stale.** Full attribute-enumeration of the adidas dp fixture (every `id` containing `twist`, ~90
+distinct ids) turned up `#twister_feature_div`, `#apex_dp_twister` (present but empty, 0 nodes —
+a legacy alias Amazon still renders but leaves unused), and the `inline-twister-*` family
+(`inline-twister-row-<dimension>`, `inline-twister-image-<n>`, etc.) — but the bare `#twister` id
+itself matches 0 nodes on both a genuine variant page (adidas) and a genuine non-variant page
+(Echo Dot), so it cannot distinguish the two. **Any later task that checks for a variant page must
+use `#twister_feature_div` (or `#inline-twister-row-color_name` /
+`#inline-twister-row-size_name`), not `#twister`.**
+
+**New finding — AOD-specific soft failure, not caught by `BOT_MARKERS`.** Two independent
+`/gp/offer-listing/<asin>?condition=all` requests returned dp-page content instead of the
+offer-listing page, silently:
+- `B0CYT8WL1G`: first attempt returned real AOD content (4 third-party rows, seen only in an
+  uncommitted exploratory probe); the official capture ~1 minute later, and a retry ~10 minutes
+  after that, both came back with `<link rel="canonical" href=".../dp/B0DLSB1WWK">` — a
+  **different ASIN's** dp page. (The committed `B0CYT8WL1G-uk-aod-2026-09-04.html` therefore does
+  **not** exhibit marker (a) — only the dp-side twister markup was usable.)
+- `B0F3NVWM37`: the first AOD capture (committed alongside the dp capture) returned
+  `<link rel="canonical" href=".../dp/B0F3NVWM37">` — its **own** dp page, 0 offer rows. A retry
+  ~20 minutes later (after doing unrelated T0.5 work in between) returned genuine AOD content with
+  10 rows, which is the version committed.
+- No attempt tripped `BOT_MARKERS` (no "Robot Check" / captcha text) in either failure mode — the
+  page that came back was a normal, fully-formed dp page, just not the page that was asked for.
+  `_render_amazon_page`'s bot-marker check cannot see this failure mode because there is nothing
+  in the returned HTML that looks like an error.
+
+⇒ Recommend whoever owns Wave 1's block-rate work take a look: a URL-vs-`<link rel="canonical">`
+mismatch check (offer-listing request whose canonical URL doesn't contain `/gp/offer-listing/` or
+whose ASIN doesn't match the request) would catch this where `BOT_MARKERS` cannot. Time-boxed
+here rather than chased further, since T0.4's own retries already worked around it and this is a
+new finding rather than the task in hand.
 
 ## T0.5 — Bookfinder condition strings
 
-_Pending._
+Captured book 2 (ISBN `9780008697211`) and book 5 (ISBN `9780753560686`) via
+`--source bookfinder` on 2026-09-04 ~16:28 UTC:
+
+- `tests/fixtures/bookfinder/9780008697211-gb-search-2026-09-04.html` — 215,611 bytes, 20 raw
+  offer cards / **13** after `data-test-id` dedup, no WAF markers, title
+  `"BookFinder.com: Search Results"`.
+- `tests/fixtures/bookfinder/9780753560686-gb-search-2026-09-04.html` — 99,850 bytes, 4 raw offer
+  cards / **2** after dedup, no WAF markers, same recognised title.
+
+Method note: `BookfinderInlineSource._render()`'s signature changed mid-run (Wave 1's
+`BrowserSessionMixin` refactor, uncommitted in the shared working tree at capture time — it now
+takes a pre-opened `BrowserContext` instead of a `playwright_factory`), which broke T0.1's
+committed script. Patched `scripts/capture_amazon_fixture.py`'s Bookfinder path to open its own
+throwaway context and call the new signature (same commit as these fixtures) — the source's own
+render/parse code was not touched.
+
+Extracted the raw `Condition: <base> - <grade>` text with `_CONDITION_RE` (the exact regex
+`_resolve_condition` already uses — nothing new invented) over every deduped card, cross-checked
+against the structured `data-csa-c-condition` attribute, then ran each grade through the current
+`condition_from_grade_text`:
+
+| Raw condition/grade string | Structured `data-csa-c-condition` | Mapped `Condition` | Count | Seen in |
+|---|---|---|---|---|
+| `New` | `NEW` | `new` | 11 | both books |
+| `Used - Like New` | `USED` | `used_vg` | 4 | book 2 only |
+
+15 deduped cards total across both pages. Every card's regex match agreed with its structured
+attribute, and every one resolved to a real `Condition` — **zero unmapped grade strings found**,
+and zero `(no Condition: match)` cards.
+
+**Conclusion: this specific pair of live captures does not reproduce the unknown-condition bug.**
+Bookfinder marketplace inventory turns over; sellers listing grades like "Fine", "Near Fine", "As
+New", "Fair" or "Ex-library" simply may not be carrying these two exact ISBNs right now, and/or
+the production rows that landed as `unknown` were scraped at a different time with different
+sellers live. This capture can neither confirm nor refute the plan's speculative T2.6 mapping
+("Fine"/"Near Fine"/"As New" → `used_vg`; "Fair" → `used_acceptable`; "Ex-library" keeps its
+grade) — there is no live evidence for or against those specific strings in this sample.
+
+⇒ **T2.6 cannot be made evidence-based from this capture alone.** Whoever picks it up has two
+honest paths: capture more books (ideally the exact ISBN + source-run combination that produced an
+`unknown` row in the production DB, if still recoverable from raw JSON elsewhere), or ship the
+plan's speculative mapping as a best-effort default — `_GRADE_HAYSTACK`'s existing
+fallback-to-`unknown` means an unrecognised grade never mis-classifies, it just stays `unknown` as
+it does today.
